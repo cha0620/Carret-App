@@ -2,8 +2,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.api.routes import images, transform
-from app.core.config import settings
+from app.api.routes import images
+from app.api.routes import transform
+from app.core.config import Settings
 
 app = FastAPI(title="SellerShot API", version="0.1.0")
 
@@ -20,7 +21,7 @@ app.include_router(images.router, prefix="/api/images", tags=["images"])
 app.include_router(transform.router, prefix="/api", tags=["transform"])
 
 # 프론트 정적 파일 서빙 (MVP 간편 모드)
-app.mount("/", StaticFiles(directory="../frontend", html=True), name="frontend")
+#app.mount("/", StaticFiles(directory="../frontend", html=True), name="frontend")
 
 
 @app.get("/health")
