@@ -1,7 +1,7 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class Settings(BaseSettings):
+class settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env")
 
     # ===== 서버 =====
@@ -22,4 +22,11 @@ class Settings(BaseSettings):
 
     pipeline_mode:str = "real"
 
-settings = Settings()   # 전역 단일 인스턴스
+    fal_key: str = ""
+    fal_model: str = "fal-ai/flux-2/flash/edit"   # FLUX 인페인팅
+
+    VLM_KEY:str = ""
+    VLM_MODEL:str   = "gemini-3.5-flash"
+
+    max_bytes: int = 10 * 1024 * 1024
+settings = settings()   # 전역 단일 인스턴스
