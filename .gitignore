@@ -12,7 +12,7 @@ venv*/
 !.env.example
 
 # ===== 저장소/생성물 =====
-storage/
+# storage/
 
 # ===== 모델 =====
 models/

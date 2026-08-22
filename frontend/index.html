@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>Carret 🥕</title>
+<style>
+  body { font-family: sans-serif; max-width: 720px; margin: 40px auto; text-align: center; }
+  #dropzone { border: 2px dashed #999; border-radius: 12px; padding: 40px;
+              cursor: pointer; margin: 20px 0; }
+  #dropzone.over { border-color: #f60; background: #fff7ee; }
+  img { max-width: 320px; border-radius: 8px; margin-top: 8px; }
+  .box { display: flex; gap: 24px; justify-content: center; flex-wrap: wrap; }
+  button, select { padding: 10px 16px; font-size: 15px; margin: 6px; }
+  #status { color: #666; }
+  .quality-card { margin-top: 12px; padding: 12px 16px; background: #f4f7ff;
+                  border-left: 4px solid #4a7aff; border-radius: 6px;
+                  text-align: left; font-size: 13px; line-height: 1.6; }
+  .quality-card .scores { font-weight: bold; margin-bottom: 6px; color: #222; }
+  .quality-card .analysis { color: #555; white-space: pre-wrap; }
+  .quality-card.hidden { display: none; }
+</style>
+</head>
+<body>
+
+<h1>Carret 🥕</h1>
+<p>대충 찍은 사진 → 상품 사진</p>
+
+<!-- 드랍존 -->
+<div id="dropzone">이미지를 드래그하거나 클릭해서 선택</div>
+<input type="file" id="file" accept="image/*" hidden>
+
+<!-- 드랍존 아래 추가 -->
+<p style="color:#999; margin:6px 0;">또는</p>
+<input id="url-input" placeholder="이미지 URL 붙여넣기"
+       style="width:70%; padding:10px; font-size:14px; border:1px solid #ccc; border-radius:8px;">
+<button id="url-run">URL 업로드</button>
+
+<!-- 프리셋 + 실행 -->
+<select id="preset">
+  <option value="studio_white">스튜디오 화이트</option>
+  <option value="warm_wood">따뜻한 우드</option>
+  <option value="minimal_gray">미니멀 그레이</option>
+</select>
+<button id="run" disabled>변환하기</button>
+<p id="status"></p>
+
+<!-- 원본 / 결과 -->
+<div class="box">
+  <div>
+    <h3>원본</h3>
+    <img id="before" hidden>
+  </div>
+  <div>
+    <h3>결과</h3>
+    <img id="after" hidden>
+    <!-- ✅ 성적표는 결과 바로 아래에 -->
+    <div id="quality-box" class="quality-card hidden">
+      <div class="scores" id="quality-scores"></div>
+      <div class="analysis" id="quality-analysis"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const dropzone  = document.getElementById('dropzone');
+const fileInput = document.getElementById('file');
+const presetSel = document.getElementById('preset');
+const runBtn    = document.getElementById('run');
+const statusEl  = document.getElementById('status');
+const beforeImg = document.getElementById('before');
+const afterImg  = document.getElementById('after');
+const qBox      = document.getElementById('quality-box');
+const qScores   = document.getElementById('quality-scores');
+const qAnalysis = document.getElementById('quality-analysis');
+
+let fileId = null;
+
+// ---- 성적표 렌더링 함수 ----
+function renderQuality(quality) {
+  if (!quality) { qBox.classList.add('hidden'); return; }
+  qScores.textContent =
+    `🛡️ 충실성 ${quality.fidelity}/5 · 현실감 ${quality.realism}/5 · 신뢰 ${quality.trust}/5`;
+  qAnalysis.textContent = quality.analysis || '';
+  qBox.classList.remove('hidden');
+}
+
+// ---- 드래그 & 드롭 ----
+dropzone.onclick = () => fileInput.click();
+fileInput.onchange = () => handleFile(fileInput.files[0]);
+
+dropzone.ondragover = (e) => { e.preventDefault(); dropzone.classList.add('over'); };
+dropzone.ondragleave = () => dropzone.classList.remove('over');
+dropzone.ondrop = (e) => {
+  e.preventDefault();
+  dropzone.classList.remove('over');
+  handleFile(e.dataTransfer.files[0]);
+};
+
+// ---- 1) 업로드 ----
+// JS 추가
+document.getElementById('url-run').onclick = async () => {
+  const url = document.getElementById('url-input').value.trim();
+  if (!url) return;
+
+  statusEl.textContent = 'URL 다운로드 중...';
+  const res = await fetch('/api/images/upload-url', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  });
+
+  if (!res.ok) { statusEl.textContent = '실패: ' + (await res.text()); return; }
+  const data = await res.json();
+
+  fileId = data.file_id;
+  beforeImg.src = url;              // 미리보기 (사이트가 막으면 안 보일 수 있음, 무해)
+  beforeImg.hidden = false;
+  statusEl.textContent = '업로드 완료! 변환하기를 누르세요';
+  runBtn.disabled = false;
+};
+
+async function handleFile(file) {
+  if (!file) return;
+  statusEl.textContent = '업로드 중...';
+  beforeImg.src = URL.createObjectURL(file);
+  beforeImg.hidden = false;
+  afterImg.hidden = true;
+  qBox.classList.add('hidden');
+
+  const fd = new FormData();
+  fd.append('file', file);
+  const res = await fetch('/api/images/upload', { method: 'POST', body: fd });
+
+  if (!res.ok) { statusEl.textContent = '업로드 실패: ' + (await res.text()); return; }
+  const data = await res.json();
+  fileId = data.file_id;
+  statusEl.textContent = '업로드 완료! 변환하기를 누르세요';
+  runBtn.disabled = false;
+}
+
+// ---- 2) 변환 ----
+runBtn.onclick = async () => {
+  if (!fileId) return;
+  runBtn.disabled = true;
+  statusEl.textContent = '변환 중... (몇 초 걸려요)';
+
+  try {
+    const res = await fetch('/api/transform', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_id: fileId, preset: presetSel.value }),
+    });
+
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+
+    afterImg.src = data.result_url + '?t=' + Date.now();
+    afterImg.hidden = false;
+
+    // ✅ 여기! 변환 완료 후 성적표 렌더링
+    renderQuality(data.quality || null);
+
+    statusEl.textContent = '완료! 🎉';
+  } catch (e) {
+    statusEl.textContent = '변환 실패: ' + e.message;
+  } finally {
+    runBtn.disabled = false;
+  }
+};
+</script>
+
+</body>
+</html>
