@@ -5,7 +5,7 @@ from google import genai
 from google.genai import types
 
 from app.core.config import settings
-from app.services.rubric import AXES, rubric_text
+from app.prompts.rubric import AXES, rubric_text
 
 SYSTEM = f"""You are a STRICT QC inspector for a secondhand marketplace.
 Grade ONLY with the rubric. Analyze first, then score.

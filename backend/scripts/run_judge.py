@@ -1,6 +1,11 @@
 # backend/run_judge.py
+import sys 
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
 from app.services import judge, storage
-from app.services.rubric import AXES
+from app.prompts.rubric import AXES
 
 for orig in sorted((storage.BASE / "original").glob("*.*")):
     fid = orig.stem

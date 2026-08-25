@@ -1,20 +1,25 @@
-"""저장소 - 단순 하드코딩 버전.
-원칙: 일단 되게. 이상해지면 그때 리팩토링한다.
-"""
 from pathlib import Path
 
 from app.core.config import settings
+from app.util import img_util
+import logging
+
+IMAGE_KINDS = {"original", "result"}   # 정규화 대상 (quality json 등은 제외)
+
+logger = logging.getLogger("carret.storage")
 
 BASE = Path(settings.storage_dir)   # "./storage"
 
 
-def save(stage: str, filename: str, data: bytes) -> Path:
-    """storage/{stage}/{filename} 에 저장."""
-    folder = BASE / stage
-    folder.mkdir(parents=True, exist_ok=True)   # 없으면 만들고, 있어도 말고
-    target = folder / filename
-    target.write_bytes(data)
-    return target
+def save(kind: str, name: str, data: bytes) -> Path:
+    if kind in IMAGE_KINDS:
+        raw = len(data)
+        data = img_util.normalize(data)
+        logger.info(f"[storage] {kind}/{name} {raw}→{len(data)}B")
+    path = BASE / kind / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return path
 
 
 def original_of(file_id: str) -> Path | None:
