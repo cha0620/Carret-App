@@ -11,6 +11,10 @@ from google.genai import types
 from app.core.config import settings
 from app.prompts import detector as P
 
+# detector.py — 순서가 아니라 "키" 로만 읽기
+def _box(d: dict) -> dict:
+    return {"x1": int(d["x1"]), "y1": int(d["y1"]),
+            "x2": int(d["x2"]), "y2": int(d["y2"])}
 
 def _call(image_bytes: bytes, prompt: str) -> dict:
     """공통 VLM 호출 (temp 0 + JSON 모드)."""
@@ -40,13 +44,14 @@ def detect_defects(image_bytes: bytes) -> list[dict]:
 
 
 def verify_and_locate(image_bytes: bytes, anchors: list[dict]) -> list[dict]:
-    """결과에서 앵커별 보존 여부 + 결과 좌표 추출."""
     prompt = P.VERIFY_PROMPT.format(
         anchors=[(a["what"], a["where"]) for a in anchors],
     )
     data = _call(image_bytes, prompt)
-    return [c for c in data.get("checks", []) if _valid_check(c)]
-
+    checks = [c for c in data.get("checks", []) if _valid_check(c)]
+    # ⭐ 보존+좌표 있는 것만 _box 로 정제
+    return [{**c, **_box(c)} if c.get("preserved") and _has_box(c) else c
+            for c in checks]
 
 def all_preserved(checks: list[dict]) -> bool:
     """게이트용: 하자 전부 살아있는가."""
@@ -77,9 +82,8 @@ def _has_box(c: dict) -> bool:
         for k in ("x1", "y1", "x2", "y2")
     )
 def detect_with_boxes(image_bytes: bytes) -> list[dict]:
-    """의미 앵커 + 좌표 함께 (테스트/평가 전용)."""
     data = _call(image_bytes, P.DETECT_BOX_PROMPT)
-    return [d for d in data.get("defects", [])
+    return [{**d, **_box(d)} for d in data.get("defects", [])
             if _valid_anchor(d) and _has_box(d)]
 
 

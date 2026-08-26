@@ -33,7 +33,7 @@ def transform(req: TransformRequest):
     qpath = storage.BASE / "quality" / f"{req.file_id}_{req.preset}.json"
     if qpath.exists():
         quality = QualityReport(**json.loads(qpath.read_text(encoding="utf-8")))
-    
+ 
     return TransformResponse(
         file_id=req.file_id,
         preset=req.preset,

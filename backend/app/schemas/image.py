@@ -54,3 +54,5 @@ class TransformResponse(BaseModel):
     result_url: str = Field(description="브라우저에서 바로 보는 URL")
     prompt_used: str = Field(description="사용된 프롬프트 (실험 기록용)")
     quality: QualityReport | None = None
+    bubbles: list[Bubble] = []        
+    gate_passed: bool | None = None

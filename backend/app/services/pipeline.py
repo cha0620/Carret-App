@@ -47,12 +47,12 @@ def run_transform(file_id: str, preset_key: str) -> dict:
     gen = _generate_ai(original_bytes, preset)
     result_name = f"{file_id}_{preset_key}.jpg"
     storage.save("result", result_name, gen)
-
+    saved_bytes = (storage.BASE / "result" / result_name).read_bytes()
     # 3) 스테이지 3: 검증 (결과 → 보존 여부 + 좌표)
     checks, gate_passed = [], None
     if anchors:
         try:
-            checks = detector.verify_and_locate(gen, anchors)
+            checks = detector.verify_and_locate(saved_bytes, anchors)
             gate_passed = detector.all_preserved(checks)
         except Exception as e:
             print(f"[verify] 실패(무시): {e}")
