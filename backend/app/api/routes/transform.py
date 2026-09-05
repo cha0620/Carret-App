@@ -42,7 +42,9 @@ def transform(req: TransformRequest):
         prompt_used=out["prompt_used"],
         quality=quality,
         bubbles=out["bubbles"],
-        gate_passed=out["gate_passed"]
+        gate_passed=out["gate_passed"],
+        item=out["item"],                           # ⭐
+        considered=out["considered"]
         
     )
 

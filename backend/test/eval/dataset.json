@@ -1,0 +1,7 @@
+[
+  {"file": "hoodie_stain.jpg",  "item": "hoodie",     "defects": ["surface_damage"],                 "url": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcRPeTesNJAX4Adf_ZQ5bgSV_f5q5HeejMSVZCvzAZoMsA&s=10"},
+  {"file": "hoodie_logo.jpg", "item": "hoodie", "defects": ["printed"], "url": "https://img2.joongna.com/media/original/2026/04/14/1776126709964VFG_wL4bV.jpg?impolicy=resize&format=webp"},
+  {"file": "tshirt_tear.jpg",   "item": "t-shirt",    "defects": ["surface_damage","printed"],                  "url": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcRuNeVvgAQUR0osZseOA5qMemewieb6ukW9rxlDncloMQ&s=10"},
+  {"file": "sneaker_scuff.jpg", "item": "sneaker",    "defects": ["printed"],        "url": "https://img2.joongna.com/media/original/2026/08/03/1785707853243w8V_ORu25.jpg?impolicy=resize&format=webp"},
+  {"file": "smartphone.jpg","item": "smartphone",     "defects": ["functional_fault"],               "url": "https://img2.joongna.com/media/original/2026/06/29/1782690022577AgE_TIhh1.jpg?impolicy=resize&format=webp"}
+]

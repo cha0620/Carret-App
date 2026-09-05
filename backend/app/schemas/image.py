@@ -56,3 +56,5 @@ class TransformResponse(BaseModel):
     quality: QualityReport | None = None
     bubbles: list[Bubble] = []        
     gate_passed: bool | None = None
+    item: str = "object"
+    considered: list[str] = []

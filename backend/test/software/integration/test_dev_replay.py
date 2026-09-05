@@ -5,9 +5,10 @@ CHECKS = [{"what": "얼룩", "where": "앞면", "preserved": True,
 
 def test_verify_replay(client, tmp_storage, monkeypatch, make_png):
     """실 오케스트레이션 + VLM 만 모의 → 체크포인트 리플레이."""
-    monkeypatch.setattr("app.services.detector.detect_defects", lambda b: ANCHORS)
+    monkeypatch.setattr("app.services.detector.detect_defects",
+                    lambda *a, **k: ANCHORS)          # ← *a, **k 로
     monkeypatch.setattr("app.services.detector.verify_and_locate",
-                        lambda b, a: CHECKS)
+                    lambda *a, **k: CHECKS)
     monkeypatch.setattr("app.services.pipeline._generate_ai",
                         lambda b, p: make_png())
     monkeypatch.setattr("app.services.judge.judge", lambda a, b: None)

@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Carret 테스트 랩</title>
+<style>
+  :root {
+    --blue:#1e56d6; --blue-soft:#e8f0fe; --ink:#1c2333;
+    --muted:#7a8699; --bg:#f6f8fc; --card:#fff;
+    --r:14px; --sh:0 2px 10px rgba(28,35,51,.07);
+  }
+  * { box-sizing:border-box; margin:0; }
+  body {
+    font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background:var(--bg); color:var(--ink);
+    padding:28px clamp(16px,5vw,56px) 100px;
+  }
+
+  /* 헤더 */
+  header { margin-bottom:26px; }
+  h1 { font-size:22px; font-weight:800; letter-spacing:-.02em; }
+  .sub { font-size:13px; color:var(--muted); margin-top:4px; }
+
+  /* 섹션 제목 */
+  .section-title {
+    display:flex; align-items:center; gap:8px;
+    font-size:14px; font-weight:700; margin:30px 0 12px;
+  }
+  .section-title::before {
+    content:''; width:4px; height:14px;
+    background:var(--blue); border-radius:2px;
+  }
+
+  /* 갤러리 카드 */
+  .gallery { display:flex; flex-wrap:wrap; gap:12px; }
+  .card {
+    background:var(--card); border:2px solid transparent; border-radius:var(--r);
+    padding:8px; cursor:pointer; box-shadow:var(--sh);
+    transition:transform .15s, box-shadow .15s; text-align:center;
+  }
+  .card:hover { transform:translateY(-2px); box-shadow:0 6px 18px rgba(28,35,51,.12); }
+  .card.sel { border-color:var(--blue); background:var(--blue-soft); }
+  .card img { width:84px; height:84px; object-fit:cover; border-radius:8px; background:#eee; }
+  .card span { display:block; font-size:11px; color:var(--muted); margin-top:6px; }
+
+  /* 뷰어 */
+  .hint { font-size:12px; color:var(--muted); margin-bottom:10px; }
+  .viewer { display:none; grid-template-columns:1fr 1fr; gap:16px;
+            max-width:920px; margin:6px 0 14px; align-items:start; }
+  .viewer:has(#v-orig[src]) { display:grid; }
+  .pane { position:relative; border-radius:var(--r); overflow:hidden;
+          box-shadow:var(--sh); background:var(--card); }
+  .pane img { width:100%; display:block; }
+  .pane .label {
+    position:absolute; top:10px; left:10px;
+    background:rgba(28,35,51,.72); color:#fff;
+    font-size:11px; font-weight:700; padding:3px 10px; border-radius:999px;
+  }
+
+  /* 오버레이 박스/태그 */
+  .box { position:absolute; border:2px solid; border-radius:4px; }
+  .tag { position:absolute; font-size:10px; color:#fff; padding:1px 5px;
+         border-radius:3px; transform:translateY(-100%); font-weight:700; }
+
+  /* 버튼 */
+  .btn-row { display:flex; gap:8px; margin:6px 0; }
+  .btn { border:none; border-radius:10px; padding:10px 18px;
+         font-size:13px; font-weight:700; cursor:pointer; transition:.15s; }
+  .btn-primary { background:var(--blue); color:#fff; }
+  .btn-primary:hover { background:#164bc0; }
+  .btn-ghost { background:#fff; color:var(--blue); border:1px solid var(--blue); }
+  .btn-ghost:hover { background:var(--blue-soft); }
+
+  /* 지표 */
+  .metrics { margin:10px 0; font-size:13px; font-weight:800; color:var(--blue); }
+
+  /* 터미널 */
+  #out {
+    background:#0f1524; color:#7cfc9a;
+    font-family:ui-monospace, SFMono-Regular, monospace;
+    font-size:11.5px; line-height:1.55; padding:14px 16px;
+    border-radius:12px; max-height:340px; overflow:auto;
+    white-space:pre-wrap; margin-top:18px; box-shadow:var(--sh);
+  }
+
+  /* 모드 토글 */
+  .mode-toggle {
+    position:fixed; bottom:16px; right:16px;
+    padding:10px 16px; border-radius:999px;
+    background:var(--blue); color:#fff; text-decoration:none;
+    font-size:13px; font-weight:700;
+    box-shadow:0 4px 12px rgba(0,0,0,.2); z-index:999;
+  }
+  .mode-toggle:hover { background:#164bc0; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🧪 Carret 테스트 랩</h1>
+  <div class="sub">데이터셋 페어를 눈으로 선택하고, 정직성을 눈으로 검증합니다</div>
+</header>
+
+<div class="section-title">데이터셋 페어</div>
+<div id="gallery" class="gallery"></div>
+
+<div class="hint">페어를 클릭하면 아래에 원본 | 결과가 나란히 표시됩니다</div>
+<div class="viewer">
+  <div class="pane"><span class="label">원본</span><img id="v-orig" alt="원본"></div>
+  <div class="pane"><span class="label">결과</span><img id="v-after" alt="결과"><div id="o-after"></div></div>
+</div>
+
+<div id="metrics" class="metrics"></div>
+<div class="btn-row">
+  <button id="btn-anchor" class="btn btn-primary">anchor 테스트</button>
+  <button id="btn-all" class="btn btn-ghost">전체 페어</button>
+</div>
+
+<div class="section-title">업로드 원본</div>
+<div id="origs" class="gallery"></div>
+<div class="btn-row">
+  <button id="btn-detect" class="btn btn-ghost">선택 원본 detect</button>
+</div>
+
+<pre id="out"></pre>
+
+<a class="mode-toggle" href="/">🛍️ 제품 모드</a>
+<script src="/js/dev.js"></script>
+</body>
+</html>

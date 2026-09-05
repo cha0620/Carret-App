@@ -62,7 +62,7 @@ python test.py     # runs dataset → saves results to storage/dataset/after/
 
 ```bash
 cd backend
-python -m venv venv && source venv/bin/activate
+python -m venv venv && source venv1/bin/activate
 pip install -r requirements.txt
 cp .env.example .env        # FAL_KEY, VLM_KEY (Gemini)
 uvicorn main:app --reload

@@ -22,3 +22,10 @@ models/
 .vscode/
 .idea/
 .DS_Store
+
+# 생성 데이터 (git 에 올리지 않음 — 사용자 사진이니까)
+backend/storage/original/
+backend/storage/result/
+backend/storage/quality/
+
+# dataset 은 "평가 자산" = 코드와 함께 git 에 포함 ✅
