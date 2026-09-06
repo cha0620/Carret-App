@@ -1,0 +1,95 @@
+body { font-family: sans-serif; max-width: 720px; margin: 40px auto; text-align: center; }
+
+#dropzone { border: 2px dashed #999; border-radius: 12px; padding: 40px;
+            cursor: pointer; margin: 20px 0; }
+#dropzone.over { border-color: #f60; background: #fff7ee; }
+
+img { max-width: 320px; border-radius: 8px; margin-top: 8px; }
+.box { display: flex; gap: 24px; justify-content: center; flex-wrap: wrap; }
+button, select { padding: 10px 16px; font-size: 15px; margin: 6px; }
+#url-input { width: 70%; padding: 10px; font-size: 14px;
+             border: 1px solid #ccc; border-radius: 8px; }
+.divider { color: #999; margin: 6px 0; }
+#status { color: #666; }
+.hidden { display: none; }
+#dev-out { text-align: left; font-size: 11px; background: #111; color: #7CFC9A;
+           padding: 10px; border-radius: 8px; max-height: 300px; overflow: auto; }
+/* 성적표 */
+.quality-card { margin-top: 12px; padding: 12px 16px; background: #f4f7ff;
+                border-left: 4px solid #4a7aff; border-radius: 6px;
+                text-align: left; font-size: 13px; line-height: 1.6; }
+.quality-card .scores { font-weight: bold; margin-bottom: 6px; color: #222; }
+.quality-card .analysis { color: #555; white-space: pre-wrap; }
+
+/* 말풍선 */
+/* 기존 #after-wrap / #overlay 규칙을 찾아서 이렇게 */
+
+#after-wrap {
+  position: relative;          /* ⭐ 기준점 */
+  display: inline-block;       /* 이미지 크기만큼만 */
+}
+
+#overlay {
+  position: absolute;          /* ⭐ 자리 차지 금지 */
+  inset: 0;                    /* 이미지와 같은 크기 */
+  pointer-events: none;
+  background: transparent;     /* ⭐ 초록 삭제 */
+}
+.defect-box { position: absolute; border: 2px dashed #f60; border-radius: 6px;
+              background: rgba(255,102,0,.10); }
+.bubble { position: absolute; transform: translate(-50%, -100%);
+          background: #fff; border: 2px solid #f60; border-radius: 10px;
+          padding: 3px 8px; font-size: 12px; white-space: nowrap;
+          box-shadow: 0 2px 6px rgba(0,0,0,.25); }
+.bubble::after { content: ''; position: absolute; top: 100%; left: 50%;
+                 transform: translateX(-50%);
+                 border: 6px solid transparent; border-top-color: #f60; }
+.bubble.below { transform: translate(-50%, 0); }
+.bubble.below::after { top: auto; bottom: 100%;
+                       border-top-color: transparent; border-bottom-color: #f60; }
+
+/* 게이트 배지 */
+#gate-badge { font-size: 13px; font-weight: bold; margin-top: 8px; }
+
+.gallery { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.pair-card { border: 2px solid transparent; border-radius: 8px;
+             padding: 4px; cursor: pointer; text-align: center; }
+.pair-card.sel { border-color: #1e56d6; background: #e8f0fe; }
+.pair-card img { width: 72px; height: 72px; object-fit: cover; border-radius: 6px; }
+.pair-card span { display: block; font-size: 10px; }
+
+/* style.css 에 추가 (test.html 은 <style> 안에) */
+.mode-toggle {
+  position: fixed; bottom: 16px; right: 16px;
+  padding: 10px 16px; border-radius: 999px;
+  background: #1e56d6; color: #fff;
+  text-decoration: none; font-size: 13px;
+  box-shadow: 0 4px 12px rgba(0,0,0,.2);
+  z-index: 999;
+}
+.mode-toggle:hover { background: #164bc0; }
+
+/* style.css — #after 기존 규칙에서 object-fit/고정 height "제거" */
+#after-wrap {
+  position: relative;
+  width: fit-content;
+  max-width: 480px;          /* 크기 상한은 wrap 에 */
+}
+
+#after {
+  display: block;            /* 12px 틈 제거 */
+  width: 100%;               /* ⭐ test 방식: 가로만 */
+  height: auto;              /* ⭐ 세로는 비율에 맡김 */
+  /* object-fit 없음, 고정 height 없음 */
+}
+
+#overlay { position: absolute; inset: 0; pointer-events: none; }
+
+/* 기존 칩 스타일 재사용 */
+.chip {
+  display:inline-block; padding:.25rem .6rem;
+  border-radius:999px; font-size:.85rem;
+  background:#eef; color:#235;
+}
+.chip-item { background:#e8f5e9; color:#1b5e20; font-weight:600; }
+.chip-considered { background:#f5f5f5; color:#555; margin-left:.2rem; }

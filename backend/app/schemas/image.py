@@ -9,7 +9,21 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+class Bubble(BaseModel):
+    what: str
+    where: str = ""
+    x1: int = 0
+    y1: int = 0
+    x2: int = 0
+    y2: int = 0
 
+class QualityReport(BaseModel):
+    fidelity: int = 0
+    realism: int = 0
+    trust: int = 0
+    analysis: str = ""
+
+    
 # ===== 업로드 =====
 class UploadResponse(BaseModel):
     file_id: str = Field(description="업로드 발급 uuid (변환의 열쇠)")
@@ -28,6 +42,9 @@ class TransformRequest(BaseModel):
         default="studio_white",
         description="배경 스타일 프리셋",
     )
+    quality: QualityReport | None = None   # 🆕
+    bubbles: list[Bubble] = []
+    gate_passed: bool | None = None
 
 
 class TransformResponse(BaseModel):
@@ -36,3 +53,8 @@ class TransformResponse(BaseModel):
     result_path: str = Field(description="저장된 파일 경로")
     result_url: str = Field(description="브라우저에서 바로 보는 URL")
     prompt_used: str = Field(description="사용된 프롬프트 (실험 기록용)")
+    quality: QualityReport | None = None
+    bubbles: list[Bubble] = []        
+    gate_passed: bool | None = None
+    item: str = "object"
+    considered: list[str] = []

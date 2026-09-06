@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,<text xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🥕</text></text>">
+<title>Carret 🥕</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<a class="mode-toggle" href="/test.html">🧪 테스트 모드</a>
+<body>
+
+<h1>Carret 🥕</h1>
+<p>대충 찍은 사진 → 상품 사진</p>
+
+<div id="dropzone">이미지를 드래그하거나 클릭해서 선택</div>
+<input type="file" id="file" accept="image/*" hidden>
+
+<p class="divider">또는</p>
+<input id="url-input" placeholder="이미지 URL 붙여넣기">
+<button id="url-run">URL 업로드</button>
+
+<select id="preset">
+  <option value="studio_white">스튜디오 화이트</option>
+  <option value="warm_wood">따뜻한 우드</option>
+  <option value="minimal_gray">미니멀 그레이</option>
+</select>
+<button id="run" disabled>변환하기</button>
+<p id="status"></p>
+
+<div class="box">
+  <div>
+    <h3>원본</h3>
+    <img id="before" hidden>
+  </div>
+  <div id="meta-chips" style="display:none; margin-bottom:.8rem; display:flex; flex-wrap:wrap; gap:.4rem;">
+  <span class="chip chip-item">📷 <span id="meta-item">—</span></span>
+  <span id="meta-considered-wrap" style="display:none;">
+    <span style="color:#666; font-size:.85rem;">검사:</span>
+    <span id="meta-considered"></span>
+  </span>
+  </div>
+  <div>
+    <h3>결과</h3>
+    <div id="after-wrap">
+      <img id="after" hidden>
+      <div id="overlay"></div>
+    </div>
+    <p id="gate-badge" hidden></p>
+    <div id="quality-box" class="quality-card hidden">
+      <div class="scores" id="quality-scores"></div>
+      <div class="analysis" id="quality-analysis"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 순서 중요: render → api → main -->
+<script src="js/render.js"></script>
+<script src="js/api.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>

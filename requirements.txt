@@ -17,8 +17,12 @@ onnxruntime>=1.17              # rembg 실행 엔진
 # ===== 외부 API 호출 (생성 모델 연동용) =====
 httpx>=0.27
 
+fal-client
+httpx
+langgraph
+
 # ===== 나중에 추가할 것들 (지금은 주석) =====
 # torch                      # 로컬 SD 사용 시
 # diffusers                  # 로컬 SD 사용 시
 # transformers               # 로컬 SD 사용 시
-# pytest                     # 테스트 작성 시
+pytest                     # 테스트 작성 시google-genai
