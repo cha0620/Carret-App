@@ -1,0 +1,56 @@
+cd /workspaces/Carret-App
+cat > .github/workflows/ci.yml << 'EOF'
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  unit:
+    name: free unit tests
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: backend
+      VLM_KEY: ci-dummy      
+      FAL_KEY: ci-dummy
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest                   
+          [ -f backend/requirements.txt ] && pip install -r backend/requirements.txt || true
+      - name: pytest (free)
+        run: pytest backend/test/software -q
+
+  eval:
+    name: paid eval (main only)
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: backend
+      VLM_KEY: ${{ secrets.VLM_KEY }}
+      FAL_KEY: ${{ secrets.FAL_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+          [ -f backend/requirements.txt ] && pip install -r backend/requirements.txt || true
+      - name: pytest (paid eval)
+        run: pytest backend/test/eval -m eval -q
+EOF
+
+git add .github/workflows/ci.yml
+git commit -m "fix: CI dummy keys + pytest install"
+git push

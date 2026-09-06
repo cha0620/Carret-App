@@ -17,7 +17,7 @@ from google import genai
 from google.genai import types
 
 from app.core.config import settings
-from app.prompts import detector as P
+from app import prompts as P
 
 
 # ── 공통 ─────────────────────────────────────────
@@ -69,7 +69,7 @@ def detect_defects(image_bytes: bytes, item: str, considered: list) -> list:
     anchors = []
     for d in data.get("defects", []):
         cat = str(d.get("category", "other")).strip()
-        if cat not in P.CATEGORIES:      # 목록 밖이면 other 로
+        if cat not in P.VALID_CATEGORIES:      # 목록 밖이면 other 로
             cat = "other"
         anchors.append({
             "category": cat,
@@ -122,7 +122,7 @@ def match_anchors(orig: list, result: list) -> dict:
     client = genai.Client(api_key=settings.VLM_KEY)
     resp = client.models.generate_content(
         model=settings.VLM_MODEL,
-        contents=[P.MATCH_PROMPT.format(orig=orig, result=result)],
+        contents=[P.match_prompt(orig, result)],
         config=types.GenerateContentConfig(
             temperature=0, response_mime_type="application/json"),
     )
