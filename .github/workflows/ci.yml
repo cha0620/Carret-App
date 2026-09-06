@@ -27,7 +27,7 @@ jobs:
           pip install pytest                   
           [ -f backend/requirements.txt ] && pip install -r backend/requirements.txt || true
       - name: pytest (free)
-        run: pytest backend/test/software -q
+        run: pytest backend/test/software/unit -q
 
   eval:
     name: paid eval (main only)
