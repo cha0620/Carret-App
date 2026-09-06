@@ -24,7 +24,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pytest
-          [ -f backend/requirements.txt ] && pip install -r backend/requirements.txt || true
+          [ -f requirements.txt ] && pip install -r requirements.txt || true
       - name: pytest (free)
         run: pytest backend/test/software/unit -q
 
@@ -45,7 +45,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pytest
-          [ -f backend/requirements.txt ] && pip install -r backend/requirements.txt || true
+          [ -f requirements.txt ] && pip install -r requirements.txt || true
       - name: pytest (paid eval)
         run: pytest backend/test/eval -m eval -q
 
@@ -66,6 +66,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pytest
-          [ -f backend/requirements.txt ] && pip install -r backend/requirements.txt || true
+          [ -f requirements.txt ] && pip install -r requirements.txt || true
       - name: pytest (eval)
         run: pytest backend/test/eval -m eval -q
