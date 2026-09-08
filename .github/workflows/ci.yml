@@ -23,7 +23,7 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install pytest fastapi httpx google-genai pydantic-settings pillow numpy
+          pip install pytest fastapi httpx google-genai pydantic-settings pillow numpy python-multipart
       - name: pytest (free)
         run: pytest backend/test/software/unit -q
 
@@ -43,7 +43,7 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install pytest fastapi httpx google-genai pydantic-settings pillow numpy fal-client
+          pip install pytest fastapi httpx google-genai pydantic-settings pillow numpy python-multipart fal-client
       - name: pytest (paid eval)
         run: pytest backend/test/eval -m eval -q
 
@@ -63,6 +63,6 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install pytest fastapi httpx google-genai pydantic-settings pillow numpy fal-client
+          pip install pytest fastapi httpx google-genai pydantic-settings pillow numpy python-multipart fal-client
       - name: pytest (eval)
         run: pytest backend/test/eval -m eval -q
