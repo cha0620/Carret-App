@@ -36,5 +36,7 @@ class Settings(BaseSettings):              # ⭐ 대문자 클래스
     max_bytes: int = 10 * 1024 * 1024
     dev_tools: bool = True
 
+    inspect_img: str | None = None
+
 
 settings = Settings()          # ⭐ 인스턴스 = 소문자
