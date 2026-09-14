@@ -6,92 +6,112 @@
 <title>Carret 테스트 랩</title>
 <style>
   :root {
-    --blue:#1e56d6; --blue-soft:#e8f0fe; --ink:#1c2333;
-    --muted:#7a8699; --bg:#f6f8fc; --card:#fff; --line:#e6e9f0;
-    --r:14px; --sh:0 2px 10px rgba(28,35,51,.07);
+    --accent:#ff6a1a; --accent-dark:#e55600; --accent-soft:#fff1e8;
+    --ink:#1c2129; --muted:#6b7280; --line:#e6e5e2;
+    --bg:#faf9f7; --card:#fff;
+    --radius:14px; --radius-sm:9px;
+    --shadow:0 2px 10px rgba(28,33,41,.06);
   }
-  * { box-sizing:border-box; margin:0; }
+  * { box-sizing:border-box; }
   body {
-    font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    margin:0; padding:32px 16px 90px;
     background:var(--bg); color:var(--ink);
-    padding:28px 16px 90px;
+    font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", "Pretendard",
+      "Apple SD Gothic Neo", system-ui, sans-serif;
+    line-height:1.5;
   }
 
-  .lab { max-width:960px; margin:0 auto; }
+  .lab { max-width:900px; margin:0 auto; }
 
   /* 헤더 */
-  header { margin-bottom:22px; }
-  h1 { font-size:22px; font-weight:800; letter-spacing:-.02em; }
-  .sub { font-size:13px; color:var(--muted); margin-top:4px; }
+  .lab-header { text-align:center; margin-bottom:26px; }
+  .lab-header h1 { font-size:26px; font-weight:800; letter-spacing:-.02em; margin:0 0 6px; }
+  .lab-header .sub { font-size:13px; color:var(--muted); margin:0; }
 
-  /* 섹션을 카드로 분리 */
+  /* 섹션 카드 */
   .section {
-    background:var(--card); border:1px solid var(--line); border-radius:var(--r);
-    box-shadow:var(--sh); padding:20px; margin-bottom:16px;
+    background:var(--card); border:1px solid var(--line); border-radius:var(--radius);
+    box-shadow:var(--shadow); padding:20px; margin-bottom:16px;
   }
   .section-title {
     display:flex; align-items:center; gap:8px;
-    font-size:14px; font-weight:700; margin-bottom:12px;
+    font-size:13px; font-weight:700; color:var(--muted);
+    text-transform:uppercase; letter-spacing:.04em;
+    margin:0 0 14px;
   }
   .section-title::before {
-    content:''; width:4px; height:14px;
-    background:var(--blue); border-radius:2px;
+    content:''; width:4px; height:13px;
+    background:var(--accent); border-radius:2px;
   }
 
   /* 갤러리 카드 */
-  .gallery { display:flex; flex-wrap:wrap; gap:12px; }
-  .card {
-    background:var(--card); border:2px solid var(--line); border-radius:10px;
-    padding:8px; cursor:pointer;
-    transition:transform .15s, box-shadow .15s, border-color .15s; text-align:center;
+  .gallery { display:flex; flex-wrap:wrap; gap:10px; min-height:94px; }
+  .gallery:empty::after {
+    content:'불러오는 중...'; color:var(--muted); font-size:12px;
+    display:flex; align-items:center;
   }
-  .card:hover { transform:translateY(-2px); box-shadow:0 6px 18px rgba(28,35,51,.12); }
-  .card.sel { border-color:var(--blue); background:var(--blue-soft); }
-  .card img { width:84px; height:84px; object-fit:cover; border-radius:8px; background:#eee; }
+  .card {
+    background:var(--card); border:2px solid var(--line); border-radius:var(--radius-sm);
+    padding:8px; cursor:pointer; text-align:center;
+    transition:transform .15s, box-shadow .15s, border-color .15s;
+  }
+  .card:hover { transform:translateY(-2px); box-shadow:0 6px 16px rgba(28,33,41,.1); }
+  .card.sel { border-color:var(--accent); background:var(--accent-soft); }
+  .card img { width:80px; height:80px; object-fit:cover; border-radius:7px; background:#eee; display:block; }
   .card span { display:block; font-size:11px; color:var(--muted); margin-top:6px; }
 
   /* 뷰어 */
-  .hint { font-size:12px; color:var(--muted); margin-bottom:12px; }
-  .viewer { display:none; grid-template-columns:1fr 1fr; gap:16px;
-            margin:6px 0 14px; align-items:start; }
+  .hint { font-size:12px; color:var(--muted); margin:0 0 14px; }
+  .viewer {
+    display:none; grid-template-columns:1fr 1fr; gap:14px;
+    margin:6px 0 14px; align-items:start;
+  }
   .viewer.show { display:grid; }
-  .pane { position:relative; border-radius:10px; overflow:hidden;
-          border:1px solid var(--line); background:#f1f3f8; }
+  @media (max-width:560px) { .viewer.show { grid-template-columns:1fr; } }
+  .pane {
+    position:relative; border-radius:var(--radius-sm); overflow:hidden;
+    border:1px solid var(--line); background:#f1efec;
+  }
   .pane img { width:100%; display:block; }
   .pane .label {
     position:absolute; top:10px; left:10px;
-    background:rgba(28,35,51,.72); color:#fff;
+    background:rgba(28,33,41,.72); color:#fff;
     font-size:11px; font-weight:700; padding:3px 10px; border-radius:999px;
   }
 
   /* 오버레이 박스/태그 */
   .box { position:absolute; border:2px solid; border-radius:4px; }
-  .tag { position:absolute; font-size:10px; color:#fff; padding:1px 5px;
-         border-radius:3px; transform:translateY(-100%); font-weight:700; }
+  .tag {
+    position:absolute; font-size:10px; color:#fff; padding:1px 5px;
+    border-radius:3px; transform:translateY(-100%); font-weight:700;
+  }
 
   /* 버튼 */
-  .btn-row { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:4px; }
-  .btn { border:none; border-radius:10px; padding:10px 18px;
-         font-size:13px; font-weight:700; cursor:pointer; transition:.15s; }
-  .btn-primary { background:var(--blue); color:#fff; }
-  .btn-primary:hover { background:#164bc0; }
-  .btn-ghost { background:#fff; color:var(--blue); border:1px solid var(--blue); }
-  .btn-ghost:hover { background:var(--blue-soft); }
+  .btn-row { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:2px; }
+  .btn {
+    border:none; border-radius:var(--radius-sm); padding:10px 18px;
+    font-size:13px; font-weight:700; cursor:pointer; transition:.15s;
+  }
+  .btn:active { transform:translateY(1px); }
+  .btn-primary { background:var(--accent); color:#fff; }
+  .btn-primary:hover { background:var(--accent-dark); }
+  .btn-ghost { background:#fff; color:var(--accent); border:1px solid var(--accent); }
+  .btn-ghost:hover { background:var(--accent-soft); }
 
   #result-file {
     font-size:12px; padding:8px 10px; border:1px solid var(--line);
-    border-radius:10px; background:#fff;
+    border-radius:var(--radius-sm); background:#fff; max-width:100%;
   }
 
   /* 지표 */
-  .metrics { margin-top:10px; font-size:13px; font-weight:800; color:var(--blue); }
+  .metrics { margin-top:10px; font-size:13px; font-weight:700; color:var(--accent-dark); min-height:1.4em; }
 
-  /* 터미널 */
+  /* 로그 터미널 */
   #out {
-    background:#0f1524; color:#7cfc9a;
+    margin:0; background:#14161c; color:#7cfc9a;
     font-family:ui-monospace, SFMono-Regular, monospace;
     font-size:11.5px; line-height:1.55; padding:14px 16px;
-    border-radius:12px; max-height:340px; overflow:auto;
+    border-radius:var(--radius-sm); max-height:340px; overflow:auto;
     white-space:pre-wrap;
   }
 
@@ -101,26 +121,26 @@
   .mode-toggle {
     position:fixed; bottom:16px; right:16px;
     padding:10px 16px; border-radius:999px;
-    background:var(--blue); color:#fff; text-decoration:none;
-    font-size:13px; font-weight:700;
+    background:var(--ink); color:#fff; text-decoration:none;
+    font-size:13px; font-weight:600;
     box-shadow:0 4px 12px rgba(0,0,0,.2); z-index:999;
   }
-  .mode-toggle:hover { background:#164bc0; }
+  .mode-toggle:hover { background:#333; }
 </style>
 </head>
 <body>
 
 <div class="lab">
-  <header>
+  <header class="lab-header">
     <h1>🧪 Carret 테스트 랩</h1>
-    <div class="sub">데이터셋 페어를 눈으로 선택하고, 정직성을 눈으로 검증합니다</div>
+    <p class="sub">데이터셋 페어를 눈으로 선택하고, 정직성을 눈으로 검증합니다</p>
   </header>
 
   <section class="section">
     <div class="section-title">데이터셋 페어</div>
     <div id="gallery" class="gallery"></div>
 
-    <div class="hint" style="margin-top:14px;">페어를 클릭하면 아래에 원본 | 결과가 나란히 표시됩니다</div>
+    <p class="hint" style="margin-top:14px;">페어를 클릭하면 아래에 원본 | 결과가 나란히 표시됩니다</p>
     <div class="viewer" id="pair-viewer">
       <div class="pane"><span class="label">원본</span><img id="v-orig" alt="원본"></div>
       <div class="pane"><span class="label">결과</span><img id="v-after" alt="결과"><div id="o-after"></div></div>
@@ -143,10 +163,10 @@
 
   <section class="section">
     <div class="section-title">생성 건너뛰고 결과 이미지로 테스트</div>
-    <div class="hint">
+    <p class="hint">
       위 "업로드 원본"에서 원본을 선택하고, 이미 만들어둔 결과 이미지를 올리면
       fal.ai generate() 없이 verify → judge 만 바로 돌립니다 (studio_white 고정)
-    </div>
+    </p>
     <div class="btn-row">
       <input type="file" id="result-file" accept="image/*">
       <button id="btn-with-result" class="btn btn-primary">결과 이미지로 실행</button>
