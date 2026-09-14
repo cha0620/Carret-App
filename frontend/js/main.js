@@ -1,12 +1,13 @@
 /* 조율 계층 — 상태 + 이벤트. api 와 render 를 연결. */
 
+const PRESET = 'studio_white';   // 프리셋 선택 UI는 없앰 — 항상 화이트 스튜디오로 변환
+
 let fileId = null;
 
 const dropzone  = document.getElementById('dropzone');
 const fileInput = document.getElementById('file');
 const urlInput  = document.getElementById('url-input');
 const urlBtn    = document.getElementById('url-run');
-const presetSel = document.getElementById('preset');
 const runBtn    = document.getElementById('run');
 const statusEl  = document.getElementById('status');
 const beforeImg = document.getElementById('before');
@@ -75,7 +76,7 @@ runBtn.onclick = async () => {
   runBtn.disabled = true;
   statusEl.textContent = '변환 중... (몇 초 걸려요)';
   try {
-    const data = await requestTransform(fileId, presetSel.value);
+    const data = await requestTransform(fileId, PRESET);
 
     // 이전 결과의 말풍선이 새 이미지 로드 전까지 잘못 남아있지 않도록 즉시 비움
     overlay.innerHTML = '';
@@ -91,7 +92,7 @@ runBtn.onclick = async () => {
     
     // 성적표는 백그라운드 → 폴링으로 뒤따름
     renderQuality(null);  // 일단 숨김
-    const qUrl = `/storage/quality/${fileId}_${presetSel.value}.json`;
+    const qUrl = `/storage/quality/${fileId}_${PRESET}.json`;
     const poll = setInterval(async () => {
       const r = await fetch(qUrl + '?t=' + Date.now());
       if (r.ok) {
@@ -104,7 +105,7 @@ runBtn.onclick = async () => {
     currentRating = 0;
     resetFeedbackBox();
     try {
-      const fb = await fetchFeedback(fileId, presetSel.value);
+      const fb = await fetchFeedback(fileId, PRESET);
       if (fb) {
         currentRating = fb.rating;
         renderFeedback(fb);
@@ -138,7 +139,7 @@ feedbackSubmitBtn.onclick = async () => {
   feedbackSubmitBtn.disabled = true;
   feedbackStatus.textContent = '전송 중...';
   try {
-    await submitFeedback(fileId, presetSel.value, currentRating, feedbackComment.value.trim() || null);
+    await submitFeedback(fileId, PRESET, currentRating, feedbackComment.value.trim() || null);
     feedbackStatus.textContent = '피드백 감사합니다! 🙏';
   } catch (e) {
     feedbackStatus.textContent = e.message;

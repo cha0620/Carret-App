@@ -84,6 +84,9 @@
     white-space:pre-wrap; margin-top:18px; box-shadow:var(--sh);
   }
 
+  .hidden { display: none !important; }
+  #result-file { font-size: 12px; }
+
   /* 모드 토글 */
   .mode-toggle {
     position:fixed; bottom:16px; right:16px;
@@ -122,6 +125,21 @@
 <div class="btn-row">
   <button id="btn-detect" class="btn btn-ghost">선택 원본 detect</button>
 </div>
+
+<div class="section-title">생성 건너뛰고 결과 이미지로 테스트</div>
+<div class="hint">
+  위에서 원본을 선택하고, 이미 만들어둔 결과 이미지를 올리면
+  fal.ai generate() 없이 verify → judge 만 바로 돌립니다 (studio_white 고정)
+</div>
+<div class="btn-row">
+  <input type="file" id="result-file" accept="image/*">
+  <button id="btn-with-result" class="btn btn-primary">결과 이미지로 실행</button>
+</div>
+<div class="viewer" id="wr-viewer" style="grid-template-columns:1fr 1fr;">
+  <div class="pane"><span class="label">원본</span><img id="wr-orig" alt="원본"></div>
+  <div class="pane"><span class="label">제공한 결과</span><img id="wr-after" alt="결과"><div id="wr-overlay"></div></div>
+</div>
+<div id="wr-metrics" class="metrics"></div>
 
 <pre id="out"></pre>
 

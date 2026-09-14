@@ -86,3 +86,28 @@ $('btn-detect').onclick = async () => {
   });
   out.textContent = JSON.stringify(await r.json(), null, 2);
 };
+
+$('btn-with-result').onclick = async () => {
+  const file = $('result-file').files[0];
+  if (!selOrig) { out.textContent = '⚠️ 위에서 원본을 먼저 선택하세요'; return; }
+  if (!file) { out.textContent = '⚠️ 결과로 쓸 이미지를 선택하세요'; return; }
+
+  out.textContent = '실행 중... (generate 없이 verify+judge만)';
+  const fd = new FormData();
+  fd.append('file_id', selOrig);
+  fd.append('preset', 'studio_white');
+  fd.append('result', file);
+
+  const r = await fetch('/dev/transform-with-result', { method: 'POST', body: fd });
+  if (!r.ok) { out.textContent = `❌ 실패 (${r.status})\n` + await r.text(); return; }
+  const d = await r.json();
+
+  $('wr-viewer').style.display = 'grid';
+  $('wr-orig').src = `/storage/original/${selOrig}.jpg`;
+  $('wr-after').src = d.result_url + '?t=' + Date.now();
+  $('wr-overlay').innerHTML = '';
+  drawBoxes($('wr-overlay'), d.bubbles || [], '#2ecc71');
+  $('wr-metrics').textContent =
+    `item=${d.item} gate_passed=${d.gate_passed} bubbles=${(d.bubbles || []).length}`;
+  out.textContent = JSON.stringify(d, null, 2);
+};
