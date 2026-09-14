@@ -3,7 +3,7 @@ from typing import Literal
 
 
 class Settings(BaseSettings):              # ⭐ 대문자 클래스
-    model_config = SettingsConfigDict(env_file=".env")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # 서버
     host: str = "0.0.0.0"
@@ -38,5 +38,14 @@ class Settings(BaseSettings):              # ⭐ 대문자 클래스
 
     inspect_img: str | None = None
 
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_host: str = "https://cloud.langfuse.com"
+
+    db_path: str = "data/carret.db"
+    storage_backend: str = "local"      # "local" | "s3"
+    s3_bucket: str = ""
+    s3_prefix: str = "carret"
+    aws_region: str = "ap-northeast-2"
 
 settings = Settings()          # ⭐ 인스턴스 = 소문자

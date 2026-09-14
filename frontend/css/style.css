@@ -22,19 +22,6 @@ button, select { padding: 10px 16px; font-size: 15px; margin: 6px; }
 .quality-card .analysis { color: #555; white-space: pre-wrap; }
 
 /* 말풍선 */
-/* 기존 #after-wrap / #overlay 규칙을 찾아서 이렇게 */
-
-#after-wrap {
-  position: relative;          /* ⭐ 기준점 */
-  display: inline-block;       /* 이미지 크기만큼만 */
-}
-
-#overlay {
-  position: absolute;          /* ⭐ 자리 차지 금지 */
-  inset: 0;                    /* 이미지와 같은 크기 */
-  pointer-events: none;
-  background: transparent;     /* ⭐ 초록 삭제 */
-}
 .defect-box { position: absolute; border: 2px dashed #f60; border-radius: 6px;
               background: rgba(255,102,0,.10); }
 .bubble { position: absolute; transform: translate(-50%, -100%);
@@ -69,22 +56,6 @@ button, select { padding: 10px 16px; font-size: 15px; margin: 6px; }
 }
 .mode-toggle:hover { background: #164bc0; }
 
-/* style.css — #after 기존 규칙에서 object-fit/고정 height "제거" */
-#after-wrap {
-  position: relative;
-  width: fit-content;
-  max-width: 480px;          /* 크기 상한은 wrap 에 */
-}
-
-#after {
-  display: block;            /* 12px 틈 제거 */
-  width: 100%;               /* ⭐ test 방식: 가로만 */
-  height: auto;              /* ⭐ 세로는 비율에 맡김 */
-  /* object-fit 없음, 고정 height 없음 */
-}
-
-#overlay { position: absolute; inset: 0; pointer-events: none; }
-
 /* 기존 칩 스타일 재사용 */
 .chip {
   display:inline-block; padding:.25rem .6rem;
@@ -93,3 +64,67 @@ button, select { padding: 10px 16px; font-size: 15px; margin: 6px; }
 }
 .chip-item { background:#e8f5e9; color:#1b5e20; font-weight:600; }
 .chip-considered { background:#f5f5f5; color:#555; margin-left:.2rem; }
+
+/* ===== 이미지 확대 (Zoom Inspection) ===== */
+.viewport {
+  position: relative;
+  overflow: hidden;           /* 커서 기준 확대 시 짤린 부분 숨김 */
+  width: 100%;
+  max-width: 500px;
+  height: 400px;              /* 뷰포트 고정 높이 (필요시 조정) */
+  background: #f5f5f5;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  cursor: zoom-in;
+}
+.viewport.zoomed { cursor: zoom-out; }
+
+.canvas {
+  position: relative;
+  transform-origin: 0 0;      /* 커서 기준 보정의 핵심 */
+  transition: transform 0.08s ease-out;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.canvas img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* 버블 오버레이가 이미지와 겹치도록 */
+#overlay {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;       /* 마우스 이벤트를 이미지로 통과시킴 */
+}
+
+/* 피드백 */
+.feedback-card {
+  margin-top: 12px; padding: 12px 16px; background: #fff8f0;
+  border-left: 4px solid #f60; border-radius: 6px;
+  text-align: left; font-size: 13px;
+}
+.feedback-title { font-weight: bold; margin: 0 0 8px; color: #222; }
+.stars { margin-bottom: 8px; }
+.star {
+  background: none; border: none; cursor: pointer;
+  font-size: 22px; color: #ccc; padding: 0 2px; margin: 0;
+}
+.star.active { color: #f60; }
+#feedback-comment {
+  width: 100%; box-sizing: border-box; resize: vertical;
+  min-height: 50px; padding: 6px 8px; font-size: 13px;
+  border: 1px solid #ddd; border-radius: 6px; margin-bottom: 8px;
+  font-family: inherit;
+}
+#feedback-submit { padding: 8px 14px; font-size: 13px; margin: 0; }
+#feedback-status { color: #666; margin: 6px 0 0; font-size: 12px; }

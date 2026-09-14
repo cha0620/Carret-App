@@ -1,33 +1,110 @@
+"""스토리지 계층 — local FS 또는 S3 (설정으로 전환).
+
+경로 규칙: 로컬 백엔드의 유일한 기준점은 BASE(=settings.storage_dir) 하나뿐이다.
+images.py 의 업로드 저장, main.py 의 `/storage` StaticFiles 마운트, dev.py/
+pipeline.py 의 파일 직접 접근이 전부 이 BASE 를 공유해야 서빙이 깨지지 않는다.
+"""
 from pathlib import Path
+import logging
+
+import boto3
+from botocore.exceptions import ClientError
 
 from app.core.config import settings
 from app.util import img_util
-import logging
 
 IMAGE_KINDS = {"original", "result"}   # 정규화 대상 (quality json 등은 제외)
 
 logger = logging.getLogger("carret.storage")
 
-BASE = Path(settings.storage_dir)   # "./storage"
+BASE = Path(settings.storage_dir)   # "./storage" — 로컬 백엔드 + dev 도구 공통 기준
 
 
-def save(kind: str, name: str, data: bytes) -> Path:
+class LocalBackend:
+    def save(self, kind: str, name: str, data: bytes) -> None:
+        path = BASE / kind / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+    def load(self, kind: str, name: str) -> bytes | None:
+        path = BASE / kind / name
+        return path.read_bytes() if path.exists() else None
+
+    def exists(self, kind: str, name: str) -> bool:
+        return (BASE / kind / name).exists()
+
+
+class S3Backend:
+    def __init__(self):
+        self.bucket = settings.s3_bucket
+        self.prefix = settings.s3_prefix
+        self.s3 = boto3.client("s3", region_name=settings.aws_region)
+
+    def _key(self, kind: str, name: str) -> str:
+        return f"{self.prefix}/{kind}/{name}"
+
+    def save(self, kind: str, name: str, data: bytes) -> None:
+        self.s3.put_object(Bucket=self.bucket, Key=self._key(kind, name), Body=data)
+
+    def load(self, kind: str, name: str) -> bytes | None:
+        try:
+            r = self.s3.get_object(Bucket=self.bucket, Key=self._key(kind, name))
+            return r["Body"].read()
+        except ClientError:
+            return None
+
+    def exists(self, kind: str, name: str) -> bool:
+        try:
+            self.s3.head_object(Bucket=self.bucket, Key=self._key(kind, name))
+            return True
+        except ClientError:
+            return False
+
+
+def _backend():
+    if settings.storage_backend == "s3" and settings.s3_bucket:
+        return S3Backend()
+    return LocalBackend()
+
+
+BACKEND = _backend()
+
+
+# ===== 모듈 레벨 API (기존 호출부 무수정) =====
+def save(kind: str, name: str, data: bytes) -> None:
     if kind in IMAGE_KINDS:
         raw = len(data)
         data = img_util.normalize(data)
         logger.info(f"[storage] {kind}/{name} {raw}→{len(data)}B")
-    path = BASE / kind / name
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(data)
-    return path
+    BACKEND.save(kind, name, data)
+
+
+def load(kind: str, name: str) -> bytes | None:
+    return BACKEND.load(kind, name)
+
+
+def exists(kind: str, name: str) -> bool:
+    return BACKEND.exists(kind, name)
+
+
+def load_original(file_id: str) -> bytes | None:
+    """원본 바이트 (확장자 탐색). S3/local 공통."""
+    for ext in (".jpg", ".jpeg", ".png", ".webp"):
+        data = load("original", f"{file_id}{ext}")
+        if data is not None:
+            return data
+    return None
 
 
 def original_of(file_id: str) -> Path | None:
-    """원본 찾기. (file_id는 스키마가 hex32 보증 → glob 안전 ✅)"""
+    """원본 파일 경로. 로컬 전용(dev 도구/파이프라인이 파일시스템을 직접 다룰 때 사용).
+
+    file_id는 스키마가 hex32 를 보증하므로 glob 이 안전하다 ✅
+    """
     hits = list((BASE / "original").glob(f"{file_id}.*"))
     return hits[0] if hits else None
 
 
 def result_url(file_id: str, preset: str) -> str:
-    """브라우저에서 바로 보는 주소."""
+    """브라우저에서 바로 보는 주소 (로컬 백엔드 기준, `/storage` 마운트와 짝)."""
     return f"/storage/result/{file_id}_{preset}.jpg"
