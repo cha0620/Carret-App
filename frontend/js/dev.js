@@ -40,6 +40,7 @@ async function load() {
     $('v-after').src = p.after;
     $('o-after').innerHTML = '';
     $('metrics').textContent = '';
+    $('pair-viewer').classList.add('show');
   });
 
   $('origs').innerHTML = g.originals.map(o => `
@@ -102,7 +103,7 @@ $('btn-with-result').onclick = async () => {
   if (!r.ok) { out.textContent = `❌ 실패 (${r.status})\n` + await r.text(); return; }
   const d = await r.json();
 
-  $('wr-viewer').style.display = 'grid';
+  $('wr-viewer').classList.add('show');
   $('wr-orig').src = `/storage/original/${selOrig}.jpg`;
   $('wr-after').src = d.result_url + '?t=' + Date.now();
   $('wr-overlay').innerHTML = '';

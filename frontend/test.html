@@ -7,25 +7,31 @@
 <style>
   :root {
     --blue:#1e56d6; --blue-soft:#e8f0fe; --ink:#1c2333;
-    --muted:#7a8699; --bg:#f6f8fc; --card:#fff;
+    --muted:#7a8699; --bg:#f6f8fc; --card:#fff; --line:#e6e9f0;
     --r:14px; --sh:0 2px 10px rgba(28,35,51,.07);
   }
   * { box-sizing:border-box; margin:0; }
   body {
     font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     background:var(--bg); color:var(--ink);
-    padding:28px clamp(16px,5vw,56px) 100px;
+    padding:28px 16px 90px;
   }
 
+  .lab { max-width:960px; margin:0 auto; }
+
   /* 헤더 */
-  header { margin-bottom:26px; }
+  header { margin-bottom:22px; }
   h1 { font-size:22px; font-weight:800; letter-spacing:-.02em; }
   .sub { font-size:13px; color:var(--muted); margin-top:4px; }
 
-  /* 섹션 제목 */
+  /* 섹션을 카드로 분리 */
+  .section {
+    background:var(--card); border:1px solid var(--line); border-radius:var(--r);
+    box-shadow:var(--sh); padding:20px; margin-bottom:16px;
+  }
   .section-title {
     display:flex; align-items:center; gap:8px;
-    font-size:14px; font-weight:700; margin:30px 0 12px;
+    font-size:14px; font-weight:700; margin-bottom:12px;
   }
   .section-title::before {
     content:''; width:4px; height:14px;
@@ -35,9 +41,9 @@
   /* 갤러리 카드 */
   .gallery { display:flex; flex-wrap:wrap; gap:12px; }
   .card {
-    background:var(--card); border:2px solid transparent; border-radius:var(--r);
-    padding:8px; cursor:pointer; box-shadow:var(--sh);
-    transition:transform .15s, box-shadow .15s; text-align:center;
+    background:var(--card); border:2px solid var(--line); border-radius:10px;
+    padding:8px; cursor:pointer;
+    transition:transform .15s, box-shadow .15s, border-color .15s; text-align:center;
   }
   .card:hover { transform:translateY(-2px); box-shadow:0 6px 18px rgba(28,35,51,.12); }
   .card.sel { border-color:var(--blue); background:var(--blue-soft); }
@@ -45,12 +51,12 @@
   .card span { display:block; font-size:11px; color:var(--muted); margin-top:6px; }
 
   /* 뷰어 */
-  .hint { font-size:12px; color:var(--muted); margin-bottom:10px; }
+  .hint { font-size:12px; color:var(--muted); margin-bottom:12px; }
   .viewer { display:none; grid-template-columns:1fr 1fr; gap:16px;
-            max-width:920px; margin:6px 0 14px; align-items:start; }
-  .viewer:has(#v-orig[src]) { display:grid; }
-  .pane { position:relative; border-radius:var(--r); overflow:hidden;
-          box-shadow:var(--sh); background:var(--card); }
+            margin:6px 0 14px; align-items:start; }
+  .viewer.show { display:grid; }
+  .pane { position:relative; border-radius:10px; overflow:hidden;
+          border:1px solid var(--line); background:#f1f3f8; }
   .pane img { width:100%; display:block; }
   .pane .label {
     position:absolute; top:10px; left:10px;
@@ -64,7 +70,7 @@
          border-radius:3px; transform:translateY(-100%); font-weight:700; }
 
   /* 버튼 */
-  .btn-row { display:flex; gap:8px; margin:6px 0; }
+  .btn-row { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:4px; }
   .btn { border:none; border-radius:10px; padding:10px 18px;
          font-size:13px; font-weight:700; cursor:pointer; transition:.15s; }
   .btn-primary { background:var(--blue); color:#fff; }
@@ -72,8 +78,13 @@
   .btn-ghost { background:#fff; color:var(--blue); border:1px solid var(--blue); }
   .btn-ghost:hover { background:var(--blue-soft); }
 
+  #result-file {
+    font-size:12px; padding:8px 10px; border:1px solid var(--line);
+    border-radius:10px; background:#fff;
+  }
+
   /* 지표 */
-  .metrics { margin:10px 0; font-size:13px; font-weight:800; color:var(--blue); }
+  .metrics { margin-top:10px; font-size:13px; font-weight:800; color:var(--blue); }
 
   /* 터미널 */
   #out {
@@ -81,11 +92,10 @@
     font-family:ui-monospace, SFMono-Regular, monospace;
     font-size:11.5px; line-height:1.55; padding:14px 16px;
     border-radius:12px; max-height:340px; overflow:auto;
-    white-space:pre-wrap; margin-top:18px; box-shadow:var(--sh);
+    white-space:pre-wrap;
   }
 
-  .hidden { display: none !important; }
-  #result-file { font-size: 12px; }
+  .hidden { display:none !important; }
 
   /* 모드 토글 */
   .mode-toggle {
@@ -100,48 +110,59 @@
 </head>
 <body>
 
-<header>
-  <h1>🧪 Carret 테스트 랩</h1>
-  <div class="sub">데이터셋 페어를 눈으로 선택하고, 정직성을 눈으로 검증합니다</div>
-</header>
+<div class="lab">
+  <header>
+    <h1>🧪 Carret 테스트 랩</h1>
+    <div class="sub">데이터셋 페어를 눈으로 선택하고, 정직성을 눈으로 검증합니다</div>
+  </header>
 
-<div class="section-title">데이터셋 페어</div>
-<div id="gallery" class="gallery"></div>
+  <section class="section">
+    <div class="section-title">데이터셋 페어</div>
+    <div id="gallery" class="gallery"></div>
 
-<div class="hint">페어를 클릭하면 아래에 원본 | 결과가 나란히 표시됩니다</div>
-<div class="viewer">
-  <div class="pane"><span class="label">원본</span><img id="v-orig" alt="원본"></div>
-  <div class="pane"><span class="label">결과</span><img id="v-after" alt="결과"><div id="o-after"></div></div>
-</div>
+    <div class="hint" style="margin-top:14px;">페어를 클릭하면 아래에 원본 | 결과가 나란히 표시됩니다</div>
+    <div class="viewer" id="pair-viewer">
+      <div class="pane"><span class="label">원본</span><img id="v-orig" alt="원본"></div>
+      <div class="pane"><span class="label">결과</span><img id="v-after" alt="결과"><div id="o-after"></div></div>
+    </div>
 
-<div id="metrics" class="metrics"></div>
-<div class="btn-row">
-  <button id="btn-anchor" class="btn btn-primary">anchor 테스트</button>
-  <button id="btn-all" class="btn btn-ghost">전체 페어</button>
-</div>
+    <div id="metrics" class="metrics"></div>
+    <div class="btn-row">
+      <button id="btn-anchor" class="btn btn-primary">anchor 테스트</button>
+      <button id="btn-all" class="btn btn-ghost">전체 페어</button>
+    </div>
+  </section>
 
-<div class="section-title">업로드 원본</div>
-<div id="origs" class="gallery"></div>
-<div class="btn-row">
-  <button id="btn-detect" class="btn btn-ghost">선택 원본 detect</button>
-</div>
+  <section class="section">
+    <div class="section-title">업로드 원본</div>
+    <div id="origs" class="gallery"></div>
+    <div class="btn-row">
+      <button id="btn-detect" class="btn btn-ghost">선택 원본 detect</button>
+    </div>
+  </section>
 
-<div class="section-title">생성 건너뛰고 결과 이미지로 테스트</div>
-<div class="hint">
-  위에서 원본을 선택하고, 이미 만들어둔 결과 이미지를 올리면
-  fal.ai generate() 없이 verify → judge 만 바로 돌립니다 (studio_white 고정)
-</div>
-<div class="btn-row">
-  <input type="file" id="result-file" accept="image/*">
-  <button id="btn-with-result" class="btn btn-primary">결과 이미지로 실행</button>
-</div>
-<div class="viewer" id="wr-viewer" style="grid-template-columns:1fr 1fr;">
-  <div class="pane"><span class="label">원본</span><img id="wr-orig" alt="원본"></div>
-  <div class="pane"><span class="label">제공한 결과</span><img id="wr-after" alt="결과"><div id="wr-overlay"></div></div>
-</div>
-<div id="wr-metrics" class="metrics"></div>
+  <section class="section">
+    <div class="section-title">생성 건너뛰고 결과 이미지로 테스트</div>
+    <div class="hint">
+      위 "업로드 원본"에서 원본을 선택하고, 이미 만들어둔 결과 이미지를 올리면
+      fal.ai generate() 없이 verify → judge 만 바로 돌립니다 (studio_white 고정)
+    </div>
+    <div class="btn-row">
+      <input type="file" id="result-file" accept="image/*">
+      <button id="btn-with-result" class="btn btn-primary">결과 이미지로 실행</button>
+    </div>
+    <div class="viewer" id="wr-viewer">
+      <div class="pane"><span class="label">원본</span><img id="wr-orig" alt="원본"></div>
+      <div class="pane"><span class="label">제공한 결과</span><img id="wr-after" alt="결과"><div id="wr-overlay"></div></div>
+    </div>
+    <div id="wr-metrics" class="metrics"></div>
+  </section>
 
-<pre id="out"></pre>
+  <section class="section">
+    <div class="section-title">로그</div>
+    <pre id="out">대기 중...</pre>
+  </section>
+</div>
 
 <a class="mode-toggle" href="/">🛍️ 제품 모드</a>
 <script src="/js/dev.js"></script>
