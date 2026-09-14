@@ -2,71 +2,88 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="data:image/svg+xml,<text xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🥕</text></text>">
 <title>Carret 🥕</title>
 <link rel="stylesheet" href="css/style.css">
 </head>
-<a class="mode-toggle" href="/test.html">🧪 테스트 모드</a>
 <body>
 
-<h1>Carret 🥕</h1>
-<p>대충 찍은 사진 → 상품 사진</p>
+<a class="mode-toggle" href="/test.html">🧪 테스트 모드</a>
 
-<div id="dropzone">이미지를 드래그하거나 클릭해서 선택</div>
-<input type="file" id="file" accept="image/*" hidden>
+<main class="app">
+  <header class="app-header">
+    <h1>Carret 🥕</h1>
+    <p class="subtitle">대충 찍은 사진 → 정직한 상품 사진</p>
+  </header>
 
-<p class="divider">또는</p>
-<input id="url-input" placeholder="이미지 URL 붙여넣기">
-<button id="url-run">URL 업로드</button>
+  <section class="upload-card">
+    <div id="dropzone">
+      <span class="dropzone-icon">📷</span>
+      <span>이미지를 드래그하거나 클릭해서 선택</span>
+    </div>
+    <input type="file" id="file" accept="image/*" hidden>
 
-<select id="preset">
-  <option value="studio_white">스튜디오 화이트</option>
-  <option value="warm_wood">따뜻한 우드</option>
-  <option value="minimal_gray">미니멀 그레이</option>
-</select>
-<button id="run" disabled>변환하기</button>
-<p id="status"></p>
+    <div class="or-divider"><span>또는</span></div>
 
-<div class="box">
-  <div>
-    <h3>원본</h3>
-    <img id="before" hidden>
-  </div>
-  <div id="meta-chips" style="display:none; margin-bottom:.8rem; display:flex; flex-wrap:wrap; gap:.4rem;">
-  <span class="chip chip-item">📷 <span id="meta-item">—</span></span>
-  <span id="meta-considered-wrap" style="display:none;">
-    <span style="color:#666; font-size:.85rem;">검사:</span>
-    <span id="meta-considered"></span>
-  </span>
-  </div>
-  <div>
-    <h3>결과</h3>
-    <div id="after-wrap" class="viewport">
-      <div class="canvas" id="result-canvas">
-        <img id="after" hidden>
-        <div id="overlay"></div>
+    <div class="url-row">
+      <input id="url-input" placeholder="이미지 URL 붙여넣기">
+      <button id="url-run" class="btn btn-ghost">URL 업로드</button>
+    </div>
+
+    <button id="run" class="btn btn-primary btn-block" disabled>변환하기</button>
+    <p id="status"></p>
+  </section>
+
+  <section class="result-grid">
+    <div class="panel">
+      <h3>원본</h3>
+      <div class="image-frame">
+        <img id="before" hidden>
       </div>
     </div>
-    <p id="gate-badge" hidden></p>
-    <div id="quality-box" class="quality-card hidden">
-      <div class="scores" id="quality-scores"></div>
-      <div class="analysis" id="quality-analysis"></div>
-    </div>
-    <div id="feedback-box" class="feedback-card hidden">
-      <p class="feedback-title">이 결과가 어땠나요?</p>
-      <div id="feedback-stars" class="stars">
-        <button type="button" class="star" data-value="1">★</button>
-        <button type="button" class="star" data-value="2">★</button>
-        <button type="button" class="star" data-value="3">★</button>
-        <button type="button" class="star" data-value="4">★</button>
-        <button type="button" class="star" data-value="5">★</button>
+
+    <div class="panel">
+      <h3>결과</h3>
+
+      <div id="meta-chips" class="meta-chips hidden">
+        <span class="chip chip-item">📷 <span id="meta-item">—</span></span>
+        <span id="meta-considered-wrap" class="hidden">
+          <span class="meta-label">검사:</span>
+          <span id="meta-considered"></span>
+        </span>
       </div>
-      <textarea id="feedback-comment" placeholder="코멘트 (선택)"></textarea>
-      <button id="feedback-submit">피드백 보내기</button>
-      <p id="feedback-status"></p>
+
+      <div id="after-wrap" class="viewport">
+        <div class="canvas" id="result-canvas">
+          <img id="after" hidden>
+          <div id="overlay"></div>
+        </div>
+      </div>
+
+      <p id="gate-badge" hidden></p>
+
+      <div id="quality-box" class="quality-card hidden">
+        <div class="scores" id="quality-scores"></div>
+        <div class="analysis" id="quality-analysis"></div>
+      </div>
+
+      <div id="feedback-box" class="feedback-card hidden">
+        <p class="feedback-title">이 결과가 어땠나요?</p>
+        <div id="feedback-stars" class="stars">
+          <button type="button" class="star" data-value="1">★</button>
+          <button type="button" class="star" data-value="2">★</button>
+          <button type="button" class="star" data-value="3">★</button>
+          <button type="button" class="star" data-value="4">★</button>
+          <button type="button" class="star" data-value="5">★</button>
+        </div>
+        <textarea id="feedback-comment" placeholder="코멘트 (선택)"></textarea>
+        <button id="feedback-submit" class="btn btn-primary">피드백 보내기</button>
+        <p id="feedback-status"></p>
+      </div>
     </div>
-  </div>
-</div>
+  </section>
+</main>
 
 <!-- 순서 중요: render → api → main -->
 <script src="js/render.js"></script>
