@@ -1,5 +1,7 @@
 # Carret 🥕
 
+*[한국어](Readme.ko.md)*
+
 **Turn casual secondhand photos into honest product photos.**
 
 Carret is an AI pipeline that transforms roughly-shot used-item photos
