@@ -4,8 +4,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from app.api.routes import feedback
 from app.api.routes import images
 from app.api.routes import transform
+from app.core import db
 from app.core.config import settings
 
 import time
@@ -19,6 +21,8 @@ logging.getLogger("google_genai").setLevel(logging.WARNING)
 
 app = FastAPI(title="SellerShot API", version="0.1.0")
 
+db.init_db()
+
 # CORS (프론트 분리용)
 app.add_middleware(
     CORSMiddleware,
@@ -30,6 +34,7 @@ app.add_middleware(
 # 1) API 라우터
 app.include_router(images.router, prefix="/api/images", tags=["images"])
 app.include_router(transform.router, prefix="/api", tags=["transform"])
+app.include_router(feedback.router, prefix="/api", tags=["feedback"])
 
 # 2) 결과 파일 서빙
 app.mount("/storage", StaticFiles(directory=settings.storage_dir), name="storage")
