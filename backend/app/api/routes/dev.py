@@ -7,10 +7,10 @@
 """
 import json
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from app.services import detector, storage
+from app.services import detector, pipeline, storage
 from app.util import evaluator
 
 router = APIRouter()
@@ -71,6 +71,22 @@ def dev_verify(req: DevPairReq):
     return {"anchors": anchors, "checks": checks,
             "bubbles": detector.bubbles(checks),
             "gate_passed": detector.all_preserved(checks)}
+
+
+@router.post("/transform-with-result")
+async def dev_transform_with_result(
+    file_id: str = Form(...),
+    preset: str = Form(...),
+    result: UploadFile = File(...),
+):
+    """generate() 를 건너뛰고, 업로드한 이미지를 결과로 삼아 이후 단계
+    (verify/judge)만 돌린다 — fal.ai 를 매번 기다리지 않고 반복 테스트하기 위함."""
+    data = await result.read()
+    try:
+        out = pipeline.run_transform_with_result(file_id, preset, data)
+    except FileNotFoundError:
+        raise HTTPException(404, "원본 없음")
+    return {"result_url": storage.result_url(file_id, preset), **out}
 
 
 @router.post("/eval-pair")

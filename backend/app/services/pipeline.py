@@ -183,6 +183,43 @@ def run_transform(file_id: str, preset_key: str) -> dict:
         "checks": out["checks"],
         "bubbles": out["bubbles"],
         "gate_passed": out["gate_passed"],
-        "item": out.get("item", "object"),        
+        "item": out.get("item", "object"),
         "considered": out.get("considered", []),
+    }
+
+
+def run_transform_with_result(file_id: str, preset_key: str, result_bytes: bytes) -> dict:
+    """dev 전용: generate() 를 건너뛰고 주어진 결과 이미지로 이후 단계
+    (verify/judge/finalize)만 돌린다 — fal.ai 를 매번 기다리지 않고
+    verify/judge 프롬프트를 반복 튜닝하기 위함.
+
+    노드 함수는 run_transform 과 완전히 동일한 것을 그대로 호출한다
+    (로직 복사 금지: 테스트는 프로덕션을 호출하지, 베끼지 않는다).
+    """
+    t0 = time.time()
+    s: State = {"file_id": file_id, "preset_key": preset_key}
+    s.update(load(s))
+    s.update(classify_node(s))
+    s.update(detect(s))
+
+    result_name = f"{file_id}_{preset_key}.jpg"
+    storage.save("result", result_name, result_bytes)   # 실제 경로와 동일하게 정규화됨
+    s["result"] = result_bytes
+    s["result_name"] = result_name
+    s["prompt_used"] = "TEST: provided result (generate skipped)"
+
+    s.update(verify(s))
+    s.update(save_inspect(s))
+    s.update(run_judge(s))
+    s.update(finalize(s))
+
+    logger.info(f"[test] total {time.time() - t0:.1f}s (generate skipped)")
+    return {
+        "result_name": s["result_name"],
+        "prompt_used": s["prompt_used"],
+        "checks": s["checks"],
+        "bubbles": s["bubbles"],
+        "gate_passed": s["gate_passed"],
+        "item": s.get("item", "object"),
+        "considered": s.get("considered", []),
     }
