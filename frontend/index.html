@@ -41,14 +41,29 @@
   </div>
   <div>
     <h3>결과</h3>
-    <div id="after-wrap">
-      <img id="after" hidden>
-      <div id="overlay"></div>
+    <div id="after-wrap" class="viewport">
+      <div class="canvas" id="result-canvas">
+        <img id="after" hidden>
+        <div id="overlay"></div>
+      </div>
     </div>
     <p id="gate-badge" hidden></p>
     <div id="quality-box" class="quality-card hidden">
       <div class="scores" id="quality-scores"></div>
       <div class="analysis" id="quality-analysis"></div>
+    </div>
+    <div id="feedback-box" class="feedback-card hidden">
+      <p class="feedback-title">이 결과가 어땠나요?</p>
+      <div id="feedback-stars" class="stars">
+        <button type="button" class="star" data-value="1">★</button>
+        <button type="button" class="star" data-value="2">★</button>
+        <button type="button" class="star" data-value="3">★</button>
+        <button type="button" class="star" data-value="4">★</button>
+        <button type="button" class="star" data-value="5">★</button>
+      </div>
+      <textarea id="feedback-comment" placeholder="코멘트 (선택)"></textarea>
+      <button id="feedback-submit">피드백 보내기</button>
+      <p id="feedback-status"></p>
     </div>
   </div>
 </div>
