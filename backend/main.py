@@ -1,6 +1,7 @@
+import mimetypes
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -9,6 +10,7 @@ from app.api.routes import images
 from app.api.routes import transform
 from app.core import db
 from app.core.config import settings
+from app.services import storage
 
 import time
 from app.core.logsetup import setup_logging
@@ -36,8 +38,20 @@ app.include_router(images.router, prefix="/api/images", tags=["images"])
 app.include_router(transform.router, prefix="/api", tags=["transform"])
 app.include_router(feedback.router, prefix="/api", tags=["feedback"])
 
-# 2) 결과 파일 서빙
-app.mount("/storage", StaticFiles(directory=settings.storage_dir), name="storage")
+# 2) 결과 파일 서빙 — storage 추상화를 거친다 (STORAGE_BACKEND=local/s3 무관하게 동일 URL로 서빙)
+@app.get("/storage/{kind}/{name:path}")
+def serve_storage(kind: str, name: str):
+    if kind == "dataset":   # 평가셋 고정 자산 — 항상 로컬, 백엔드 전환과 무관
+        path = Path(settings.storage_dir) / "dataset" / name
+        if not path.exists():
+            raise HTTPException(404, "파일 없음")
+        data = path.read_bytes()
+    else:
+        data = storage.load(kind, name)
+        if data is None:
+            raise HTTPException(404, "파일 없음")
+    media_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+    return Response(content=data, media_type=media_type)
 
 if settings.dev_tools:
     from app.api.routes import dev

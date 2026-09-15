@@ -27,6 +27,14 @@ httpx>=0.27
 # ===== test =====
 pytest>=8.0
 
-langfuse>=2.50,<3
+langfuse>=4,<5
 
 boto3
+
+# ===== AI: 벡터 유사도(DINOv2) =====
+# CPU 전용 wheel: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# (Dockerfile이 이 순서로 설치 — 여기 그냥 pip install -r 만 돌리면 기본 PyPI가
+# CUDA 런타임을 딸려서 받아온다, GPU 없는 이 배포 환경엔 불필요하게 무겁다)
+torch>=2.0
+torchvision>=0.17
+transformers>=4.40

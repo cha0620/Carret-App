@@ -5,8 +5,9 @@
   0.5) classify : 물건 식별 + 루브릭(considered) 수립  ⭐ 신규
   1) detect   : 원본 → 하자 의미 앵커 (what/where)
   2) generate : 배경 교체
+  2.5) score_similarity : 원본 vs 결과 DINOv2 코사인 유사도 (벡터 점수)  ⭐ 신규
   3) verify   : 결과 → 보존 여부 + 결과 좌표 (말풍선용)
-  4) judge    : 품질 성적표 (캐시)
+  4) judge    : 품질 성적표 (캐시) — fidelity/realism/trust를 Langfuse 트레이스에도 점수로 부착
   5) finalize : bubbles + 로깅
 """
 import json
@@ -17,8 +18,10 @@ from typing import TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from app.core.config import settings
+from app.core.tracing import flush, observe, score
 from app.prompts.presets import get_preset
-from app.services import detector, judge, storage
+from app.prompts.rubric import AXES
+from app.services import detector, embedder, judge, storage
 from app.services.generator import _generate_ai
 
 logger = logging.getLogger("carret.pipeline")
@@ -34,6 +37,7 @@ class State(TypedDict, total=False):
     anchors: list
     result: bytes
     result_name: str
+    visual_similarity: float | None   # ⭐ DINOv2 코사인 유사도
     checks: list
     gate_passed: bool | None
     bubbles: list
@@ -42,11 +46,11 @@ class State(TypedDict, total=False):
 
 # ── 노드 ─────────────────────────────────────────
 def load(s: State) -> dict:
-    original_path = storage.original_of(s["file_id"])
-    if original_path is None:
+    original = storage.load_original(s["file_id"])
+    if original is None:
         raise FileNotFoundError(s["file_id"])
     return {
-        "original": original_path.read_bytes(),
+        "original": original,
         "preset": get_preset(s["preset_key"]),
     }
 
@@ -77,11 +81,22 @@ def generate(s: State) -> dict:
     }
 
 
+def score_similarity(s: State) -> dict:
+    """원본 vs 결과 DINOv2 코사인 유사도 — VLM judge와 별개인 로컬 벡터 점수."""
+    try:
+        sim = embedder.cosine_similarity(s["original"], s["result"])
+    except Exception as e:
+        print(f"[score_similarity] 실패(무시): {e}")
+        return {"visual_similarity": None}
+    score("visual_similarity", sim, data_type="NUMERIC")
+    return {"visual_similarity": sim}
+
+
 def verify(s: State) -> dict:
     checks, gate_passed = [], None
     if s["anchors"]:
         try:
-            saved = (storage.BASE / "result" / s["result_name"]).read_bytes()
+            saved = storage.load("result", s["result_name"])
             checks = detector.verify_and_locate(
                 saved, s["anchors"],
                 s.get("item", "object"), s.get("considered", []))
@@ -102,16 +117,16 @@ def save_inspect(s: State) -> dict:
             "anchors": s["anchors"],
             "checks": s["checks"],
             "gate_passed": s["gate_passed"],
+            "visual_similarity": s.get("visual_similarity"),   # ⭐
         }, ensure_ascii=False, indent=2).encode("utf-8"),
     )
     return {}
 
 
 def run_judge(s: State) -> dict:
-    """품질 성적표 (캐시)."""
-    quality_path = (storage.BASE / "quality"
-                    / f"{s['file_id']}_{s['preset_key']}.json")
-    if not quality_path.exists():
+    """품질 성적표 (캐시) — 새로 계산한 경우 Langfuse 트레이스에 축별 점수도 부착."""
+    quality_name = f"{s['file_id']}_{s['preset_key']}.json"
+    if not storage.exists("quality", quality_name):
         try:
             report = judge.judge(s["original"], s["result"])
         except Exception as e:
@@ -123,6 +138,11 @@ def run_judge(s: State) -> dict:
                 json.dumps(report, ensure_ascii=False,
                            indent=2).encode("utf-8"),
             )
+            try:
+                for axis in AXES:
+                    score(axis, report[axis], data_type="NUMERIC")
+            except Exception as e:
+                print(f"[judge] 점수 부착 실패(무시): {e}")
     return {}
 
 
@@ -143,6 +163,7 @@ def build():
     g = StateGraph(State)
     for n, f in (("load", load), ("classify", classify_node),
                  ("detect", detect), ("generate", generate),
+                 ("score_similarity", score_similarity),
                  ("verify", verify), ("save_inspect", save_inspect),
                  ("run_judge", run_judge), ("finalize", finalize)):
         g.add_node(n, f)
@@ -151,7 +172,8 @@ def build():
     g.add_edge("load", "classify")        # ⭐ 신규 단계
     g.add_edge("classify", "detect")
     g.add_edge("detect", "generate")
-    g.add_edge("generate", "verify")
+    g.add_edge("generate", "score_similarity")   # ⭐ 신규 단계
+    g.add_edge("score_similarity", "verify")
     g.add_edge("verify", "save_inspect")
     g.add_edge("save_inspect", "run_judge")
     g.add_edge("run_judge", "finalize")
@@ -167,25 +189,42 @@ def run_transform(file_id: str, preset_key: str) -> dict:
 
     # pass 모드 = 지름길 (그래프 안 탐)
     if settings.pipeline_mode == "mock":
-        original = storage.original_of(file_id)
+        original = storage.load_original(file_id)
         if original is None:
             raise FileNotFoundError(file_id)
         result_name = f"{file_id}_{preset_key}.jpg"
-        storage.save("result", result_name, original.read_bytes())
+        storage.save("result", result_name, original)
         return {"result_name": result_name, "prompt_used": "PASS-THROUGH",
                 "checks": [], "bubbles": [], "gate_passed": None,"item": "object", "considered": []}
 
-    out = GRAPH.invoke({"file_id": file_id, "preset_key": preset_key})
+    try:
+        with observe("transform", as_type="span",
+                     input={"file_id": file_id, "preset_key": preset_key},
+                     metadata={"pipeline_mode": settings.pipeline_mode}) as obs:
+            out = GRAPH.invoke({"file_id": file_id, "preset_key": preset_key})
+            result = {
+                "result_name": out["result_name"],
+                "prompt_used": out["prompt_used"],
+                "checks": out["checks"],
+                "bubbles": out["bubbles"],
+                "gate_passed": out["gate_passed"],
+                "item": out.get("item", "object"),
+                "considered": out.get("considered", []),
+                "visual_similarity": out.get("visual_similarity"),
+            }
+            if obs is not None:
+                obs.update(output={
+                    "gate_passed": result["gate_passed"],
+                    "bubbles": len(result["bubbles"]),
+                    "item": result["item"],
+                    "visual_similarity": result["visual_similarity"],
+                })
+    finally:
+        # 성공/실패(예외) 상관없이 이번 요청의 트레이스는 즉시 내보낸다 —
+        # 실패 트레이스가 배치 주기까지 안 보내지고 프로세스 종료로 유실되는 걸 방지.
+        flush()
     logger.info(f"total {time.time() - t0:.1f}s")
-    return {
-        "result_name": out["result_name"],
-        "prompt_used": out["prompt_used"],
-        "checks": out["checks"],
-        "bubbles": out["bubbles"],
-        "gate_passed": out["gate_passed"],
-        "item": out.get("item", "object"),
-        "considered": out.get("considered", []),
-    }
+    return result
 
 
 def run_transform_with_result(file_id: str, preset_key: str, result_bytes: bytes) -> dict:
@@ -197,29 +236,45 @@ def run_transform_with_result(file_id: str, preset_key: str, result_bytes: bytes
     (로직 복사 금지: 테스트는 프로덕션을 호출하지, 베끼지 않는다).
     """
     t0 = time.time()
-    s: State = {"file_id": file_id, "preset_key": preset_key}
-    s.update(load(s))
-    s.update(classify_node(s))
-    s.update(detect(s))
+    try:
+        with observe("transform_dev", as_type="span",
+                     input={"file_id": file_id, "preset_key": preset_key},
+                     metadata={"generate_skipped": True}) as obs:
+            s: State = {"file_id": file_id, "preset_key": preset_key}
+            s.update(load(s))
+            s.update(classify_node(s))
+            s.update(detect(s))
 
-    result_name = f"{file_id}_{preset_key}.jpg"
-    storage.save("result", result_name, result_bytes)   # 실제 경로와 동일하게 정규화됨
-    s["result"] = result_bytes
-    s["result_name"] = result_name
-    s["prompt_used"] = "TEST: provided result (generate skipped)"
+            result_name = f"{file_id}_{preset_key}.jpg"
+            storage.save("result", result_name, result_bytes)   # 실제 경로와 동일하게 정규화됨
+            s["result"] = result_bytes
+            s["result_name"] = result_name
+            s["prompt_used"] = "TEST: provided result (generate skipped)"
 
-    s.update(verify(s))
-    s.update(save_inspect(s))
-    s.update(run_judge(s))
-    s.update(finalize(s))
+            s.update(score_similarity(s))
+            s.update(verify(s))
+            s.update(save_inspect(s))
+            s.update(run_judge(s))
+            s.update(finalize(s))
 
+            result = {
+                "result_name": s["result_name"],
+                "prompt_used": s["prompt_used"],
+                "checks": s["checks"],
+                "bubbles": s["bubbles"],
+                "gate_passed": s["gate_passed"],
+                "item": s.get("item", "object"),
+                "considered": s.get("considered", []),
+                "visual_similarity": s.get("visual_similarity"),
+            }
+            if obs is not None:
+                obs.update(output={
+                    "gate_passed": result["gate_passed"],
+                    "bubbles": len(result["bubbles"]),
+                    "item": result["item"],
+                    "visual_similarity": result["visual_similarity"],
+                })
+    finally:
+        flush()
     logger.info(f"[test] total {time.time() - t0:.1f}s (generate skipped)")
-    return {
-        "result_name": s["result_name"],
-        "prompt_used": s["prompt_used"],
-        "checks": s["checks"],
-        "bubbles": s["bubbles"],
-        "gate_passed": s["gate_passed"],
-        "item": s.get("item", "object"),
-        "considered": s.get("considered", []),
-    }
+    return result

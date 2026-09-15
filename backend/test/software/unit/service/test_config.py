@@ -38,3 +38,19 @@ def test_settings_langfuse_keys_can_be_forced_empty_via_env(monkeypatch):
     s = Settings()
     assert s.langfuse_public_key == ""
     assert s.langfuse_secret_key == ""
+
+
+def test_langfuse_host_reads_langfuse_host_env(monkeypatch):
+    monkeypatch.setenv("LANGFUSE_HOST", "https://example-host.langfuse.com")
+    s = Settings()
+    assert s.langfuse_host == "https://example-host.langfuse.com"
+
+
+def test_langfuse_host_reads_langfuse_base_url_env(monkeypatch):
+    """.env 관례가 LANGFUSE_BASE_URL 이라, 이 이름으로도 반영돼야 한다
+    (과거엔 필드명이 LANGFUSE_HOST 로만 매핑돼서 .env의 LANGFUSE_BASE_URL이
+    조용히 무시되던 회귀 방지 — 리전이 안 맞아도 에러 없이 기본 호스트로
+    빠져서 발견이 늦었다)."""
+    monkeypatch.setenv("LANGFUSE_BASE_URL", "https://us.cloud.langfuse.com")
+    s = Settings()
+    assert s.langfuse_host == "https://us.cloud.langfuse.com"

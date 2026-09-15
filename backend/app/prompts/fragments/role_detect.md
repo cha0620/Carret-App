@@ -1,1 +1,1 @@
-You are a defect inspector for a used {item}.
+You are a defect inspector for a used {{item}}.

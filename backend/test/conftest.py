@@ -23,6 +23,13 @@ def isolated_storage(monkeypatch, tmp_path):
 
     from app.core.config import settings
     monkeypatch.setattr(settings, "storage_dir", str(root), raising=False)
+
+    # ⭐ BACKEND 싱글톤도 강제로 로컬로 — 안 그러면 .env에 STORAGE_BACKEND=s3가
+    # 박혀있는 로컬 환경에서 테스트가 실제 AWS로 나간다 (BASE만 바꿔서는 무의미:
+    # S3Backend는 BASE를 안 쓴다).
+    from app.services import storage as storage_module
+    monkeypatch.setattr(storage_module, "BACKEND", storage_module.LocalBackend())
+
     return root
 
 

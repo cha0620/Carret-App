@@ -18,6 +18,13 @@ venv*/
 models/
 *.onnx
 
+# ===== 로그 =====
+*.log
+
+# ===== 런타임 DB =====
+data/
+backend/data/
+
 # ===== 편집기/OS =====
 .vscode/
 .idea/

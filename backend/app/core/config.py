@@ -1,3 +1,4 @@
+from pydantic import Field, AliasChoices
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Literal
 
@@ -40,12 +41,17 @@ class Settings(BaseSettings):              # ⭐ 대문자 클래스
 
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
-    langfuse_host: str = "https://cloud.langfuse.com"
+    langfuse_host: str = Field(
+        default="https://cloud.langfuse.com",
+        validation_alias=AliasChoices("LANGFUSE_HOST", "LANGFUSE_BASE_URL"),
+    )
 
     db_path: str = "data/carret.db"
     storage_backend: str = "local"      # "local" | "s3"
     s3_bucket: str = ""
     s3_prefix: str = "carret"
     aws_region: str = "ap-northeast-2"
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
 
 settings = Settings()          # ⭐ 인스턴스 = 소문자

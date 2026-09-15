@@ -20,25 +20,39 @@ logger = logging.getLogger("carret.storage")
 BASE = Path(settings.storage_dir)   # "./storage" — 로컬 백엔드 + dev 도구 공통 기준
 
 
+def _safe_path(kind: str, name: str) -> Path:
+    """BASE 밖으로 못 나가게 컨테인먼트 검증 (kind/name 이 신뢰 안 되는 입력일 수 있음,
+    예: /storage/{kind}/{name} HTTP 라우트)."""
+    path = (BASE / kind / name).resolve()
+    if not path.is_relative_to(BASE.resolve()):
+        raise ValueError(f"경로 이탈 시도: {kind}/{name}")
+    return path
+
+
 class LocalBackend:
     def save(self, kind: str, name: str, data: bytes) -> None:
-        path = BASE / kind / name
+        path = _safe_path(kind, name)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
 
     def load(self, kind: str, name: str) -> bytes | None:
-        path = BASE / kind / name
+        path = _safe_path(kind, name)
         return path.read_bytes() if path.exists() else None
 
     def exists(self, kind: str, name: str) -> bool:
-        return (BASE / kind / name).exists()
+        return _safe_path(kind, name).exists()
 
 
 class S3Backend:
     def __init__(self):
         self.bucket = settings.s3_bucket
         self.prefix = settings.s3_prefix
-        self.s3 = boto3.client("s3", region_name=settings.aws_region)
+        self.s3 = boto3.client(
+            "s3",
+            region_name=settings.aws_region,
+            aws_access_key_id=settings.aws_access_key_id or None,
+            aws_secret_access_key=settings.aws_secret_access_key or None,
+        )
 
     def _key(self, kind: str, name: str) -> str:
         return f"{self.prefix}/{kind}/{name}"
@@ -61,10 +75,13 @@ class S3Backend:
             return False
 
 
+_LOCAL = LocalBackend()   # 읽기 폴백 전용 — 백엔드 전환 전 저장된 로컬 fixture 접근용
+
+
 def _backend():
     if settings.storage_backend == "s3" and settings.s3_bucket:
         return S3Backend()
-    return LocalBackend()
+    return _LOCAL
 
 
 BACKEND = _backend()
@@ -76,15 +93,22 @@ def save(kind: str, name: str, data: bytes) -> None:
         raw = len(data)
         data = img_util.normalize(data)
         logger.info(f"[storage] {kind}/{name} {raw}→{len(data)}B")
-    BACKEND.save(kind, name, data)
+    BACKEND.save(kind, name, data)   # 쓰기는 항상 설정된 백엔드로만
 
 
 def load(kind: str, name: str) -> bytes | None:
-    return BACKEND.load(kind, name)
+    """설정된 백엔드에서 찾고, 없으면 로컬도 뒤진다 —
+    AWS/로컬 어디에 저장돼 있든 같은 페어를 돌려받기 위함."""
+    data = BACKEND.load(kind, name)
+    if data is None and BACKEND is not _LOCAL:
+        data = _LOCAL.load(kind, name)
+    return data
 
 
 def exists(kind: str, name: str) -> bool:
-    return BACKEND.exists(kind, name)
+    if BACKEND.exists(kind, name):
+        return True
+    return BACKEND is not _LOCAL and _LOCAL.exists(kind, name)
 
 
 def load_original(file_id: str) -> bytes | None:

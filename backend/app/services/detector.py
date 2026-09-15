@@ -17,29 +17,36 @@ from google import genai
 from google.genai import types
 
 from app.core.config import settings
+from app.core.tracing import gemini_usage as _usage
+from app.core.tracing import observe
 from app import prompts as P
 
 
 # ── 공통 ─────────────────────────────────────────
-def _call(image_bytes: bytes, prompt: str) -> dict:
+def _call(image_bytes: bytes, prompt: str, name: str = "vlm_call") -> dict:
     """공통 VLM 호출 (temp 0 + JSON 모드)."""
     client = genai.Client(api_key=settings.VLM_KEY)
-    resp = client.models.generate_content(
-        model=settings.VLM_MODEL,
-        contents=[
-            types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
-            prompt,
-        ],
-        config=types.GenerateContentConfig(
-            temperature=0,
-            response_mime_type="application/json",
-        ),
-    )
-    try:
-        return json.loads(resp.text)
-    except json.JSONDecodeError:
-        print(f"[detector] JSON 파싱 실패: {resp.text[:200]}")
-        return {}
+    with observe(name, as_type="generation", model=settings.VLM_MODEL,
+                 input=prompt) as obs:
+        resp = client.models.generate_content(
+            model=settings.VLM_MODEL,
+            contents=[
+                types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+                prompt,
+            ],
+            config=types.GenerateContentConfig(
+                temperature=0,
+                response_mime_type="application/json",
+            ),
+        )
+        try:
+            data = json.loads(resp.text)
+        except json.JSONDecodeError:
+            print(f"[detector] JSON 파싱 실패: {resp.text[:200]}")
+            data = {}
+        if obs is not None:
+            obs.update(output=data, usage_details=_usage(resp))
+        return data
 
 
 def _box(d: dict) -> dict:
@@ -53,7 +60,7 @@ def _box(d: dict) -> dict:
 def classify(image_bytes: bytes) -> dict:
     """물건 식별 + 루브릭 수립 (실패 시 개방형 폴백)."""
     try:
-        out = _call(image_bytes, P.CLASSIFY_PROMPT)
+        out = _call(image_bytes, P.classify_prompt(), "classify")
         return {
             "item": str(out.get("item", "object")).strip() or "object",
             "considered": [str(c).strip()
@@ -64,8 +71,9 @@ def classify(image_bytes: bytes) -> dict:
         return {"item": "object", "considered": []}
 
 
-def detect_defects(image_bytes: bytes, item: str, considered: list) -> list:
-    data = _call(image_bytes, P.detect_prompt(item, considered))
+def detect_defects(image_bytes: bytes, item: str = "object",
+                    considered: list | None = None) -> list:
+    data = _call(image_bytes, P.detect_prompt(item, considered or []), "detect")
     anchors = []
     for d in data.get("defects", []):
         cat = str(d.get("category", "other")).strip()
@@ -83,7 +91,7 @@ def verify_and_locate(image_bytes, anchors,
                       item="object", considered=None) -> list:
     """결과 → 보존 여부 + 결과 좌표."""
     considered = considered or []
-    data = _call(image_bytes, P.verify_prompt(anchors, item, considered))
+    data = _call(image_bytes, P.verify_prompt(anchors, item, considered), "verify")
     checks = [c for c in data.get("checks", []) if _valid_check(c)]
     # 보존+좌표 있는 것만 _box 로 정제
     return [{**c, **_box(c)} if c.get("preserved") and _has_box(c) else c
@@ -109,7 +117,7 @@ def bubbles(checks: list) -> list:
 # ── 측정 경로 (eval/dev 전용) ────────────────────
 def detect_with_boxes(image_bytes: bytes) -> list:
     """좌표付き 검출 (recall/precision 계측용)."""
-    data = _call(image_bytes, P.DETECT_BOX_PROMPT)
+    data = _call(image_bytes, P.detect_box_prompt(), "detect_with_boxes")
     return [{**d, **_box(d)} for d in data.get("defects", [])
             if _valid_anchor(d) and _has_box(d)]
 
@@ -119,17 +127,22 @@ def match_anchors(orig: list, result: list) -> dict:
     if not orig or not result:
         return {"matched": [], "missed": orig, "new": result}
 
+    prompt = P.match_prompt(orig, result)
     client = genai.Client(api_key=settings.VLM_KEY)
-    resp = client.models.generate_content(
-        model=settings.VLM_MODEL,
-        contents=[P.match_prompt(orig, result)],
-        config=types.GenerateContentConfig(
-            temperature=0, response_mime_type="application/json"),
-    )
-    try:
-        matches = json.loads(resp.text).get("matches", [])
-    except json.JSONDecodeError:
-        matches = []
+    with observe("match", as_type="generation", model=settings.VLM_MODEL,
+                 input=prompt) as obs:
+        resp = client.models.generate_content(
+            model=settings.VLM_MODEL,
+            contents=[prompt],
+            config=types.GenerateContentConfig(
+                temperature=0, response_mime_type="application/json"),
+        )
+        try:
+            matches = json.loads(resp.text).get("matches", [])
+        except json.JSONDecodeError:
+            matches = []
+        if obs is not None:
+            obs.update(output={"matches": matches}, usage_details=_usage(resp))
 
     matched, new, hit = [], [], set()
     for j, r in enumerate(result):

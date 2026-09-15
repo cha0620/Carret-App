@@ -31,18 +31,19 @@ class DevNameReq(BaseModel):
 
 
 # ---- 입력 해결사 (dev 유일의 소유 코드: 입력 선택 + 404) ----
+# storage.load*() 를 거친다 — local/S3 백엔드 무관하게 같은 페어를 돌려받기 위함.
 def _original_bytes(file_id: str) -> bytes:
-    original = storage.original_of(file_id)
-    if original is None:
+    data = storage.load_original(file_id)
+    if data is None:
         raise HTTPException(404, "원본 없음")
-    return original.read_bytes()
+    return data
 
 
 def _result_bytes(file_id: str, preset: str) -> bytes:
-    path = storage.BASE / "result" / f"{file_id}_{preset}.jpg"
-    if not path.exists():
+    data = storage.load("result", f"{file_id}_{preset}.jpg")
+    if data is None:
         raise HTTPException(404, "결과 없음 (변환 1회 먼저)")
-    return path.read_bytes()
+    return data
 
 
 # ---- 세션 기반 (디스크 재료, 업로드 불필요) ----
@@ -62,10 +63,10 @@ def dev_detect(req: DevDetectReq):
 @router.post("/verify")
 def dev_verify(req: DevPairReq):
     """스테이지 3만 — 체크포인트 리플레이 (생성 비용 0)."""
-    inspect = storage.BASE / "quality" / f"{req.file_id}_{req.preset}_inspect.json"
-    if not inspect.exists():
+    inspect = storage.load("quality", f"{req.file_id}_{req.preset}_inspect.json")
+    if inspect is None:
         raise HTTPException(404, "체크포인트 없음 (변환 1회 먼저)")
-    anchors = json.loads(inspect.read_text(encoding="utf-8"))["anchors"]
+    anchors = json.loads(inspect.decode("utf-8"))["anchors"]
     checks = detector.verify_and_locate(
         _result_bytes(req.file_id, req.preset), anchors)   # ⭐ 저장본 계약
     return {"anchors": anchors, "checks": checks,

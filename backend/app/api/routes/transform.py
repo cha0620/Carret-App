@@ -30,9 +30,9 @@ def transform(req: TransformRequest):
         raise HTTPException(status_code=500, detail="변환 중 오류가 발생했습니다")
 
     quality = None
-    qpath = storage.BASE / "quality" / f"{req.file_id}_{req.preset}.json"
-    if qpath.exists():
-        quality = QualityReport(**json.loads(qpath.read_text(encoding="utf-8")))
+    qbytes = storage.load("quality", f"{req.file_id}_{req.preset}.json")
+    if qbytes is not None:
+        quality = QualityReport(**json.loads(qbytes.decode("utf-8")))
  
     return TransformResponse(
         file_id=req.file_id,
