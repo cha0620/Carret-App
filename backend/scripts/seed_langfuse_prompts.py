@@ -19,6 +19,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from app.core.config import settings
 from app.prompts import frag
 from app.prompts.presets import PRESETS
+from app.services.auto_feedback import _SYSTEM_TEMPLATE as AUTO_FEEDBACK_TEMPLATE
 from app.services.judge import _SYSTEM_TEMPLATE
 
 
@@ -48,6 +49,7 @@ def prompts_to_seed() -> dict:
         "verify": _verify_template(),
         "match": frag("match"),
         "judge_system": _SYSTEM_TEMPLATE,  # {{rubric}} 는 호출 시점에 채워짐
+        "auto_feedback_system": AUTO_FEEDBACK_TEMPLATE,
     }
     for key, preset in PRESETS.items():
         seeds[f"preset_{key}"] = preset["fallback_prompt"]

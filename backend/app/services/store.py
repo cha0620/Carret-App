@@ -21,15 +21,30 @@ def record_result(file_id, preset_key, result_name, item,
               json.dumps(bubbles, ensure_ascii=False), elapsed_s))
 
 
-def save_feedback(file_id, preset_key, rating, comment=None):
+def save_feedback(file_id, preset_key, rating, comment=None, source="user"):
+    """source="user"(기본, 실사용자 UI 제출)는 항상 덮어쓴다.
+    source="agent"(자동 피드백 에이전트)는 이미 실사용자 피드백이 있으면
+    건드리지 않는다 — 진짜 신호를 합성 신호가 지우면 안 되므로.
+
+    체크(SELECT)와 쓰기(INSERT)를 분리하면 동시 요청(FastAPI 스레드풀)에서
+    레이스가 난다 — 에이전트 스레드가 "user 없음"을 본 직후, user 쓰기가
+    끼어들었다가 에이전트 쓰기가 뒤늦게 덮어쓸 수 있음. 그래서 판단까지
+    전부 하나의 원자적 UPSERT 문 안(CASE WHEN)에 넣는다: 기존 행이 user고
+    이번 쓰기가 user가 아니면 기존 값을 그대로 유지."""
     with db.get_conn() as c:
         c.execute("""
-            INSERT INTO feedbacks(file_id, preset_key, rating, comment)
-            VALUES (?,?,?,?)
+            INSERT INTO feedbacks(file_id, preset_key, rating, comment, source)
+            VALUES (?,?,?,?,?)
             ON CONFLICT(file_id, preset_key) DO UPDATE SET
-              rating=excluded.rating, comment=excluded.comment,
-              updated_at=CURRENT_TIMESTAMP
-        """, (file_id, preset_key, rating, comment))
+              rating = CASE WHEN feedbacks.source='user' AND excluded.source!='user'
+                            THEN feedbacks.rating ELSE excluded.rating END,
+              comment = CASE WHEN feedbacks.source='user' AND excluded.source!='user'
+                             THEN feedbacks.comment ELSE excluded.comment END,
+              source = CASE WHEN feedbacks.source='user' AND excluded.source!='user'
+                            THEN feedbacks.source ELSE excluded.source END,
+              updated_at = CASE WHEN feedbacks.source='user' AND excluded.source!='user'
+                                THEN feedbacks.updated_at ELSE CURRENT_TIMESTAMP END
+        """, (file_id, preset_key, rating, comment, source))
 
 
 def get_feedback(file_id, preset_key):

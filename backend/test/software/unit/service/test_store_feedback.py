@@ -78,3 +78,51 @@ def test_save_feedback_rating_below_range_raises_integrity_error(feedback_db):
 def test_save_feedback_rating_above_range_raises_integrity_error(feedback_db):
     with pytest.raises(sqlite3.IntegrityError):
         store.save_feedback(FID, "bad_high", 6)
+
+
+# ── source="agent" (auto feedback) — 실사용자 신호 보호 ────────────────
+def test_save_feedback_agent_source_creates_row_when_none_exists(feedback_db):
+    store.save_feedback(FID, "agent_new", 4, "괜찮네요", source="agent")
+    row = store.get_feedback(FID, "agent_new")
+    assert row["rating"] == 4
+    assert row["comment"] == "괜찮네요"
+    assert row["source"] == "agent"
+
+
+def test_save_feedback_agent_source_does_not_overwrite_existing_user_row(feedback_db):
+    store.save_feedback(FID, "protected", 5, "real user comment", source="user")
+    before = store.get_feedback(FID, "protected")
+
+    store.save_feedback(FID, "protected", 1, "synthetic comment", source="agent")
+    after = store.get_feedback(FID, "protected")
+
+    assert after["rating"] == before["rating"] == 5
+    assert after["comment"] == before["comment"] == "real user comment"
+    assert after["source"] == "user"
+    assert after["id"] == before["id"]
+
+
+def test_save_feedback_agent_source_overwrites_existing_agent_row(feedback_db):
+    store.save_feedback(FID, "agent_upsert", 2, "first", source="agent")
+    first = store.get_feedback(FID, "agent_upsert")
+
+    store.save_feedback(FID, "agent_upsert", 5, "second", source="agent")
+    second = store.get_feedback(FID, "agent_upsert")
+
+    assert second["rating"] == 5
+    assert second["comment"] == "second"
+    assert second["source"] == "agent"
+    assert second["id"] == first["id"]
+
+
+def test_save_feedback_user_source_always_overwrites_regardless_of_prior_source(feedback_db):
+    """기존 동작 회귀 방지: source="user"(기본값)는 이전 row의 source가
+    무엇이었든(agent 든 user 든) 항상 덮어써야 한다."""
+    store.save_feedback(FID, "user_wins", 1, "agent first", source="agent")
+
+    store.save_feedback(FID, "user_wins", 5, "real user now")
+    row = store.get_feedback(FID, "user_wins")
+
+    assert row["rating"] == 5
+    assert row["comment"] == "real user now"
+    assert row["source"] == "user"

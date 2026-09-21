@@ -106,7 +106,8 @@ runBtn.onclick = async () => {
     resetFeedbackBox();
     try {
       const fb = await fetchFeedback(fileId, PRESET);
-      if (fb) {
+      if (fb && fb.source === 'user') {
+        // source가 'agent'(합성 피드백)인 건 "내가 남긴 피드백"으로 보여주면 안 됨
         currentRating = fb.rating;
         renderFeedback(fb);
       }

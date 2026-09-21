@@ -1,15 +1,13 @@
 import uuid
-import io
 from pathlib import Path
 from fastapi import HTTPException
-from PIL import Image
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from app.core.config import settings
 from app.services import storage
+from app.util.img_fetch import fetch_image
 router = APIRouter()   # 엔드포인트 묶음 (main.py에 include 됨)
 from app.schemas.image import UploadResponse
-import httpx
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}  # ✅ 허용 목록 방식 (보안 기본기)
 
 class UrlUploadRequest(BaseModel):
@@ -18,28 +16,9 @@ class UrlUploadRequest(BaseModel):
 
 @router.post("/upload-url")
 async def upload_url(req: UrlUploadRequest):
-    # 0) 기본 방어
-    if not req.url.startswith(("http://", "https://")):
-        raise HTTPException(400, "http(s) URL만 가능")
-
-    # 1) 다운로드
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as c:
-        r = await c.get(req.url)
-    if r.status_code != 200:
-        raise HTTPException(400, f"다운로드 실패: {r.status_code}")
-    if len(r.content) > settings.max_bytes:
-        raise HTTPException(413, "이미지가 너무 큽니다")
-
-    # 2) 이미지 검증 + 확장자 판별
-    try:
-        img = Image.open(io.BytesIO(r.content))
-        ext = (img.format or "JPEG").lower()
-    except Exception:
-        raise HTTPException(400, "이미지가 아닙니다")
-
-    # 3) 기존 업로드와 동일하게 저장
+    data, ext = await fetch_image(req.url)
     file_id = uuid.uuid4().hex
-    storage.save("original", f"{file_id}.{ext}", r.content)
+    storage.save("original", f"{file_id}.{ext}", data)
     return {"file_id": file_id}
 
 @router.post("/upload", response_model=UploadResponse)

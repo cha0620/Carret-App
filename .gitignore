@@ -34,5 +34,6 @@ backend/data/
 backend/storage/original/
 backend/storage/result/
 backend/storage/quality/
+backend/storage/inbox/
 
 # dataset 은 "평가 자산" = 코드와 함께 git 에 포함 ✅

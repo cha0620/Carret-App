@@ -6,7 +6,10 @@ IMG_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 
 
 def _image_map(directory: Path) -> dict[str, Path]:
-    """stem → 경로 맵 (확장자 무관, 대소문자 무관)."""
+    """stem → 경로 맵 (확장자 무관, 대소문자 무관).
+    디렉터리가 아예 없으면(fresh clone 등) 빈 맵 — "페어 없음"으로 취급."""
+    if not directory.exists():
+        return {}
     return {p.stem: p for p in sorted(directory.iterdir())
             if p.suffix.lower() in IMG_EXTS}
 

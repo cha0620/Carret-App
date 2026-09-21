@@ -17,5 +17,6 @@ class FeedbackResponse(BaseModel):
     preset_key: str
     rating: int
     comment: str | None = None
+    source: str = "user"
     created_at: str | None = None
     updated_at: str | None = None

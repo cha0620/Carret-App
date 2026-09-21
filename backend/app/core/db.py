@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS feedbacks (
     preset_key TEXT NOT NULL,
     rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
     comment TEXT,
+    source TEXT NOT NULL DEFAULT 'user',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(file_id, preset_key)
@@ -37,9 +38,18 @@ def get_conn():
     return conn
 
 
+def _migrate(c):
+    """기존에 만들어진 DB 파일에 새 컬럼을 뒤늦게 추가 (CREATE TABLE IF NOT EXISTS는
+    이미 있는 테이블의 컬럼을 바꾸지 않으므로)."""
+    cols = {row["name"] for row in c.execute("PRAGMA table_info(feedbacks)")}
+    if "source" not in cols:
+        c.execute("ALTER TABLE feedbacks ADD COLUMN source TEXT NOT NULL DEFAULT 'user'")
+
+
 def init_db():
     p = Path(settings.db_path)
     if str(p) != ":memory:":
         p.parent.mkdir(parents=True, exist_ok=True)
     with get_conn() as c:
         c.executescript(SCHEMA)
+        _migrate(c)
