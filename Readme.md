@@ -4,134 +4,289 @@
 
 **Turn casual secondhand photos into honest product photos.**
 
-Carret is an AI pipeline that transforms roughly-shot used-item photos
-into clean studio-style product photos — while *preserving every defect*
-(stains, tears, fading, pilling). In secondhand commerce,
-**trust beats beauty**.
+Carret is an AI pipeline that turns roughly shot photos of used items into
+clean, studio-style product photos. It **keeps every defect**: stains,
+tears, fading and pilling all stay in the picture. In secondhand commerce,
+a photo buyers can trust matters more than a pretty one.
 
-## 🎯 Why
+> Principle: **change the background, never the item's condition.**
 
-- Poor photos sell poorly. But "AI-restored to look new" photos are lies
-  → returns, disputes, broken trust.
-- Principle: **change the background, never the truth.**
+---
+
+## 📌 At a Glance
+
+| | |
+|---|---|
+| **Problem** | Generative edit models "fix" scratches even when you only ask them to swap the background. In secondhand listings, that turns the photo into a misleading one |
+| **Solution** | Before generation, a prompt lock forbids restoration. After generation, a VLM checklist and local vector scores check that the defects are still there |
+| **Stack** | FastAPI · LangGraph · fal.ai (FLUX edit) · Gemini (VLM) · DINOv2 · SQLite · S3 · Langfuse · Vanilla JS |
+| **Quality** | 193 unit tests that make no external API calls and run on every PR, plus an eval suite that calls the real APIs (runs on main or a PR label) |
+
+---
 
 ## 🏗️ How It Works
 
+The transform pipeline is a [LangGraph](https://github.com/langchain-ai/langgraph)
+`StateGraph` (`backend/app/services/pipeline.py`).
+
 ```mermaid
 flowchart LR
-  A[Upload / URL] --> B[Generate · fal.ai]
-  B --> C[Wear Gate · Gemini checklist]
-  C -->|PASS| D[Save + Quality report card]
-  C -->|FAIL| E[Retry / Fallback]
+  L[load] --> C[classify<br/>item + checklist]
+  C --> D[detect<br/>defect anchors]
+  D --> G[generate<br/>background swap · fal.ai]
+  G --> V{validate_result<br/>cropped / captioned?}
+  V -->|invalid, attempts left| G
+  V -->|ok| S[score_similarity<br/>DINOv2 cosine]
+  S --> VR[verify<br/>preserved + coords]
+  VR --> I[save_inspect]
+  I --> J[run_judge<br/>report card]
+  J --> F[finalize<br/>bubbles]
 ```
 
-1. Seller uploads a casual photo (drag-drop or URL)
-2. A generative edit model replaces the background (presets: studio white,
-   warm wood, minimal gray)
-3. `SECONDHAND_LOCK` prompt forbids any restoration of the item
-4. A VLM **Wear Gate** checks that every known defect still survives
-5. The UI shows the result with a quality report card
-   (fidelity / realism / trust) and defect bubbles overlaid on the photo
-6. The seller can rate the result (1–5★) + leave a comment; feedback is
-   stored per `file_id` + preset and reused if they revisit the same result
+1. **classify**: the VLM identifies the item and builds a checklist of
+   defects worth checking for that kind of item (for shoes: sole wear, toe creases)
+2. **detect**: finds defects in the original and records each one as a
+   *what / where* anchor
+3. **generate**: replaces the background with a preset (studio white, warm
+   wood or minimal gray). Every prompt carries `SECONDHAND_LOCK`, which
+   forbids restoration
+4. **validate_result**: if the result is cropped or covered by a caption,
+   it is regenerated **with the rejection reason added to the prompt**
+   rather than retried blindly. The number of attempts is capped by config
+5. **score_similarity**: computes a local DINOv2 embedding similarity,
+   separate from the VLM
+6. **verify (Wear Gate)**: the VLM gets a checklist ("confirm these defects
+   are still visible") instead of an open question ("find problems").
+   It returns whether each defect survived and where it is in the result
+7. **judge**: produces a fidelity / realism / trust report card, which is
+   cached and attached to the trace as Langfuse Scores
+8. The UI overlays defect bubbles on the result and collects a star rating
+   and comment from the seller
+
+---
+
+## 🧭 Reading the Code
+
+```
+backend/
+├── main.py                     # app assembly: routers, /storage serving, frontend mount
+└── app/
+    ├── api/routes/             # HTTP boundary (thin; the work happens in services)
+    │   ├── images.py           #   upload (file / URL)
+    │   ├── transform.py        #   POST /api/transform → pipeline
+    │   ├── feedback.py         #   rating/comment upsert + fetch
+    │   └── dev.py              #   dev tooling (registered only when DEV_TOOLS=true)
+    ├── services/
+    │   ├── pipeline.py         # ⭐ LangGraph pipeline (read this first)
+    │   ├── ingest.py           #   one original → pipeline → auto feedback (single entry point)
+    │   ├── ai/                 # all external / model calls
+    │   │   ├── generator.py    #   fal.ai background swap
+    │   │   ├── detector.py     #   Gemini: classify / detect / verify / check_photo
+    │   │   ├── judge.py        #   report card (fidelity · realism · trust)
+    │   │   ├── embedder.py     #   DINOv2 embeddings (local, lazy singleton)
+    │   │   └── auto_feedback.py#   "how would a seller rate this?" VLM agent
+    │   ├── quality/            # deterministic metrics (no API calls)
+    │   │   ├── metric.py       #   wear_ratio, text_recall, product_sim …
+    │   │   └── guards.py       #   hard/soft output guards + block/pass decision
+    │   └── persistence/
+    │       ├── storage.py      #   bytes: local FS ↔ S3 (switched by one setting)
+    │       └── store.py        #   metadata: SQLite (originals/results/feedbacks)
+    ├── prompts/
+    │   ├── presets.py          # background presets + SECONDHAND_LOCK
+    │   ├── rubric.py           # judge scoring axes
+    │   └── fragments/*.md      # composable prompt fragments (role / rules / schema)
+    ├── core/
+    │   ├── config.py           # pydantic Settings (.env)
+    │   ├── db.py               # SQLite schema + migrations
+    │   ├── tracing.py          # Langfuse v4 OTEL (noop without keys)
+    │   └── prompt_registry.py  # Langfuse prompts, falls back to local fragments on failure
+    └── schemas/                # pydantic request/response (file_id regex = path-traversal guard)
+
+frontend/   index.html (main app) · test.html (dev lab) · js/{api,render,main,dev}.js
+study/      dated dev logs: bug root causes, design calls, reversed decisions
+```
+
+**Suggested reading order**
+
+1. `services/pipeline.py`: the whole flow. Each node is one function, so it reads top to bottom
+2. `prompts/presets.py` → `prompts/__init__.py` → `fragments/`: how the honesty principle is written into the prompts
+3. `services/ai/detector.py`: VLM calls and output validation (`_valid_anchor`, `_as_bool`)
+4. `services/quality/guards.py`: why the VLM's *judgment* is kept separate from deterministic *guards*
+5. `services/persistence/`: the split between bytes and metadata, and the S3 abstraction
+6. `test/software/unit/`: the contract each module keeps
+
+**Layer rules.** `routes` validate input and hand off to `services`.
+`services/ai` only calls external models, `services/quality` only computes,
+and `services/persistence` only stores. `storage.BASE` is the only place
+that knows the disk layout.
+
+---
 
 ## ✨ Key Features
 
-- 🔒 **Honesty-first prompts** — explicit "do NOT clean/repair" locking
-- 🛡️ **Wear Gate** — checklist-based defect preservation verification
-  ("verify these defects", not "find defects")
-- 🧾 **Quality report card** in the UI, written by a VLM judge
-- 💬 **Defect bubbles + zoom** — detected defects are shown as bubbles
-  positioned on the actual (letterboxed, zoomable) result image
-- ⭐ **Feedback loop** — rating + comment per result, `POST/GET /api/feedback`,
-  SQLite-backed, upsert on `file_id` + preset
-- 🗂️ **Pluggable storage** — local disk or S3, switched with one env var
-- 🧪 **Eval suite** — hybrid dataset (real photos + AI-injected defects)
-  with frozen ground truth and quantitative metrics
+- 🔒 **Honesty-first prompts**: `SECONDHAND_LOCK` is attached to every
+  preset and forbids restoration or retouching
+- 🛡️ **Wear Gate**: the defect anchors found in the original are checked
+  again in the result, one by one
+- 🔁 **Regeneration that carries the reason**: when a result is rejected for
+  cropping or a caption, the reason goes into the next prompt, and retries are capped
+- 📐 **Two kinds of signal**: the Gemini judge gives a judgment, and DINOv2
+  cosine similarity gives a score on a fixed scale
+- 💬 **Defect bubbles + zoom**: overlay coordinates account for the
+  letterboxing from `object-fit: contain`
+- ⭐ **Feedback loop**: human feedback (`source=user`) and agent feedback
+  (`source=agent`) are stored separately, and the agent never overwrites
+  human feedback
+- 🤖 **Auto-feedback agent + inbox**: put originals in `storage/inbox/` (or
+  pass URLs), and each one runs through the real pipeline and gets agent feedback
+- 📊 **Langfuse observability**: per-node traces, a Score for each judge axis,
+  and prompts you can edit from the console. Without keys it is a complete
+  noop, so CI and tests stay safe
+- 🗂️ **Swappable storage**: `STORAGE_BACKEND=local|s3` switches the backend,
+  and the serving URLs stay the same
 
-## 🧪 Evaluation
+---
 
-| Metric | What it measures | Range |
-|---|---|---|
-| `wear_ratio` | fraction of known defects preserved | 0–1 |
-| `text_recall` | printed-text survival (OCR via VLM) | 0–1 |
-| `product_sim` | pixel preservation inside the item mask | 0–1 |
-| `bg_whiteness` | background matches preset intent | 0–1 |
-| `latency` | seconds per image | s |
+## 💼 Why This Is a Strong Portfolio Project
 
-Dataset philosophy: **hybrid** — real photos for distribution truth,
-synthetic defect injection for perfect ground truth.
-Ground truth is frozen *before* any model run.
+**1. Generative-AI failure is handled starting from the product requirement.**
+The goal is "don't fix it," not "make it prettier." That constraint is
+enforced at three points: before generation (prompt lock), during
+generation (regeneration with the rejection reason) and after generation
+(Wear Gate and guards). The design verifies the model's output instead of
+trusting it.
 
-```bash
-python test.py     # runs dataset → saves results to storage/dataset/after/
-```
+**2. LLM judgment is separated from deterministic metrics.**
+A VLM judge's scores shift with prompt and model versions. So the project
+adds deterministic signals: DINOv2 similarity, OCR matching and per-crop
+defect visibility (`quality/guards.py`). When a guard computation fails,
+the exception is raised instead of letting the result pass. The
+observational stages (detect, judge) work the other way: their failures
+are swallowed, so an already-paid-for generation is never thrown away.
+Each stage's failure policy was chosen on purpose.
+
+**3. Evaluation was designed first.**
+The dataset is a hybrid of real photos and AI-injected defects, and the
+ground truth is fixed **before** the model runs. Results are measured with
+`wear_ratio`, `text_recall`, `product_sim` and `bg_whiteness`. CI runs the
+free unit tests separately from the paid evals.
+
+**4. Built with production operation in mind.**
+Langfuse handles tracing and prompt versions, and every external
+integration has a fallback so the app runs without it. Other safeguards:
+a cost cap (`max_generate_attempts`, validated to 1–5), two layers of
+path-traversal defense (the schema regex and `_safe_path`), and settings
+that still boot when `.env` contains unknown keys.
+
+**5. Built to be testable.**
+External calls live only in `services/ai/`, which makes them easy to mock.
+That's why 193 unit tests finish in about 6 seconds with no network. The
+dev replay (`run_transform_with_result`) skips only the generation step and
+**calls the production node functions directly**. The logic is never
+copied, so tests and production can't drift apart.
+
+**6. The reasoning is written down.**
+`study/` records more than what was built: why the approach was thrown out
+twice, and how each bug was caught. The "Failures & Lessons" table below
+summarizes it.
+
+---
 
 ## 🚀 Getting Started
 
 ```bash
-cd backend
-python -m venv venv && source venv1/bin/activate
+python -m venv venv1 && source venv1/bin/activate
 pip install -r requirements.txt
-cp .env.example .env        # FAL_KEY, VLM_KEY (Gemini)
-uvicorn main:app --reload
+cd backend
+touch .env                  # FAL_KEY, VLM_KEY (Gemini) required / LANGFUSE_* optional
+uvicorn main:app --reload   # http://localhost:8000 (frontend included)
 ```
 
-Storage backend defaults to local disk (`STORAGE_DIR=./storage`). To use S3
-instead, set `STORAGE_BACKEND=s3`, `S3_BUCKET`, `S3_PREFIX`, `AWS_REGION` in
-`.env` (AWS credentials via the usual boto3 chain) — note dev tools and the
-transform pipeline currently still read/write via local paths, so full S3
-support is a work in progress (see `study/` below).
+| Env var | Purpose |
+|---|---|
+| `PIPELINE_MODE=mock` | Returns the original unchanged, with no external calls (for UI work) |
+| `STORAGE_BACKEND=s3` | Needs `S3_BUCKET`, `S3_PREFIX`, `AWS_REGION` |
+| `MAX_GENERATE_ATTEMPTS` | Regeneration cap (default 2, range 1–5) |
+| `DEV_TOOLS=false` | Disables the `/dev/*` routes (for deployment) |
+| `LANGFUSE_PUBLIC_KEY` / `SECRET_KEY` | Without them, tracing and prompt management are a noop |
+
+### Tests
 
 ```bash
 cd backend && pytest test/software/unit -q   # free unit tests (same as CI)
+make test    # everything except eval / e2e
+make eval    # real VLM · fal.ai calls (costs money)
+make e2e     # browser tests
 ```
 
-### Dev workflow: sub-agents + study log
-- `.claude/agents/tester.md` / `reviewer.md` — Claude Code sub-agents; run
-  after a code change to get pytest coverage for it (`tester`) and a
-  read-only security/perf/readability pass on the diff (`reviewer`)
-- `study/` — dated dev-log notes on non-obvious bugs found and the reasoning
-  behind bigger cleanups, written as they happen
+| Folder | Scope |
+|---|---|
+| `test/software/unit/` | service, web and data layers (external calls mocked) |
+| `test/software/integration/` | upload flow, dev replay |
+| `test/software/full/` | user journeys (mock / real), browser |
+| `test/eval/` | eval suite (metrics against ground truth) |
+
+---
+
+## 🧪 Evaluation Metrics
+
+| Metric | Measures | Range |
+|---|---|---|
+| `wear_ratio` | share of defects preserved | 0–1 |
+| `text_recall` | how much printed text survives (VLM OCR) | 0–1 |
+| `product_sim` | pixel fidelity inside the item mask | 0–1 |
+| `bg_whiteness` | how well the background matches the preset's intent | 0–1 |
+| `visual_similarity` | DINOv2 cosine similarity between original and result | ~0–1 |
+| `latency` | processing time per image | s |
+
+---
 
 ## 🧠 Design Decisions
 
-- **Checklist over open-ended judging** — verification with a known defect
-  list is far more consistent than asking a VLM to "find problems"
-- **Hybrid eval dataset** — synthetic gives perfect GT; real anchors realism
-- **pydantic Settings** — secrets never touch code or git
-- **Schema as security** — `file_id` regex prevents path traversal
-- **One path source of truth** — the storage layer's `BASE` is the only
-  place that knows the on-disk layout; routes/pipeline/dev-tools all go
-  through it instead of building paths themselves
-- **Overlay math must know about letterboxing** — any UI that draws
-  coordinates on top of an `object-fit: contain` image has to compute the
-  actual displayed image box, not assume the image fills its container
+- **Checklists over open-ended questions**: asking a VLM to confirm a
+  known list of defects is far more consistent than asking it to "find problems"
+- **Truth is kept separate from aesthetics**: the non-negotiable minimum is
+  enforced by deterministic guards (hard/soft), and aesthetic judgment is
+  left to the judge
+- **A different failure policy per stage**: observational stages move on
+  after a failure, and guards block
+- **No copied logic**: dev tools and tests call the production node functions directly
+- **One source of truth for paths**: only `storage.BASE` knows the disk layout
+- **Bytes and metadata are stored separately**: images go to storage
+  (local/S3), and metadata goes to SQLite
+- **Every integration is optional**: the app behaves the same without Langfuse or S3
+
+---
 
 ## 🩸 Failures & Lessons
 
 | Bug | Lesson |
 |---|---|
-| `await` on a dict → TypeError | sync/async is a contract between caller and callee |
-| 503 UNAVAILABLE | transient errors need exponential-backoff retry |
-| `file_id` pattern mismatch | the producer must obey the schema, not the reverse |
-| missing `max_bytes` | new code ships with new config — together |
-| S3 migration left two `storage.py` implementations pasted together (duplicate `BASE`, dropped image normalization) | mid-migration, delete the old implementation before adding the new one — don't let both live in the same file "just in case" |
-| `.env` key unknown to `Settings` crashed the app at boot | external input (env vars) should degrade gracefully by default (`extra="ignore"`), not hard-fail on anything new |
-| CI's pip install list quietly drifted from `requirements.txt`; `storage.py` importing `boto3` unconditionally broke CI silently until checked | CI's dependency list is a second source of truth that has to be kept in sync manually — verify by replicating CI's exact install in a clean venv, don't assume |
-| defect bubbles positioned as % of the whole canvas, but `object-fit: contain` letterboxes non-square images | overlay coordinate math must be computed against the actual rendered image box, not its container |
+| `await` on a dict → TypeError | Whether a call is sync or async is a contract that caller and callee both have to keep |
+| 503 UNAVAILABLE | Transient errors need retries with exponential backoff |
+| `file_id` pattern mismatch | The code that produces data has to follow the schema. Don't bend the schema to fit it |
+| `db.init_db()` was never called, so the tables were never created | Check that a new layer is actually wired in, end to end |
+| Two implementations ended up concatenated in `storage.py` during the S3 migration | Delete the old implementation before adding the new one. Don't keep both "just in case" |
+| An unknown key in `.env` crashed the app on boot | Be lenient with external input (`extra="ignore"`) |
+| CI's pip list drifted from `requirements.txt` | CI dependencies are a second source that has to be kept in sync by hand. Verify them in a clean venv |
+| Retrying with the same prompt repeated the same flaw | A retry has to carry the reason the previous attempt was rejected |
+| Bubble coordinates were off because of letterboxing | Compute overlay coordinates from the rendered image box, not the container |
+
+---
 
 ## 🗺️ Roadmap
 
-- [x] MVP pipeline + report-card UI
-- [x] Eval dataset v1 (5 images) + ground truth
-- [x] Feedback collection (1–5★ + comment, per result)
-- [x] pytest + CI (free unit tests gate every PR)
+- [x] MVP pipeline + report card UI
+- [x] Eval dataset v1 + ground truth
+- [x] Feedback collection (human / agent kept separate)
+- [x] pytest + CI (unit tests gate every PR)
+- [x] Langfuse tracing · prompt management · Scores
+- [x] Validation-driven regeneration (`validate_result`)
+- [x] Service layer restructure (`ai/` · `quality/` · `persistence/`)
+- [ ] Wire the output guards (`guards.py`) into the pipeline (implemented and tested; needs `embedder.crop_sim`)
 - [ ] Quantitative scorecard (CSV) + model A/B
-- [ ] Wear Gate inside production pipeline (retry/fallback)
-- [ ] Full S3 support (pipeline/dev-tools still assume local disk)
-- [ ] Fix "paid eval" CI job (needs `VLM_KEY`/`FAL_KEY` repo secrets)
+- [ ] Full S3 support (some dev tools still assume local paths)
 - [ ] Public demo deployment
 
-> Transparency label policy: every result is presented as
-> *"Background AI-generated; item condition per original photo."*
+> Transparency label: every result is shown with *"Background generated by
+> AI; item condition is exactly as in the original photo."*
