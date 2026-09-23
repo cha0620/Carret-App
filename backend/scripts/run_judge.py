@@ -4,7 +4,8 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from app.services import judge, storage
+from app.services.ai import judge
+from app.services.persistence import storage
 from app.prompts.rubric import AXES
 
 for orig in sorted((storage.BASE / "original").glob("*.*")):

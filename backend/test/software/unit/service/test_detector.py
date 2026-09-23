@@ -1,4 +1,4 @@
-"""app.services.detector - 순수 함수 + `_call`(VLM 호출 래퍼) 트레이싱 투명성.
+"""app.services.ai.detector - 순수 함수 + `_call`(VLM 호출 래퍼) 트레이싱 투명성.
 
 `_call`/`match_anchors` 는 `google.genai.Client` 를 새로 만들지만, detector 모듈
 이 `from google import genai` 형태로 임포트하므로 `detector.genai` 이름 자체를
@@ -9,8 +9,8 @@ import json
 import pytest
 
 import app.core.tracing as tracing
-from app.services.detector import (
-    _box, _call, _usage, all_preserved, bubbles, match_anchors,
+from app.services.ai.detector import (
+    _box, _call, _usage, all_preserved, bubbles, check_photo, match_anchors,
 )
 
 
@@ -118,7 +118,7 @@ def _make_fake_genai(text, usage_metadata=None):
 
 
 def test_call_disabled_tracing_returns_parsed_json_unchanged(monkeypatch):
-    import app.services.detector as detector
+    import app.services.ai.detector as detector
     fake_genai, models = _make_fake_genai(json.dumps({"item": "chair"}))
     monkeypatch.setattr(detector, "genai", fake_genai)
 
@@ -129,7 +129,7 @@ def test_call_disabled_tracing_returns_parsed_json_unchanged(monkeypatch):
 
 
 def test_call_json_decode_error_returns_empty_dict(monkeypatch):
-    import app.services.detector as detector
+    import app.services.ai.detector as detector
     fake_genai, _ = _make_fake_genai("not valid json{{{")
     monkeypatch.setattr(detector, "genai", fake_genai)
 
@@ -141,7 +141,7 @@ def test_call_json_decode_error_returns_empty_dict(monkeypatch):
 def test_call_disabled_tracing_does_not_touch_fake_client_beyond_generate_content(monkeypatch):
     """트레이싱 비활성이면 obs 는 None 이라 `.update(...)` 를 절대 호출하지
     않는다(호출했다면 AttributeError 로 바로 터졌을 것 - 가드가 없다면)."""
-    import app.services.detector as detector
+    import app.services.ai.detector as detector
     fake_genai, _ = _make_fake_genai(json.dumps({"ok": True}))
     monkeypatch.setattr(detector, "genai", fake_genai)
 
@@ -150,7 +150,7 @@ def test_call_disabled_tracing_does_not_touch_fake_client_beyond_generate_conten
 
 
 def test_call_enabled_tracing_invokes_obs_update_with_output_and_usage(monkeypatch):
-    import app.services.detector as detector
+    import app.services.ai.detector as detector
 
     class FakeObservation:
         def __init__(self):
@@ -194,7 +194,7 @@ def test_call_enabled_tracing_invokes_obs_update_with_output_and_usage(monkeypat
 
 
 def test_call_enabled_tracing_json_decode_error_updates_obs_with_empty_output(monkeypatch):
-    import app.services.detector as detector
+    import app.services.ai.detector as detector
 
     class FakeObservation:
         def __init__(self):
@@ -227,3 +227,52 @@ def test_call_enabled_tracing_json_decode_error_updates_obs_with_empty_output(mo
 
     assert data == {}
     assert fake_lf.obs.update_calls == [{"output": {}, "usage_details": None}]
+
+
+# ── check_photo(): 재생성 게이트 ──────────────────
+def test_check_photo_valid_true(monkeypatch):
+    import app.services.ai.detector as detector
+    fake_genai, _ = _make_fake_genai(json.dumps({"valid": True, "reason": ""}))
+    monkeypatch.setattr(detector, "genai", fake_genai)
+
+    result = check_photo(b"imgbytes")
+
+    assert result == {"valid": True, "reason": ""}
+
+
+def test_check_photo_valid_false_cropped_or_overlay(monkeypatch):
+    import app.services.ai.detector as detector
+    fake_genai, _ = _make_fake_genai(
+        json.dumps({"valid": False, "reason": "caption text covers the product"})
+    )
+    monkeypatch.setattr(detector, "genai", fake_genai)
+
+    result = check_photo(b"imgbytes")
+
+    assert result == {"valid": False, "reason": "caption text covers the product"}
+
+
+def test_check_photo_vlm_exception_open_fallback(monkeypatch):
+    """VLM 호출 자체가 예외를 던져도 재생성 루프에 태우지 않도록 valid=True 로
+    개방형 폴백."""
+    import app.services.ai.detector as detector
+
+    def _boom(*a, **kw):
+        raise RuntimeError("network down")
+    monkeypatch.setattr(detector, "_call", _boom)
+
+    result = check_photo(b"imgbytes")
+
+    assert result == {"valid": True, "reason": ""}
+
+
+def test_check_photo_malformed_json_falls_through_to_valid_true(monkeypatch):
+    """_call 이 JSON 파싱 실패 시 {} 를 반환하는 기존 경로 → check_photo 는
+    data.get("valid", True) 로 True 에 안전 착지."""
+    import app.services.ai.detector as detector
+    fake_genai, _ = _make_fake_genai("not valid json{{{")
+    monkeypatch.setattr(detector, "genai", fake_genai)
+
+    result = check_photo(b"imgbytes")
+
+    assert result == {"valid": True, "reason": ""}

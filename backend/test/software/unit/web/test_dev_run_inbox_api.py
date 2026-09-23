@@ -9,10 +9,11 @@ import pytest
 from fastapi import HTTPException
 
 import app.api.routes.dev as dev_mod
-import app.services.auto_feedback as auto_feedback_mod
+import app.services.ai.auto_feedback as auto_feedback_mod
 from app.core import db
 from app.core.config import settings
-from app.services import pipeline, storage
+from app.services import pipeline
+from app.services.persistence import storage
 
 
 @pytest.fixture()
@@ -66,7 +67,7 @@ def test_single_valid_image_is_processed_and_moved_to_done(client, feedback_db, 
     assert row["source"] == "agent"
 
     # DB 에도 agent 소스로 저장됨
-    from app.services import store
+    from app.services.persistence import store
     saved = store.get_feedback(row["file_id"], "studio_white")
     assert saved is not None
     assert saved["rating"] == 4

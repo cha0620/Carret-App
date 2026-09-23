@@ -3,10 +3,10 @@ source="agent"로 저장하는지, 원본/결과 파일이 없을 때 404 인지
 """
 import pytest
 
-import app.services.auto_feedback as auto_feedback_mod
+import app.services.ai.auto_feedback as auto_feedback_mod
 from app.core import db
 from app.core.config import settings
-from app.services import storage
+from app.services.persistence import storage
 
 FID = "0123456789abcdef0123456789abcdef"
 
@@ -41,7 +41,7 @@ def test_dev_auto_feedback_returns_200_with_agent_source(client, feedback_db, ma
 
 
 def test_dev_auto_feedback_does_not_overwrite_existing_user_feedback(client, feedback_db, make_png, monkeypatch):
-    from app.services import store
+    from app.services.persistence import store
     storage.save("original", f"{FID}.jpg", make_png())
     storage.save("result", f"{FID}_studio_white.jpg", make_png())
     store.save_feedback(FID, "studio_white", 5, "real user comment", source="user")

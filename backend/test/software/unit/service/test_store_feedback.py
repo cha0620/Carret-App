@@ -1,4 +1,4 @@
-"""app.services.store 의 save_feedback/get_feedback 엣지 케이스.
+"""app.services.persistence.store 의 save_feedback/get_feedback 엣지 케이스.
 
 store.py 자체는 수정 대상이 아니고(이미 구현됨), db.init_db() 가 만드는
 SQLite 스키마(UNIQUE(file_id, preset_key), CHECK(rating BETWEEN 1 AND 5))와
@@ -11,7 +11,7 @@ import pytest
 
 from app.core import db
 from app.core.config import settings
-from app.services import store
+from app.services.persistence import store
 
 FID = "0123456789abcdef0123456789abcdef"
 

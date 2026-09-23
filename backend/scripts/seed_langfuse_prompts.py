@@ -19,8 +19,8 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from app.core.config import settings
 from app.prompts import frag
 from app.prompts.presets import PRESETS
-from app.services.auto_feedback import _SYSTEM_TEMPLATE as AUTO_FEEDBACK_TEMPLATE
-from app.services.judge import _SYSTEM_TEMPLATE
+from app.services.ai.auto_feedback import _SYSTEM_TEMPLATE as AUTO_FEEDBACK_TEMPLATE
+from app.services.ai.judge import _SYSTEM_TEMPLATE
 
 
 def _detect_template() -> str:

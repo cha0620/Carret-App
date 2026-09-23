@@ -1,6 +1,6 @@
 from PIL import Image
 
-from app.services import storage
+from app.services.persistence import storage
 
 
 def _force_local(monkeypatch):

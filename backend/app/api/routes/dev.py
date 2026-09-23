@@ -14,7 +14,9 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app.prompts.presets import get_preset
-from app.services import auto_feedback, detector, ingest, pipeline, storage, store
+from app.services import ingest, pipeline
+from app.services.ai import auto_feedback, detector
+from app.services.persistence import storage, store
 from app.util import evaluator
 from app.util.img_fetch import fetch_image
 
@@ -158,7 +160,8 @@ async def dev_run_inbox(req: DevRunInboxReq = DevRunInboxReq()):
             try:
                 row = await run_in_threadpool(
                     ingest.ingest_and_feedback,
-                    file_id, path.read_bytes(), path.suffix.lower(), req.preset)
+                    file_id, path.read_bytes(), path.suffix.lower(), req.preset,
+                    source="inbox", original_name=path.name)
             except Exception as e:
                 rows.append({"source_file": path.name, "file_id": file_id, "error": str(e)})
                 continue
@@ -173,7 +176,8 @@ async def dev_run_inbox(req: DevRunInboxReq = DevRunInboxReq()):
             try:
                 data, ext = await fetch_image(url)
                 row = await run_in_threadpool(
-                    ingest.ingest_and_feedback, file_id, data, f".{ext}", req.preset)
+                    ingest.ingest_and_feedback, file_id, data, f".{ext}", req.preset,
+                    source="inbox_url", original_name=url)
             except HTTPException as e:
                 rows.append({"source_url": url, "file_id": file_id, "error": e.detail})
                 continue

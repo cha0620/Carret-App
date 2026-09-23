@@ -4,7 +4,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Path
 
 from app.schemas.feedback import FeedbackRequest, FeedbackResponse
-from app.services import store
+from app.services.persistence import store
 
 logger = logging.getLogger("carret")
 router = APIRouter()

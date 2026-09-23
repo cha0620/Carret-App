@@ -88,12 +88,16 @@ BACKEND = _backend()
 
 
 # ===== 모듈 레벨 API (기존 호출부 무수정) =====
-def save(kind: str, name: str, data: bytes) -> None:
+def save(kind: str, name: str, data: bytes) -> int:
+    """실제로 쓴 바이트 수를 돌려준다 — original/result는 normalize()가 재인코딩하므로
+    호출부가 받은 원본 bytes 길이(len(data))와 다르다. size_bytes를 DB에 남기는
+    호출부는 원본 길이가 아니라 이 반환값을 써야 실제 저장된 크기와 맞는다."""
     if kind in IMAGE_KINDS:
         raw = len(data)
         data = img_util.normalize(data)
         logger.info(f"[storage] {kind}/{name} {raw}→{len(data)}B")
     BACKEND.save(kind, name, data)   # 쓰기는 항상 설정된 백엔드로만
+    return len(data)
 
 
 def load(kind: str, name: str) -> bytes | None:

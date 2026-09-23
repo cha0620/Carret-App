@@ -4,7 +4,8 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from app.services import detector, storage
+from app.services.ai import detector
+from app.services.persistence import storage
 
 BASE = storage.BASE / "dataset"
 IMG, AFTER = BASE / "img", BASE / "after"

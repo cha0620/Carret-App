@@ -1,7 +1,28 @@
-"""결과/피드백 저장소 (SQLite)."""
+"""원본/결과/피드백 저장소 (SQLite)."""
 import json
 
 from app.core import db
+
+
+def record_original(file_id, ext, source, original_name=None, size_bytes=None):
+    """원본이 storage에 저장될 때마다 같이 불러서 메타데이터를 남긴다.
+    UNIQUE(file_id) — 같은 file_id로 두 번 불려도(재시도 등) 조용히 무시.
+    original_name은 클라이언트가 주는 값(파일명/URL)이라 길이 상한을 둔다."""
+    if original_name is not None:
+        original_name = original_name[:500]
+    with db.get_conn() as c:
+        c.execute("""
+            INSERT INTO originals(file_id, ext, source, original_name, size_bytes)
+            VALUES (?,?,?,?,?)
+            ON CONFLICT(file_id) DO NOTHING
+        """, (file_id, ext, source, original_name, size_bytes))
+
+
+def get_original(file_id):
+    with db.get_conn() as c:
+        row = c.execute(
+            "SELECT * FROM originals WHERE file_id=?", (file_id,)).fetchone()
+    return dict(row) if row else None
 
 
 def record_result(file_id, preset_key, result_name, item,

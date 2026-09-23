@@ -103,6 +103,29 @@ def all_preserved(checks: list) -> bool:
     return all(c.get("preserved") for c in checks) if checks else True
 
 
+def check_photo(image_bytes: bytes) -> dict:
+    """생성 결과가 '제대로 된 사진'인가 — 구도가 잘렸거나 자막/텍스트로 상품이
+    가려졌으면 invalid (재생성 게이트). 실패 시 개방형 폴백(valid=True) — VLM
+    장애로 정상 생성물까지 재생성 루프에 태우지 않기 위함."""
+    try:
+        data = _call(image_bytes, P.check_photo_prompt(), "check_photo")
+        return {
+            "valid": _as_bool(data.get("valid", True)),
+            "reason": str(data.get("reason", "")).strip(),
+        }
+    except Exception as e:
+        print(f"[check_photo] 실패(무시): {e}")
+        return {"valid": True, "reason": ""}
+
+
+def _as_bool(v) -> bool:
+    """VLM이 JSON 모드에서도 valid 를 "false" 문자열로 줄 수 있어 bool() 단순
+    캐스팅은 위험 — 문자열이면 값 자체를 보고 판단."""
+    if isinstance(v, str):
+        return v.strip().lower() not in ("false", "0", "no", "")
+    return bool(v)
+
+
 def bubbles(checks: list) -> list:
     out = []
     for c in checks:
