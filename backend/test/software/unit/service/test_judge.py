@@ -1,4 +1,4 @@
-"""app.services.judge - `_system_prompt` (Langfuse fallback) + `judge()` (VLM 호출
+"""app.services.ai.judge - `_system_prompt` (Langfuse fallback) + `judge()` (VLM 호출
 래퍼) 트레이싱 투명성.
 
 `judge()` 는 `google.genai.Client` 를 새로 만들기 때문에 `judge.genai` 이름을
@@ -11,7 +11,7 @@ import pytest
 
 import app.core.tracing as tracing
 from app.prompts.rubric import rubric_text
-from app.services.judge import _system_prompt, judge
+from app.services.ai.judge import _system_prompt, judge
 
 
 @pytest.fixture(autouse=True)
@@ -72,7 +72,7 @@ def _make_fake_genai(text, usage_metadata=None):
 
 
 def test_judge_disabled_tracing_returns_validated_report_unchanged(monkeypatch):
-    import app.services.judge as judge_mod
+    import app.services.ai.judge as judge_mod
     raw = {"analysis": "괜찮음", "fidelity": 4, "realism": 6, "trust": 0}
     fake_genai, models = _make_fake_genai(json.dumps(raw))
     monkeypatch.setattr(judge_mod, "genai", fake_genai)
@@ -85,7 +85,7 @@ def test_judge_disabled_tracing_returns_validated_report_unchanged(monkeypatch):
 
 
 def test_judge_enabled_tracing_invokes_obs_update_with_validated_output(monkeypatch):
-    import app.services.judge as judge_mod
+    import app.services.ai.judge as judge_mod
 
     class FakeObservation:
         def __init__(self):

@@ -1,4 +1,4 @@
-"""app.services.generator._generate_ai - fal.ai 호출 래퍼 트레이싱 투명성.
+"""app.services.ai.generator._generate_ai - fal.ai 호출 래퍼 트레이싱 투명성.
 
 `_generate_ai` 는 `fal_client.upload_file/subscribe` 와 `httpx.get` 을 쓰므로
 generator 모듈의 `fal_client`/`httpx` 이름을 가짜 네임스페이스로 바꿔치기해서
@@ -7,8 +7,8 @@ generator 모듈의 `fal_client`/`httpx` 이름을 가짜 네임스페이스로 
 import pytest
 
 import app.core.tracing as tracing
-import app.services.generator as generator_mod
-from app.services.generator import _generate_ai
+import app.services.ai.generator as generator_mod
+from app.services.ai.generator import _generate_ai
 
 
 @pytest.fixture(autouse=True)

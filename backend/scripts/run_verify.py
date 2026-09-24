@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from app.services import evaluator
+from app.util import evaluator
 
 target = sys.argv[1] if len(sys.argv) > 1 else None
 

@@ -5,6 +5,15 @@ from pathlib import Path
 from app.core.config import settings
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS originals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id TEXT NOT NULL UNIQUE,
+    ext TEXT NOT NULL,
+    source TEXT NOT NULL,
+    original_name TEXT,
+    size_bytes INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS results (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     file_id TEXT NOT NULL,
@@ -33,8 +42,12 @@ CREATE TABLE IF NOT EXISTS feedbacks (
 
 
 def get_conn():
-    conn = sqlite3.connect(settings.db_path)
+    # timeout=10: run-inbox가 여러 파일을 스레드풀로 돌리면서 각자
+    # results/originals에 쓰다 보니 "database is locked"이 전보다 잦아질 수 있어
+    # 기본 5s보다 여유를 둠. WAL: 쓰기 중에도 다른 커넥션이 읽을 수 있게.
+    conn = sqlite3.connect(settings.db_path, timeout=10)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
 

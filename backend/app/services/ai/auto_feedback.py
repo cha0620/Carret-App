@@ -12,6 +12,7 @@ from google.genai import types
 
 from app.core.config import settings
 from app.core.prompt_registry import get_prompt_text
+from app.core.vlm import thinking
 from app.core.tracing import gemini_usage, observe
 
 _SYSTEM_TEMPLATE = """You are the SELLER on a secondhand marketplace, looking at your \
@@ -46,6 +47,7 @@ def generate_feedback(original: bytes, result: bytes) -> dict:
                 system_instruction=_system_prompt(),
                 temperature=0,
                 response_mime_type="application/json",
+                thinking_config=thinking("auto_feedback"),
             ),
         )
         out = _validate(json.loads(resp.text))

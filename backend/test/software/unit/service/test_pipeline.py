@@ -76,6 +76,8 @@ def _graph_out():
         "item": "chair",
         "considered": ["scratch"],
         "visual_similarity": 0.87,
+        "gen_attempts": 1,          # ⭐ 재생성 게이트
+        "photo_check": {"valid": True, "reason": ""},   # ⭐ 재생성 게이트
     }
 
 
@@ -89,6 +91,10 @@ def _expected(out):
         "item": out["item"],
         "considered": out["considered"],
         "visual_similarity": out["visual_similarity"],
+        "gen_attempts": out.get("gen_attempts"),
+        "photo_check": out.get("photo_check"),
+        "status": out.get("status", "pass"),
+        "guard_report": out.get("guard_report", []),
     }
 
 
@@ -101,7 +107,7 @@ def test_run_transform_mock_mode_bypasses_graph_and_tracing(monkeypatch, make_pn
     monkeypatch.setattr(pipeline_mod, "GRAPH", FakeGraph(None), raising=False)
     monkeypatch.setattr(pipeline_mod.GRAPH, "invoke", _poison_invoke)
 
-    from app.services import storage
+    from app.services.persistence import storage
     storage.save("original", "fid1.jpg", make_png())
 
     result = pipeline_mod.run_transform("fid1", "preset_a")
@@ -110,6 +116,7 @@ def test_run_transform_mock_mode_bypasses_graph_and_tracing(monkeypatch, make_pn
         "result_name": "fid1_preset_a.jpg", "prompt_used": "PASS-THROUGH",
         "checks": [], "bubbles": [], "gate_passed": None,
         "item": "object", "considered": [],
+        "status": "pass", "guard_report": [],
     }
 
 
@@ -160,6 +167,7 @@ def test_run_transform_real_mode_enabled_tracing_updates_obs_and_flushes(monkeyp
     assert fake_lf.obs.update_calls == [{"output": {
         "gate_passed": True, "bubbles": 1, "item": "chair",
         "visual_similarity": 0.87,
+        "gen_attempts": 1, "photo_check": {"valid": True, "reason": ""},
     }}]
     assert fake_lf.flushed is True
 
@@ -201,7 +209,7 @@ def test_run_transform_with_result_disabled_tracing_returns_expected_shape(monke
         "checks": checks, "bubbles": bubbles_out, "gate_passed": True,
         "item": "chair", "considered": ["scratch"], "visual_similarity": 0.91,
     }
-    from app.services import storage
+    from app.services.persistence import storage
     assert storage.load("result", "fid4_preset_d.jpg") is not None
 
 
@@ -226,3 +234,236 @@ def test_run_transform_with_result_enabled_tracing_updates_obs_and_flushes(monke
         "visual_similarity": None,
     }}]
     assert fake_lf.flushed is True
+
+
+# ── 출력 가드 폴백 정책 (validate_result 안에서 실행, 그래프 구조 불변) ──
+from app.services.quality.guards import GuardResult, run_output_guards as _ORIG_RUN_OUTPUT_GUARDS
+
+ORIG_COLOR = (120, 90, 60)   # make_png 기본색
+GEN_COLOR = (250, 250, 250)
+
+
+def _hard_fail():
+    return GuardResult(name="ocr_match", passed=False, value=0.5,
+                       threshold=0.95, severity="hard")
+
+
+def _soft_fail():
+    return GuardResult(name="dino_band", passed=False, value=0.6,
+                       threshold=0.75, severity="soft")
+
+
+def _patch_graph_deps(monkeypatch, make_png, guard_side_effects):
+    """guard_side_effects: generate 1회당 run_output_guards 가 돌려줄 리스트를
+    순서대로. 반환: 호출 기록 dict (gen_seeds / judge / verify)."""
+    from app.services.persistence import storage
+    storage.save("original", "fid-g.png", make_png())
+
+    calls = {"gen_seeds": [], "judge": 0, "verify": 0}
+
+    def fake_generate_ai(original, preset, seed=None):
+        calls["gen_seeds"].append(seed)
+        return make_png(color=GEN_COLOR)
+
+    guard_iter = iter(guard_side_effects)
+
+    def fake_guards(orig, result, anchors, ocr_before, ocr_after):
+        assert ocr_before == [] and ocr_after == []   # T3 전까지 OCR 미연결
+        return next(guard_iter)
+
+    def fake_judge(orig, result):
+        calls["judge"] += 1
+        return {"analysis": "ok", "fidelity": 5, "realism": 5, "trust": 5}
+
+    def fake_verify(img, anchors, item, considered):
+        calls["verify"] += 1
+        return [{"what": "얼룩", "preserved": True}]
+
+    monkeypatch.setattr(pipeline_mod.detector, "classify",
+                        lambda img: {"item": "chair", "considered": []})
+    monkeypatch.setattr(pipeline_mod.detector, "detect_defects",
+                        lambda img, item, considered: [
+                            {"category": "other", "what": "얼룩", "where": "앞면"}])
+    monkeypatch.setattr(pipeline_mod, "_generate_ai", fake_generate_ai)
+    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", fake_guards)
+    monkeypatch.setattr(pipeline_mod.detector, "check_photo",
+                        lambda img: {"valid": True, "reason": ""})
+    monkeypatch.setattr(pipeline_mod.embedder, "cosine_similarity",
+                        lambda orig, result: 0.9)
+    monkeypatch.setattr(pipeline_mod.detector, "verify_and_locate", fake_verify)
+    monkeypatch.setattr(pipeline_mod.judge, "judge", fake_judge)
+    return calls
+
+
+def _mean_color(image_bytes):
+    import io
+    from PIL import Image
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    return img.resize((1, 1)).getpixel((0, 0))
+
+
+def test_guard_hard_fail_twice_returns_blocked_with_original(monkeypatch, make_png):
+    calls = _patch_graph_deps(monkeypatch, make_png,
+                              [[_hard_fail()], [_hard_fail(), _soft_fail()]])
+
+    result = pipeline_mod.run_transform("fid-g", "studio_white")
+
+    assert result["status"] == "blocked"
+    assert [g["name"] for g in result["guard_report"]] == ["ocr_match", "dino_band"]
+    assert result["guard_report"][0] == {
+        "name": "ocr_match", "passed": False, "value": 0.5,
+        "threshold": 0.95, "severity": "hard"}
+    # 변환 이미지는 내보내지 않는다 — 결과 슬롯엔 원본이 들어가 있어야 함
+    from app.services.persistence import storage
+    served = storage.load("result", result["result_name"])
+    assert all(abs(a - b) <= 2 for a, b in zip(_mean_color(served), ORIG_COLOR))
+    # blocked 결과로 verify/judge(비용 드는 VLM)를 돌리지 않는다
+    assert calls["verify"] == 0 and calls["judge"] == 0
+    assert storage.load("quality", "fid-g_studio_white.json") is None
+
+
+def test_guard_seed_retry_happens_exactly_once(monkeypatch, make_png):
+    """항상 hard fail 이어도 generate 는 최초 1회 + seed 재시도 1회 = 2회뿐."""
+    calls = _patch_graph_deps(monkeypatch, make_png,
+                              [[_hard_fail()], [_hard_fail()], [_hard_fail()]])
+
+    out = pipeline_mod.GRAPH.invoke({"file_id": "fid-g", "preset_key": "studio_white"})
+
+    assert len(calls["gen_seeds"]) == 2
+    assert calls["gen_seeds"][0] is None            # 최초: seed 미지정 (fal 기본)
+    assert isinstance(calls["gen_seeds"][1], int)   # 재시도: seed 만 바뀜
+    assert out["guard_seed"] == calls["gen_seeds"][1]
+    assert out["status"] == "blocked"
+
+
+def test_guard_seed_retry_same_prompt(monkeypatch, make_png):
+    """재시도는 '동일 파라미터' — 프롬프트가 바뀌면 안 된다."""
+    prompts = []
+    _patch_graph_deps(monkeypatch, make_png, [[_hard_fail()], []])
+
+    def spy(original, preset, seed=None):
+        prompts.append(preset["prompt"])
+        return make_png(color=GEN_COLOR)
+    monkeypatch.setattr(pipeline_mod, "_generate_ai", spy)
+
+    out = pipeline_mod.GRAPH.invoke({"file_id": "fid-g", "preset_key": "studio_white"})
+
+    assert len(prompts) == 2 and prompts[0] == prompts[1]
+    assert out["status"] == "pass"
+    assert out["guard_report"] == []
+
+
+def test_guard_soft_only_passes_with_report(monkeypatch, make_png):
+    calls = _patch_graph_deps(monkeypatch, make_png, [[_soft_fail()]])
+
+    result = pipeline_mod.run_transform("fid-g", "studio_white")
+
+    assert result["status"] == "pass"
+    assert result["guard_report"] == [{
+        "name": "dino_band", "passed": False, "value": 0.6,
+        "threshold": 0.75, "severity": "soft"}]
+    assert calls["gen_seeds"] == [None]     # soft 는 재시도 사유가 아님
+    assert calls["judge"] == 1
+
+
+def test_guard_report_written_to_inspect_json(monkeypatch, make_png):
+    import json
+    _patch_graph_deps(monkeypatch, make_png, [[_hard_fail()], [_hard_fail()]])
+
+    pipeline_mod.run_transform("fid-g", "studio_white")
+
+    from app.services.persistence import storage
+    inspect = json.loads(storage.load("quality", "fid-g_studio_white_inspect.json"))
+    assert inspect["status"] == "blocked"
+    assert inspect["guard_report"][0]["name"] == "ocr_match"
+    assert isinstance(inspect["guard_seed"], int)
+
+
+def test_guard_exception_propagates(monkeypatch, make_png):
+    """가드 계산 실패는 fail-open 하지 않는다 — 예외 그대로 전파."""
+    _patch_graph_deps(monkeypatch, make_png, [])
+
+    def boom(*a, **kw):
+        raise RuntimeError("embedder down")
+    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", boom)
+
+    with pytest.raises(RuntimeError, match="embedder down"):
+        pipeline_mod.run_transform("fid-g", "studio_white")
+
+
+def test_guard_retry_raising_leaves_no_generated_image(monkeypatch, make_png):
+    """가드 재시도 호출이 예외로 끝나도 가드 전 이미지가 결과 슬롯에 남으면 안 된다."""
+    _patch_graph_deps(monkeypatch, make_png, [[_hard_fail()]])
+
+    def gen(original, preset, seed=None):
+        if seed is not None:
+            raise TimeoutError("fal timeout")
+        return make_png(color=GEN_COLOR)
+    monkeypatch.setattr(pipeline_mod, "_generate_ai", gen)
+
+    with pytest.raises(TimeoutError):
+        pipeline_mod.run_transform("fid-g", "studio_white")
+
+    from app.services.persistence import storage
+    assert storage.load("result", "fid-g_studio_white.jpg") is None
+
+
+def test_guard_retry_does_not_consume_photo_budget(monkeypatch, make_png):
+    """가드 재시도 1회는 max_generate_attempts 와 별개 — 가드 재시도 뒤에도
+    photo_check 재생성 기회가 남아 있고, 그 재생성엔 seed 를 고정하지 않는다."""
+    monkeypatch.setattr(settings, "max_generate_attempts", 2, raising=False)
+    calls = _patch_graph_deps(monkeypatch, make_png, [[_hard_fail()], [], []])
+    checks = iter([{"valid": False, "reason": "cropped"}, {"valid": True, "reason": ""}])
+    monkeypatch.setattr(pipeline_mod.detector, "check_photo", lambda img: next(checks))
+
+    out = pipeline_mod.GRAPH.invoke({"file_id": "fid-g", "preset_key": "studio_white"})
+
+    seeds = calls["gen_seeds"]
+    assert len(seeds) == 3                       # 최초 + 가드 재시도 + photo 재생성
+    assert seeds[0] is None and isinstance(seeds[1], int) and seeds[2] is None
+    assert out["gen_attempts"] == 2
+    assert out["status"] == "pass"
+
+
+def test_hard_fail_after_guard_retry_used_blocks_immediately(monkeypatch, make_png):
+    """가드 재시도를 이미 쓴 뒤 photo 재생성에서 hard fail → 추가 재시도 없이 blocked."""
+    monkeypatch.setattr(settings, "max_generate_attempts", 2, raising=False)
+    calls = _patch_graph_deps(monkeypatch, make_png, [[_hard_fail()], [], [_hard_fail()]])
+    monkeypatch.setattr(pipeline_mod.detector, "check_photo",
+                        lambda img: {"valid": False, "reason": "cropped"})
+
+    out = pipeline_mod.GRAPH.invoke({"file_id": "fid-g", "preset_key": "studio_white"})
+
+    assert len(calls["gen_seeds"]) == 3
+    assert out["status"] == "blocked"
+    assert out["photo_check"] is None
+
+
+def test_guard_anchors_only_boxed_passed(monkeypatch, make_png):
+    seen = {}
+    _patch_graph_deps(monkeypatch, make_png, [])
+    boxed = {"type": "defect", "box": {"x1": 0, "y1": 0, "x2": 10, "y2": 10}}
+    monkeypatch.setattr(pipeline_mod.detector, "detect_defects",
+                        lambda img, item, considered: [
+                            {"category": "other", "what": "얼룩", "where": "앞면"}, boxed])
+
+    def spy(orig, result, anchors, ocr_before, ocr_after):
+        seen["anchors"] = anchors
+        return []
+    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", spy)
+
+    pipeline_mod.GRAPH.invoke({"file_id": "fid-g", "preset_key": "studio_white"})
+
+    assert seen["anchors"] == [boxed]
+
+
+def test_real_guards_with_empty_ocr_pass(monkeypatch, make_png):
+    """실제 run_output_guards 에 OCR [] 를 넣어도 hard fail 이 안 나야 한다
+    (text_recall("", "") 이 1.0 이 아니게 바뀌면 모든 실행이 blocked 됨)."""
+    calls = _patch_graph_deps(monkeypatch, make_png, [])
+    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", _ORIG_RUN_OUTPUT_GUARDS)
+
+    out = pipeline_mod.GRAPH.invoke({"file_id": "fid-g", "preset_key": "studio_white"})
+
+    assert out["status"] == "pass"
+    assert calls["gen_seeds"] == [None]

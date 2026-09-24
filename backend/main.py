@@ -10,7 +10,7 @@ from app.api.routes import images
 from app.api.routes import transform
 from app.core import db
 from app.core.config import settings
-from app.services import storage
+from app.services.persistence import storage
 
 import time
 from app.core.logsetup import setup_logging

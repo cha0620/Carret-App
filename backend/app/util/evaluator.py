@@ -1,5 +1,6 @@
 """앵커 평가 로직 — CLI 와 API 의 단일 진실원."""
-from app.services import detector, storage
+from app.services.ai import detector
+from app.services.persistence import storage
 from pathlib import Path
 
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".webp"}

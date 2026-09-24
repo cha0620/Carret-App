@@ -1,4 +1,4 @@
-"""app.services.embedder.cosine_similarity - `observe(..., as_type="embedding")`
+"""app.services.ai.embedder.cosine_similarity - `observe(..., as_type="embedding")`
 트레이싱 투명성.
 
 `embed()` 는 DINOv2 모델을 실제로 로드하므로(네트워크/디스크 다운로드 가능),
@@ -9,8 +9,8 @@ import numpy as np
 import pytest
 
 import app.core.tracing as tracing
-import app.services.embedder as embedder_mod
-from app.services.embedder import cosine_similarity
+import app.services.ai.embedder as embedder_mod
+from app.services.ai.embedder import cosine_similarity
 
 
 @pytest.fixture(autouse=True)

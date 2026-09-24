@@ -1,4 +1,4 @@
-"""app.services.detector - 순수 함수 + `_call`(VLM 호출 래퍼) 트레이싱 투명성.
+"""app.services.ai.detector - 순수 함수 + `_call`(VLM 호출 래퍼) 트레이싱 투명성.
 
 `_call`/`match_anchors` 는 `google.genai.Client` 를 새로 만들지만, detector 모듈
 이 `from google import genai` 형태로 임포트하므로 `detector.genai` 이름 자체를
@@ -9,8 +9,8 @@ import json
 import pytest
 
 import app.core.tracing as tracing
-from app.services.detector import (
-    _box, _call, _usage, all_preserved, bubbles, match_anchors,
+from app.services.ai.detector import (
+    _box, _call, _usage, all_preserved, bubbles, check_photo, match_anchors,
 )
 
 
@@ -75,13 +75,20 @@ def test_usage_returns_none_when_usage_metadata_attr_missing_entirely():
 
 def test_usage_maps_fields_when_present():
     resp = _Resp(usage_metadata=_Usage(prompt=10, candidates=5, total=15))
-    assert _usage(resp) == {"input": 10, "output": 5, "total": 15}
+    assert _usage(resp) == {"input": 10, "output": 5, "thoughts": 0, "total": 15}
+
+
+def test_usage_folds_thinking_tokens_into_output():
+    """생각 토큰은 출력 단가로 청구되므로 output 에 합친다."""
+    u = _Usage(prompt=10, candidates=5, total=115)
+    u.thoughts_token_count = 100
+    assert _usage(_Resp(usage_metadata=u)) == {"input": 10, "output": 105, "thoughts": 100, "total": 115}
 
 
 def test_usage_defaults_falsy_fields_to_zero():
     """0 이나 None 이 오면(SDK 가 종종 그럼) 0 으로 방어."""
     resp = _Resp(usage_metadata=_Usage(prompt=None, candidates=0, total=None))
-    assert _usage(resp) == {"input": 0, "output": 0, "total": 0}
+    assert _usage(resp) == {"input": 0, "output": 0, "thoughts": 0, "total": 0}
 
 
 # ── _call(): 가짜 genai 클라이언트 ────────────────
@@ -118,7 +125,7 @@ def _make_fake_genai(text, usage_metadata=None):
 
 
 def test_call_disabled_tracing_returns_parsed_json_unchanged(monkeypatch):
-    import app.services.detector as detector
+    import app.services.ai.detector as detector
     fake_genai, models = _make_fake_genai(json.dumps({"item": "chair"}))
     monkeypatch.setattr(detector, "genai", fake_genai)
 
@@ -129,7 +136,7 @@ def test_call_disabled_tracing_returns_parsed_json_unchanged(monkeypatch):
 
 
 def test_call_json_decode_error_returns_empty_dict(monkeypatch):
-    import app.services.detector as detector
+    import app.services.ai.detector as detector
     fake_genai, _ = _make_fake_genai("not valid json{{{")
     monkeypatch.setattr(detector, "genai", fake_genai)
 
@@ -141,7 +148,7 @@ def test_call_json_decode_error_returns_empty_dict(monkeypatch):
 def test_call_disabled_tracing_does_not_touch_fake_client_beyond_generate_content(monkeypatch):
     """트레이싱 비활성이면 obs 는 None 이라 `.update(...)` 를 절대 호출하지
     않는다(호출했다면 AttributeError 로 바로 터졌을 것 - 가드가 없다면)."""
-    import app.services.detector as detector
+    import app.services.ai.detector as detector
     fake_genai, _ = _make_fake_genai(json.dumps({"ok": True}))
     monkeypatch.setattr(detector, "genai", fake_genai)
 
@@ -150,7 +157,7 @@ def test_call_disabled_tracing_does_not_touch_fake_client_beyond_generate_conten
 
 
 def test_call_enabled_tracing_invokes_obs_update_with_output_and_usage(monkeypatch):
-    import app.services.detector as detector
+    import app.services.ai.detector as detector
 
     class FakeObservation:
         def __init__(self):
@@ -189,12 +196,12 @@ def test_call_enabled_tracing_invokes_obs_update_with_output_and_usage(monkeypat
     assert fake_lf.calls[0]["as_type"] == "generation"
     assert fake_lf.obs.update_calls == [{
         "output": {"item": "lamp"},
-        "usage_details": {"input": 3, "output": 4, "total": 7},
+        "usage_details": {"input": 3, "output": 4, "thoughts": 0, "total": 7},
     }]
 
 
 def test_call_enabled_tracing_json_decode_error_updates_obs_with_empty_output(monkeypatch):
-    import app.services.detector as detector
+    import app.services.ai.detector as detector
 
     class FakeObservation:
         def __init__(self):
@@ -227,3 +234,109 @@ def test_call_enabled_tracing_json_decode_error_updates_obs_with_empty_output(mo
 
     assert data == {}
     assert fake_lf.obs.update_calls == [{"output": {}, "usage_details": None}]
+
+
+# ── check_photo(): 재생성 게이트 ──────────────────
+def test_check_photo_valid_true(monkeypatch):
+    import app.services.ai.detector as detector
+    fake_genai, _ = _make_fake_genai(json.dumps({"valid": True, "reason": ""}))
+    monkeypatch.setattr(detector, "genai", fake_genai)
+
+    result = check_photo(b"imgbytes")
+
+    assert result == {"valid": True, "reason": ""}
+
+
+def test_check_photo_valid_false_cropped_or_overlay(monkeypatch):
+    import app.services.ai.detector as detector
+    fake_genai, _ = _make_fake_genai(
+        json.dumps({"valid": False, "reason": "caption text covers the product"})
+    )
+    monkeypatch.setattr(detector, "genai", fake_genai)
+
+    result = check_photo(b"imgbytes")
+
+    assert result == {"valid": False, "reason": "caption text covers the product"}
+
+
+def test_check_photo_vlm_exception_open_fallback(monkeypatch):
+    """VLM 호출 자체가 예외를 던져도 재생성 루프에 태우지 않도록 valid=True 로
+    개방형 폴백."""
+    import app.services.ai.detector as detector
+
+    def _boom(*a, **kw):
+        raise RuntimeError("network down")
+    monkeypatch.setattr(detector, "_call", _boom)
+
+    result = check_photo(b"imgbytes")
+
+    assert result == {"valid": True, "reason": ""}
+
+
+def test_check_photo_malformed_json_falls_through_to_valid_true(monkeypatch):
+    """_call 이 JSON 파싱 실패 시 {} 를 반환하는 기존 경로 → check_photo 는
+    data.get("valid", True) 로 True 에 안전 착지."""
+    import app.services.ai.detector as detector
+    fake_genai, _ = _make_fake_genai("not valid json{{{")
+    monkeypatch.setattr(detector, "genai", fake_genai)
+
+    result = check_photo(b"imgbytes")
+
+    assert result == {"valid": True, "reason": ""}
+
+
+def test_from_box_2d_maps_gemini_order_to_xy():
+    """box_2d 는 [ymin, xmin, ymax, xmax] — y 가 먼저 (가로세로 전치 버그 방지)."""
+    from app.services.ai.detector import _from_box_2d
+    c = _from_box_2d({"what": "bear", "preserved": True, "box_2d": [493, 125, 851, 615]})
+    assert (c["x1"], c["y1"], c["x2"], c["y2"]) == (125, 493, 615, 851)
+    assert "box_2d" not in c
+
+
+def test_from_box_2d_keeps_legacy_xy_keys():
+    from app.services.ai.detector import _from_box_2d
+    c = {"what": "a", "preserved": True, "x1": 1, "y1": 2, "x2": 3, "y2": 4}
+    assert _from_box_2d(c) == c
+
+
+def test_from_box_2d_ignores_malformed():
+    from app.services.ai.detector import _from_box_2d
+    for bad in ([1, 2, 3], ["1", 2, 3, 4], None, [True, 1, 2, 3]):
+        c = {"what": "a", "preserved": True, "box_2d": bad}
+        assert _from_box_2d(c) == c
+
+
+def test_verify_and_locate_accepts_box_2d(monkeypatch):
+    from app.services.ai import detector
+    monkeypatch.setattr(detector, "_call", lambda *a, **k: {"checks": [
+        {"what": "logo", "preserved": True, "box_2d": [100, 200, 300, 400]},
+        {"what": "stain", "preserved": False},
+    ]})
+    checks = detector.verify_and_locate(b"img", [{"what": "logo", "where": "front"}])
+    assert (checks[0]["x1"], checks[0]["y1"], checks[0]["x2"], checks[0]["y2"]) == (200, 100, 400, 300)
+    assert checks[1]["preserved"] is False
+
+
+def test_zero_area_box_is_rejected():
+    from app.services.ai.detector import _has_box
+    assert not _has_box({"x1": 10, "y1": 10, "x2": 10, "y2": 50})
+    assert _has_box({"x1": 10, "y1": 10, "x2": 20, "y2": 50})
+
+
+def test_read_item_text_converts_boxes_and_drops_empty(monkeypatch):
+    from app.services.ai import detector
+    monkeypatch.setattr(detector, "_call", lambda *a, **k: {
+        "item_box_2d": [100, 200, 900, 800],
+        "texts": [{"text": "ROLEX", "box_2d": [300, 400, 350, 600]},
+                  {"text": "  "}, "junk", {"text": "29"}]})
+    out = detector.read_item_text(b"img", "watch")
+    assert out["item_box"] == {"x1": 200, "y1": 100, "x2": 800, "y2": 900}
+    assert out["texts"][0] == {"text": "ROLEX", "x1": 400, "y1": 300, "x2": 600, "y2": 350}
+    assert out["texts"][1] == {"text": "29"}
+    assert len(out["texts"]) == 2
+
+
+def test_read_item_text_without_item_box(monkeypatch):
+    from app.services.ai import detector
+    monkeypatch.setattr(detector, "_call", lambda *a, **k: {"texts": []})
+    assert detector.read_item_text(b"img") == {"item_box": None, "texts": []}

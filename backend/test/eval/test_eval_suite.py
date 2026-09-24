@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from app.services import detector
+from app.services.ai import detector
 
 pytestmark = pytest.mark.eval
 

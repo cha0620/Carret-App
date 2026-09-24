@@ -76,9 +76,13 @@ def gemini_usage(resp) -> dict | None:
     u = getattr(resp, "usage_metadata", None)
     if u is None:
         return None
+    # 생각(thinking) 토큰은 응답에 안 보이지만 출력 단가로 청구된다 — output 에
+    # 합쳐야 Langfuse 비용이 실제 청구액과 맞는다 (따로 보려고 thoughts 도 남김).
+    thoughts = getattr(u, "thoughts_token_count", None) or 0
     return {
         "input": u.prompt_token_count or 0,
-        "output": u.candidates_token_count or 0,
+        "output": (u.candidates_token_count or 0) + thoughts,
+        "thoughts": thoughts,
         "total": u.total_token_count or 0,
     }
 

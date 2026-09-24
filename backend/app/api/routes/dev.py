@@ -6,15 +6,20 @@
 = 테스트는 프로덕션을 호출하지, 복사하지 않는다.
 """
 import json
+import logging
+import re
 import threading
 import uuid
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app.prompts.presets import get_preset
-from app.services import auto_feedback, detector, ingest, pipeline, storage, store
+from app.services import ingest, pipeline
+from app.services.ai import auto_feedback, detector
+from app.services.persistence import storage, store
 from app.util import evaluator
 from app.util.img_fetch import fetch_image
 
@@ -158,7 +163,8 @@ async def dev_run_inbox(req: DevRunInboxReq = DevRunInboxReq()):
             try:
                 row = await run_in_threadpool(
                     ingest.ingest_and_feedback,
-                    file_id, path.read_bytes(), path.suffix.lower(), req.preset)
+                    file_id, path.read_bytes(), path.suffix.lower(), req.preset,
+                    source="inbox", original_name=path.name)
             except Exception as e:
                 rows.append({"source_file": path.name, "file_id": file_id, "error": str(e)})
                 continue
@@ -173,7 +179,8 @@ async def dev_run_inbox(req: DevRunInboxReq = DevRunInboxReq()):
             try:
                 data, ext = await fetch_image(url)
                 row = await run_in_threadpool(
-                    ingest.ingest_and_feedback, file_id, data, f".{ext}", req.preset)
+                    ingest.ingest_and_feedback, file_id, data, f".{ext}", req.preset,
+                    source="inbox_url", original_name=url)
             except HTTPException as e:
                 rows.append({"source_url": url, "file_id": file_id, "error": e.detail})
                 continue
@@ -220,3 +227,120 @@ def dev_gallery():
     originals = [{"name": p.stem, "url": f"/storage/original/{p.name}"}
                  for p in sorted((storage.BASE / "original").glob("*.jpg"))]
     return {"pairs": pairs, "originals": originals}
+
+
+FILE_ID_RE = re.compile(r"[0-9a-f]{32}")
+logger = logging.getLogger("carret.dev")
+
+
+def _load_json(kind: str, name: str):
+    data = storage.load(kind, name)
+    return json.loads(data.decode("utf-8")) if data is not None else None
+
+
+def _safe(fn, *args):
+    """항목 하나의 산출물이 깨져 있어도(쓰다 만 json, DB 락 등) 목록 전체를
+    500 으로 날리지 않는다 — 그 칸만 None 으로 비우고 로그만 남긴다."""
+    try:
+        return fn(*args)
+    except Exception:
+        logger.exception(f"[dev/results] {getattr(fn, '__name__', fn)}{args} 실패(무시)")
+        return None
+
+
+def _prefix_map(folder, sep: str) -> dict:
+    """폴더를 한 번만 훑어 {file_id: 파일} — 결과마다 glob 하지 않기 위함."""
+    out = {}
+    if folder.is_dir():
+        for f in folder.iterdir():
+            fid = f.name[:32]
+            if f.is_file() and FILE_ID_RE.fullmatch(fid) and f.name[32:33] == sep:
+                out.setdefault(fid, f)
+    return out
+
+
+@router.get("/results")
+def dev_results():
+    """파이프라인이 만든 결과 전부를 원본과 묶어서 한 번에 — 판정(judge),
+    인스펙트(anchors/checks/gate/guard), 피드백, 원본 이름을 모아 돌려준다.
+    계산은 하지 않는다: 이미 저장된 산출물을 읽기만 한다 (최신순).
+    목록·이미지 URL 은 로컬 storage 기준 (/storage 마운트와 짝)."""
+    originals = _prefix_map(storage.BASE / "original", ".")
+    done = _prefix_map(storage.BASE / "inbox" / "done", "_")
+    found = []
+    for p in (storage.BASE / "result").glob("*.jpg"):
+        file_id, _, preset = p.stem.partition("_")
+        if not FILE_ID_RE.fullmatch(file_id) or not preset:
+            continue
+        try:
+            mtime = p.stat().st_mtime
+        except FileNotFoundError:   # glob 과 stat 사이에 덮어쓰기/삭제
+            continue
+        found.append((mtime, p, file_id, preset))
+    found.sort(key=lambda t: t[0], reverse=True)
+
+    items = []
+    for mtime, p, file_id, preset in found:
+        orig = originals.get(file_id)
+        meta = _safe(store.get_original, file_id) or {}
+        # 원본 파일명: DB 에 없으면(메타 기록 도입 전 실행분) inbox/done/{file_id}_{원래이름} 에서 복원
+        name = meta.get("original_name")
+        if not name and file_id in done:
+            name = done[file_id].name[33:]
+        items.append({
+            "file_id": file_id,
+            "preset": preset,
+            "orig": f"/storage/original/{orig.name}" if orig else None,
+            "result": f"/storage/result/{p.name}",
+            "created": mtime,
+            "name": name,
+            "db": _safe(store.get_result, file_id, preset),
+            "judge": _safe(_load_json, "quality", f"{file_id}_{preset}.json"),
+            "inspect": _safe(_load_json, "quality", f"{file_id}_{preset}_inspect.json"),
+            "feedback": _safe(store.get_feedback, file_id, preset),
+        })
+    return {"items": items}
+
+
+# ---- 텍스트/로고 깨짐 확인 (storage/text_check, 항상 로컬) ----
+# dataset 과 같은 "실험 자산" 이라 STORAGE_BACKEND(local/s3) 와 무관하게 로컬에서 읽는다.
+TEXT_CHECK_DIRS = {"input", "output"}
+
+
+def _text_check_root():
+    return storage.BASE / "text_check"
+
+
+@router.get("/text-check")
+def dev_text_check():
+    """input/ 원본마다 output/ 결과 + report.json 행을 묶어서 돌려준다."""
+    root = _text_check_root()
+    report_path = root / "output" / "report.json"
+    rows = {}
+    if report_path.exists():
+        rows = {r["file"]: r for r in json.loads(report_path.read_text())}
+    items = []
+    for src in sorted((root / "input").glob("*")):
+        if src.suffix.lower() not in INBOX_EXTS:
+            continue
+        results = sorted((root / "output").glob(f"{src.stem}_*.jpg"))
+        items.append({
+            "name": src.name,
+            "orig": f"/dev/text-check/img/input/{src.name}",
+            "results": [{"preset": r.stem[len(src.stem) + 1:],
+                         "url": f"/dev/text-check/img/output/{r.name}"}
+                        for r in results],
+            "report": rows.get(src.name),
+        })
+    return {"items": items}
+
+
+@router.get("/text-check/img/{folder}/{name}")
+def dev_text_check_img(folder: str, name: str):
+    if folder not in TEXT_CHECK_DIRS:
+        raise HTTPException(404, "폴더 없음")
+    base = (_text_check_root() / folder).resolve()
+    path = (base / name).resolve()
+    if not path.is_relative_to(base) or not path.is_file():
+        raise HTTPException(404, "파일 없음")
+    return FileResponse(path)

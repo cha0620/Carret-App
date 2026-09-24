@@ -87,7 +87,7 @@ def test_submit_feedback_missing_body_is_422(client, feedback_db):
 
 
 def test_submit_feedback_save_failure_returns_500(client, feedback_db, monkeypatch):
-    from app.services import store
+    from app.services.persistence import store
 
     def boom(*a, **kw):
         raise RuntimeError("db exploded")

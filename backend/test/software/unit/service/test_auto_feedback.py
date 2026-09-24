@@ -1,4 +1,4 @@
-"""app.services.auto_feedback - `generate_feedback()` (VLM 호출 래퍼) 검증/트레이싱.
+"""app.services.ai.auto_feedback - `generate_feedback()` (VLM 호출 래퍼) 검증/트레이싱.
 
 `judge.py`와 같은 패턴으로 `google.genai.Client`를 새로 만들기 때문에
 `auto_feedback.genai` 이름을 가짜 네임스페이스로 바꿔치기해서 실제 네트워크
@@ -9,7 +9,7 @@ import json
 import pytest
 
 import app.core.tracing as tracing
-from app.services.auto_feedback import generate_feedback
+from app.services.ai.auto_feedback import generate_feedback
 
 
 @pytest.fixture(autouse=True)
@@ -51,7 +51,7 @@ def _make_fake_genai(text, usage_metadata=None):
 
 
 def test_generate_feedback_disabled_tracing_returns_validated_dict(monkeypatch):
-    import app.services.auto_feedback as auto_feedback_mod
+    import app.services.ai.auto_feedback as auto_feedback_mod
     raw = {"rating": 4, "comment": "괜찮아요"}
     fake_genai, models = _make_fake_genai(json.dumps(raw))
     monkeypatch.setattr(auto_feedback_mod, "genai", fake_genai)
@@ -63,7 +63,7 @@ def test_generate_feedback_disabled_tracing_returns_validated_dict(monkeypatch):
 
 
 def test_generate_feedback_clamps_rating_above_range(monkeypatch):
-    import app.services.auto_feedback as auto_feedback_mod
+    import app.services.ai.auto_feedback as auto_feedback_mod
     raw = {"rating": 7, "comment": "최고"}
     fake_genai, _ = _make_fake_genai(json.dumps(raw))
     monkeypatch.setattr(auto_feedback_mod, "genai", fake_genai)
@@ -74,7 +74,7 @@ def test_generate_feedback_clamps_rating_above_range(monkeypatch):
 
 
 def test_generate_feedback_clamps_rating_below_range(monkeypatch):
-    import app.services.auto_feedback as auto_feedback_mod
+    import app.services.ai.auto_feedback as auto_feedback_mod
     raw = {"rating": 0, "comment": "별로"}
     fake_genai, _ = _make_fake_genai(json.dumps(raw))
     monkeypatch.setattr(auto_feedback_mod, "genai", fake_genai)
@@ -85,7 +85,7 @@ def test_generate_feedback_clamps_rating_below_range(monkeypatch):
 
 
 def test_generate_feedback_blank_comment_normalized_to_none(monkeypatch):
-    import app.services.auto_feedback as auto_feedback_mod
+    import app.services.ai.auto_feedback as auto_feedback_mod
     raw = {"rating": 3, "comment": "   "}
     fake_genai, _ = _make_fake_genai(json.dumps(raw))
     monkeypatch.setattr(auto_feedback_mod, "genai", fake_genai)
@@ -96,7 +96,7 @@ def test_generate_feedback_blank_comment_normalized_to_none(monkeypatch):
 
 
 def test_generate_feedback_missing_comment_normalized_to_none(monkeypatch):
-    import app.services.auto_feedback as auto_feedback_mod
+    import app.services.ai.auto_feedback as auto_feedback_mod
     raw = {"rating": 3}
     fake_genai, _ = _make_fake_genai(json.dumps(raw))
     monkeypatch.setattr(auto_feedback_mod, "genai", fake_genai)
@@ -107,7 +107,7 @@ def test_generate_feedback_missing_comment_normalized_to_none(monkeypatch):
 
 
 def test_generate_feedback_enabled_tracing_invokes_obs_update_with_validated_output(monkeypatch):
-    import app.services.auto_feedback as auto_feedback_mod
+    import app.services.ai.auto_feedback as auto_feedback_mod
 
     class FakeObservation:
         def __init__(self):

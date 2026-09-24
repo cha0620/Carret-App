@@ -11,7 +11,8 @@ import json
 from fastapi import APIRouter, HTTPException
 
 from app.schemas.image import TransformRequest, TransformResponse, QualityReport
-from app.services import pipeline, storage
+from app.services import pipeline
+from app.services.persistence import storage
 
 
 logger = logging.getLogger("carret")
