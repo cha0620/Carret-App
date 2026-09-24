@@ -49,3 +49,24 @@ def test_compose_empty_alpha_raises():
     import pytest
     with pytest.raises(ValueError):
         compositor.compose(_img(), (255, 255, 255), alpha=np.zeros((100, 200), np.uint8))
+
+
+def test_cutout_prefers_fal_and_falls_back_to_local(monkeypatch):
+    """conftest 가 막아 둔 cutout_alpha 대신 원래 함수를 다시 불러와 분기만 검증."""
+    from app.core.config import settings
+    mod = compositor
+    cut = compositor._cutout_alpha_impl
+    img = Image.new("RGB", (4, 4))
+    monkeypatch.setattr(settings, "cutout_backend", "fal")
+    monkeypatch.setattr(mod, "_fal_alpha", lambda i: np.full((4, 4), 7, np.uint8))
+    monkeypatch.setattr(mod, "_local_alpha", lambda i: np.full((4, 4), 9, np.uint8))
+    assert cut(img)[0, 0] == 7
+
+    def boom(i):
+        raise RuntimeError("fal down")
+    monkeypatch.setattr(mod, "_fal_alpha", boom)
+    assert cut(img)[0, 0] == 9
+
+    monkeypatch.setattr(settings, "cutout_backend", "local")
+    monkeypatch.setattr(mod, "_fal_alpha", lambda i: np.full((4, 4), 7, np.uint8))
+    assert cut(img)[0, 0] == 9

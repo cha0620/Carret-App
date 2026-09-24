@@ -61,7 +61,7 @@ class FakeGraph:
     def __init__(self, out):
         self._out = out
         self.invoked_with = None
-    def invoke(self, state):
+    def invoke(self, state, config=None):
         self.invoked_with = state
         return self._out
 
@@ -570,3 +570,29 @@ def test_composite_failure_keeps_generated_result_and_stops(monkeypatch, make_pn
 
     assert out["mode"] == "composite_failed" and out["gate_passed"] is False
     assert len(verify_calls) == 2       # 무한 루프 없이 끝남
+
+
+def test_worst_path_fits_recursion_limit(monkeypatch, make_png):
+    """재생성 한도 5 + 가드 재시도 + 게이트 재생성 + 합성까지 다 타도 GraphRecursionError 없이 끝난다."""
+    from dataclasses import dataclass
+    from app.core.config import settings
+    _patch_graph_deps(monkeypatch, make_png, [])
+    monkeypatch.setattr(settings, "max_generate_attempts", 5)
+
+    @dataclass
+    class G:
+        name: str = "x"; passed: bool = False; value: float = 0; threshold: float = 1; severity: str = "hard"
+    state = {"n": 0}
+
+    def guards_first_fail_each_round(orig, result, anchors, a, b):
+        state["n"] += 1
+        return [G()] if state["n"] in (1, 7) else []       # 라운드마다 첫 생성은 가드 실패
+    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", guards_first_fail_each_round)
+    monkeypatch.setattr(pipeline_mod.guards, "decide",
+                        lambda results: ("block" if any(not g.passed for g in results) else "pass", None))
+    monkeypatch.setattr(pipeline_mod.detector, "check_photo",
+                        lambda img: {"valid": False, "reason": "cropped"})
+    _verify_seq(monkeypatch, [False, False, False])
+
+    out = pipeline_mod.run_transform("fid-g", "studio_white")
+    assert out["mode"] == "composite"

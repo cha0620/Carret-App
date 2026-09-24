@@ -322,7 +322,8 @@ async function saveFeedback(box) {
       card.outerHTML = rsCard(it, idx);
       const fresh = $('rs-list').querySelector(`.rs-overlay[data-idx="${idx}"]`);
       if (fresh) drawBoxes(fresh, (it.inspect?.checks || []).filter(c => c.preserved), '#2ecc71');
-      const newStatus = $('rs-list').querySelector(`.fb-box[data-fid="${it.file_id}"][data-preset="${it.preset}"] .fb-status`);
+      const newStatus = $('rs-list').querySelector(
+        `.fb-box[data-fid="${CSS.escape(it.file_id)}"][data-preset="${CSS.escape(it.preset)}"] .fb-status`);
       if (newStatus) newStatus.textContent = '✅ 저장됨';
     }
   } catch (e) {

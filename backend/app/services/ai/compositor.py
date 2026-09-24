@@ -4,14 +4,24 @@
 물건 픽셀을 다시 그리지 않으므로 하자·글자 보존이 구조적으로 보장된다
 (대신 물건의 구도·화질·조명은 원본 그대로).
 
-오리기: rembg `isnet-general-use` (로컬 CPU, 첫 로드 ~5초, 1장 ~5초). 2026-09-24 비교에서
-u2net 보다 물건 형태(자전거 프레임 등)를 덜 잘라 먹었다. birefnet 은 8GB 환경에서 메모리 부족.
+오리기 (CUTOUT_BACKEND):
+- "fal" (기본): fal-ai/birefnet/v2 "General Use (Light)" — 2026-09-24 비교에서 어수선한 배경의
+  어두운 물건(커피메이커)도 경계가 깨끗했다. 1장 ~3-5초, 호출당 소액.
+- "local": rembg `isnet-general-use` (CPU, 1장 ~5초) — fal 실패 시에도 이쪽으로 대체.
+  어수선한 배경에선 벽 조각이 남고 윗부분이 잘리는 등 품질이 낮다. birefnet 로컬은 8GB 환경에서 메모리 부족.
 """
 import io
+import logging
+import os
 import threading
 
 import numpy as np
 from PIL import Image, ImageFilter
+
+from app.core.config import settings
+
+logger = logging.getLogger("carret.compositor")
+FAL_CUTOUT = "fal-ai/birefnet/v2"
 
 _MODEL_NAME = "isnet-general-use"
 _session = None
@@ -33,11 +43,36 @@ def _load():
     return _session
 
 
-def cutout_alpha(img: Image.Image) -> np.ndarray:
-    """RGB 이미지 → 물건 알파 (0-255, HxW)."""
+def _local_alpha(img: Image.Image) -> np.ndarray:
     from rembg import remove
     cut = remove(img, session=_load())
     return np.asarray(cut.split()[-1], dtype=np.uint8)
+
+
+def _fal_alpha(img: Image.Image) -> np.ndarray:
+    import fal_client
+    import httpx
+    from app.services.ai.generator import _upload
+    os.environ.setdefault("FAL_KEY", settings.fal_key)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    r = fal_client.subscribe(FAL_CUTOUT, arguments={
+        "image_url": _upload(buf.getvalue()), "model": "General Use (Light)", "mask_only": True})
+    mask = Image.open(io.BytesIO(httpx.get(r["image"]["url"], timeout=60).content)).convert("L")
+    return np.asarray(mask.resize(img.size, Image.LANCZOS), dtype=np.uint8)
+
+
+def cutout_alpha(img: Image.Image) -> np.ndarray:
+    """RGB 이미지 → 물건 알파 (0-255, HxW). fal 우선, 실패하면 로컬."""
+    if settings.cutout_backend == "fal":
+        try:
+            return _fal_alpha(img)
+        except Exception as e:
+            logger.warning(f"fal 오리기 실패, 로컬로 대체: {e}")
+    return _local_alpha(img)
+
+
+_cutout_alpha_impl = cutout_alpha   # 테스트용 원본 참조 (conftest 가 cutout_alpha 를 막아도 분기 검증 가능)
 
 
 def clean_alpha(alpha: np.ndarray, item_box: dict | None = None) -> np.ndarray:
@@ -47,6 +82,7 @@ def clean_alpha(alpha: np.ndarray, item_box: dict | None = None) -> np.ndarray:
     a = alpha.copy()
     h, w = a.shape
     if item_box:
+        item_box = {k: int(round(float(item_box[k]))) for k in ("x1", "y1", "x2", "y2")}
         pad = 30   # 0-1000 기준 여유 — VLM 박스가 살짝 작게 잡혀도 물건을 자르지 않게
         x1 = max(0, (item_box["x1"] - pad) * w // 1000)
         y1 = max(0, (item_box["y1"] - pad) * h // 1000)

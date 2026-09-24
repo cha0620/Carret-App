@@ -116,8 +116,7 @@ def dev_auto_feedback(req: DevPairReq):
         _original_bytes(req.file_id), _result_bytes(req.file_id, req.preset))
     store.save_feedback(req.file_id, req.preset, out["rating"], out["comment"],
                          source="agent")
-    saved = store.get_feedback(req.file_id, req.preset)
-    return saved
+    return store.get_feedbacks(req.file_id, req.preset)["agent"]
 
 
 @router.post("/eval-pair")

@@ -25,7 +25,7 @@ class FakeGraph:
     def __init__(self, outputs):
         self._outputs = list(outputs)
 
-    def invoke(self, state):
+    def invoke(self, state, config=None):
         return self._outputs.pop(0)
 
 

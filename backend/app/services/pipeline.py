@@ -26,7 +26,7 @@ from langgraph.graph import END, START, StateGraph
 
 from app.core.config import settings
 from app.core.tracing import flush, observe, score
-from app.prompts.presets import get_preset, text_lock
+from app.prompts.presets import get_preset, prompt_safe, text_lock
 from app.prompts.rubric import AXES
 from app.services.ai import compositor, detector, embedder, judge
 from app.services.ai.generator import _generate_ai
@@ -242,9 +242,9 @@ def _route_after_verify(s: State) -> str:
 
 
 def mark_gate_retry(s: State) -> dict:
-    lost = [c["what"] for c in s.get("checks", []) if not c.get("preserved")]
+    lost = [prompt_safe(c["what"]) for c in s.get("checks", []) if not c.get("preserved")]
     note = ("\n\nIMPORTANT: a previous attempt lost or altered these defects/marks on the "
-            "product: " + "; ".join(f'"{w}"' for w in lost) +
+            "product: " + "; ".join(f'"{w}"' for w in lost if w) +
             ". They MUST remain exactly as in the input image.") if lost else ""
     print(f"[gate] 실패 → 1회 재생성: {lost}")
     return {"gate_retried": True, "gate_note": note,
@@ -261,7 +261,9 @@ def composite(s: State) -> dict:
         return {"mode": "composite_failed", "composite_error": str(e)}
     print("[composite] 배경 교체 모드로 전환")
     storage.save("result", s["result_name"], out)
+    # 합성본은 생성본이 아니다 — 생성본 기준 검사 결과(구도 검사·가드)를 들고 가지 않는다
     return {"result": out, "mode": "composite", "composite_error": None,
+            "photo_check": None, "guard_report": [], "status": "pass",
             "prompt_used": "COMPOSITE: original item pixels on preset background"}
 
 
@@ -380,6 +382,11 @@ def build():
 
 GRAPH = build()
 
+# 최악 경로 = 앞 4노드 + (generate·validate) × (재생성 한도 + 가드 재시도) × 2(게이트 재생성)
+# + score/verify 3회 + composite + 뒷 3노드. max_generate_attempts=5 여도 넉넉하게.
+# (LangGraph 기본 25 는 기본 설정에서도 경계라, 비용을 다 쓴 뒤 예외로 끝날 수 있었다)
+RECURSION_LIMIT = 80
+
 
 def run_transform(file_id: str, preset_key: str) -> dict:
     t0 = time.time()
@@ -401,7 +408,8 @@ def run_transform(file_id: str, preset_key: str) -> dict:
         with observe("transform", as_type="span",
                      input={"file_id": file_id, "preset_key": preset_key},
                      metadata={"pipeline_mode": settings.pipeline_mode}) as obs:
-            out = GRAPH.invoke({"file_id": file_id, "preset_key": preset_key})
+            out = GRAPH.invoke({"file_id": file_id, "preset_key": preset_key},
+                               {"recursion_limit": RECURSION_LIMIT})
             result = {
                 "result_name": out["result_name"],
                 "prompt_used": out["prompt_used"],

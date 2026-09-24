@@ -50,6 +50,7 @@ def no_real_cutout_model(monkeypatch):
     def _no_model():
         raise RuntimeError("유닛 테스트에서 실제 오리기 모델 금지")
     monkeypatch.setattr(compositor, "_load", _no_model)
+    monkeypatch.setattr(compositor, "cutout_alpha", lambda img: _no_model())
 
 
 @pytest.fixture(autouse=True)

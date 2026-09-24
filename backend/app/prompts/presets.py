@@ -17,6 +17,15 @@ SECONDHAND_LOCK = (
 )
 
 TEXT_LOCK_MAX_LINES = 30
+TEXT_LOCK_MAX_CHARS = 80
+
+
+def prompt_safe(text) -> str:
+    """이미지·VLM 에서 온 글자를 생성 프롬프트에 넣기 전 정리 — 개행·제어문자 제거,
+    따옴표 무력화, 길이 제한 (사진에 적힌 문장이 프롬프트 지시문처럼 읽히지 않게)."""
+    t = "".join(ch if ch.isprintable() else " " for ch in str(text))
+    t = " ".join(t.replace('"', "'").split())
+    return t[:TEXT_LOCK_MAX_CHARS]
 
 
 def _where(t: dict) -> str:
@@ -37,7 +46,7 @@ def text_lock(texts: list[dict]) -> str:
     같은 글자를 다른 곳에 한 번 더 그리는 부작용을 줄인다."""
     lines, seen = [], set()
     for t in texts[:TEXT_LOCK_MAX_LINES]:
-        text = str(t.get("text", "")).replace('"', "'").strip()
+        text = prompt_safe(t.get("text", ""))
         if not text:
             continue
         where = _where(t)

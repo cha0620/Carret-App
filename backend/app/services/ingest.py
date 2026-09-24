@@ -29,4 +29,4 @@ def ingest_and_feedback(file_id: str, data: bytes, ext: str, preset: str,
     out = auto_feedback.generate_feedback(original, result)
     store.save_feedback(file_id, preset, out["rating"], out["comment"], source="agent")
     return {"result_url": storage.result_url(file_id, preset),
-            **store.get_feedback(file_id, preset)}
+            **(store.get_feedbacks(file_id, preset)["agent"] or {})}

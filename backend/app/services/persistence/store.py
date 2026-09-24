@@ -78,7 +78,8 @@ def get_feedbacks(file_id, preset_key) -> dict:
             (file_id, preset_key)).fetchall()
     out = {"user": None, "agent": None}
     for r in rows:
-        out[r["source"] if r["source"] in out else "user"] = _row(r)
+        if r["source"] in out:          # 모르는 source 가 사람 칸을 덮지 않게
+            out[r["source"]] = _row(r)
     return out
 
 
