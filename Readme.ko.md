@@ -20,7 +20,7 @@ Carret은 대충 찍은 중고 물품 사진을 깔끔한 스튜디오 스타일
 | **문제** | 생성형 편집 모델은 배경만 바꿔 달라고 해도 흠집을 "고쳐" 버린다. 중고 거래에서는 이게 곧 허위 매물이다 |
 | **해결** | 생성 전에는 프롬프트로 복원을 금지하고, 생성 후에는 VLM 체크리스트 + 로컬 벡터 점수로 하자가 남아 있는지 검증한다 |
 | **스택** | FastAPI · LangGraph · fal.ai (FLUX edit) · Gemini (VLM) · DINOv2 · SQLite · S3 · Langfuse · Vanilla JS |
-| **품질** | 유닛 테스트 193개 (외부 API 호출 없음, CI에서 PR마다 실행) + 실제 API를 호출하는 평가 스위트 (main 브랜치/라벨로 실행) |
+| **품질** | 유닛 테스트 245개 (외부 API 호출 없음, CI에서 PR마다 실행) + 실제 API를 호출하는 평가 스위트 (main 브랜치/라벨로 실행) |
 
 ---
 
@@ -55,7 +55,9 @@ flowchart LR
 5. **score_similarity**: VLM과 별개로 DINOv2 임베딩 유사도를 로컬에서 계산한다
 6. **verify (Wear Gate)**: "문제를 찾아라"라고 묻지 않고 "이 하자들이
    아직 보이는지 확인해라"라고 묻는 체크리스트 방식으로, 하자 보존 여부와
-   결과 이미지 속 좌표를 받아 온다
+   결과 이미지 속 좌표를 받아 온다. 좌표는 Gemini가 학습된 형식인
+   `box_2d [ymin, xmin, ymax, xmax]`로 받고, VLM이 확인을 요청한 하자보다
+   적게 답하면(빈 응답 포함) 게이트를 실패로 본다
 7. **judge**: fidelity / realism / trust 성적표를 만들고, 결과는 캐시와
    Langfuse Score에 남긴다
 8. UI는 결과 위에 하자 말풍선을 띄우고 판매자에게 별점과 코멘트를 받는다
@@ -96,9 +98,11 @@ backend/
     │   ├── config.py           # pydantic Settings (.env)
     │   ├── db.py               # SQLite 스키마 + 마이그레이션
     │   ├── tracing.py          # Langfuse v4 OTEL (키가 없으면 noop)
+    │   ├── vlm.py              # VLM 호출별 생각(thinking) 수준 (비용 제어)
     │   └── prompt_registry.py  # Langfuse 프롬프트, 실패하면 로컬 fragment로 fallback
     └── schemas/                # pydantic 요청/응답 (file_id 정규식 = 경로 순회 방어)
 
+scripts/    run_text_check.py (글자·로고 깨짐 확인), seed_langfuse_prompts.py …
 frontend/   index.html (메인 앱) · test.html (dev 랩) · js/{api,render,main,dev}.js
 study/      날짜별 개발 로그: 버그 원인, 설계 판단, 뒤집은 결정
 ```
@@ -140,6 +144,13 @@ study/      날짜별 개발 로그: 버그 원인, 설계 판단, 뒤집은 결
   프롬프트. 키가 없으면 완전히 noop이라 CI와 테스트가 안전하다
 - 🗂️ **스토리지 전환**: `STORAGE_BACKEND=local|s3` 하나로 바꾸며 서빙 URL은
   같다
+- 🧪 **테스트 랩 결과 한눈에 보기**: `test.html`에서 지금까지 돌린 결과 전부를
+  원본과 나란히 보고, 게이트·가드·judge 점수·DINO·별점·하자 체크리스트를
+  한 화면에서 비교한다 (필터·정렬·요약 포함)
+- 🔤 **글자·로고 깨짐 확인 (text_check)**: 물건 **위의** 글자만 읽고(배경·소매·소품
+  글자 제외, 철자 자동 교정 금지) 원본과 결과를 줄 단위로 비교한다
+- 💸 **VLM 비용 제어**: 호출마다 생각(thinking) 수준을 따로 정한다. verify는 생각
+  토큰 상한 2048로 폭주를 막고, 단순 판단(classify, auto_feedback)은 생각을 끈다
 
 ---
 
@@ -200,6 +211,7 @@ uvicorn main:app --reload   # http://localhost:8000 (프론트 포함)
 | `MAX_GENERATE_ATTEMPTS` | 재생성 상한 (기본 2, 1~5) |
 | `DEV_TOOLS=false` | `/dev/*` 라우트 비활성화 (배포 시) |
 | `LANGFUSE_PUBLIC_KEY` / `SECRET_KEY` | 없으면 트레이싱과 프롬프트 관리가 noop |
+| `VLM_THINKING` | 호출별 생각 수준 덮어쓰기, 예: `{"verify": "default", "judge": "low"}` (정수 = 생각 토큰 상한) |
 
 ### 테스트
 
@@ -262,6 +274,30 @@ make e2e     # 브라우저 테스트
 | CI의 pip 목록이 `requirements.txt`와 어긋남 | CI 의존성은 수동으로 맞춰야 하는 두 번째 소스다. 깨끗한 venv에서 재현해서 확인한다 |
 | 재생성할 때 같은 프롬프트를 다시 던져서 같은 결함이 반복됨 | 재시도에는 직전에 반려된 이유를 같이 넘겨야 한다 |
 | 말풍선 좌표가 레터박스 때문에 어긋남 | 오버레이 좌표는 컨테이너가 아니라 실제로 렌더링된 이미지 박스를 기준으로 잡는다 |
+| 말풍선 좌표가 가로세로 뒤바뀌어 나옴 (11개 중 4개만 정위치) | 좌표 형식은 모델이 학습된 형식(`box_2d [ymin, xmin, ymax, xmax]`)으로 받고 변환은 코드가 한다. 박스는 이미지에 직접 그려서 확인한다 |
+| VLM이 깨진 글자를 원래 철자로 "고쳐서" 읽음 ("시한부일꽈" → "시한부일까") | 글자 보존 검사는 읽어서 비교하기보다 원본·결과를 나란히 보여주고 달라진 곳을 묻는 편이 낫다 |
+| verify가 가끔 생각 토큰을 ~63,000개 써서 호출 1번에 ~$0.57 | 생각 토큰은 응답에 안 보이지만 출력 단가로 청구된다. 호출별로 상한을 두고, Langfuse 비용에도 합산한다 |
+| verify가 빈 응답을 주면 게이트가 통과였음 | 게이트는 "확인 못 함"을 통과로 치면 안 된다 (fail-closed) |
+| main CI가 `langfuse` 미설치로 09-15부터 실패 중이었음 | CI 의존성 목록은 새 import가 생길 때마다 같이 챙겨야 한다 |
+
+---
+
+## 📝 최근 변경
+
+**2026-09-24**
+- 테스트 랩에 **결과 한눈에 보기** (`GET /dev/results`) 추가, inbox 원본 10장 추가 실행
+- **말풍선 좌표 버그 수정**: `x1,y1,x2,y2`로 요청하면 Gemini가 가로세로를 뒤바꿔 줌 →
+  `box_2d`로 받도록 바꿔 리플레이에서 16/16 정위치 (Langfuse `verify` v2 반영)
+- **text_check 개선**: 물건 위 글자만 읽기, 줄 단위·순서 무관 비교(`metric.text_match`),
+  `scripts/run_text_check.py`. graphic 사진 실패 원인은 생성 모델이 작은 영어 문단을 다시
+  그리며 뭉갠 것 (진짜 실패)
+- **한글 OCR 실험**: EasyOCR은 원본부터 오독, PaddleOCR은 CPU 환경에서 불안정 → 채택 안 함
+- **글자 프롬프트 주입 실험**: 원본 글자를 생성 프롬프트에 넣었더니 book(한글)·rolex·graphic의
+  글자가 거의 그대로 보존됨. 부작용으로 상장에 "賞"이 하나 더 생김 → 반복 검증 예정
+- **VLM 비용**: 생각 토큰이 비용의 약 65%였고 verify는 가끔 폭주 → 호출별 thinking 설정,
+  Langfuse 사용량에 생각 토큰 합산
+- **verify 게이트 강화**: 하자보다 답이 적으면 실패, `preserved` 값 정규화
+- CI: pytest 잡에 `langfuse` 설치 (main CI 복구)
 
 ---
 
@@ -274,7 +310,13 @@ make e2e     # 브라우저 테스트
 - [x] Langfuse 트레이싱 · 프롬프트 관리 · Score
 - [x] 결과 검증 기반 재생성 (`validate_result`)
 - [x] 서비스 레이어 재구성 (`ai/` · `quality/` · `persistence/`)
-- [ ] 출력 가드(`guards.py`)를 파이프라인에 연결 (구현과 테스트는 끝남, `embedder.crop_sim` 추가 필요)
+- [x] 출력 가드(`guards.py`)를 `validate_result`에 연결 (현재는 DINO 대역 가드만 실제로 동작, OCR 입력과 앵커 크롭 가드는 미연결)
+- [x] 말풍선 좌표 전치 수정 (`box_2d`) + verify 게이트 강화
+- [x] VLM 생각 토큰 제어 (호출별 thinking 설정)
+- [ ] OCR 가드 입력 연결 + 앵커 크롭 가드(`embedder.crop_sim`)
+- [ ] 원본 글자를 생성 프롬프트에 넣기 — 첫 실험(각 1회)에서 한글·작은 글씨 보존이 크게 개선, 반복 검증 필요
+- [ ] 한글 글자 깨짐 판정: 줄 단위 크롭 비교 또는 한글 특화 OCR (로컬 EasyOCR/PaddleOCR은 부정확·불안정)
+- [ ] verify 게이트를 하자별 id로 매칭 (지금은 개수만 확인)
 - [ ] 정량 스코어카드 (CSV) + 모델 A/B
 - [ ] S3 완전 지원 (dev 도구 일부가 아직 로컬 경로를 전제함)
 - [ ] 공개 데모 배포
