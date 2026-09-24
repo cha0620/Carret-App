@@ -200,7 +200,7 @@ def verify(s: State) -> dict:
             checks = detector.verify_and_locate(
                 saved, s["anchors"],
                 s.get("item", "object"), s.get("considered", []))
-            gate_passed = detector.all_preserved(checks)
+            gate_passed = detector.all_preserved(checks, expected=len(s["anchors"]))
         except Exception as e:
             print(f"[verify] 실패(무시): {e}")
     return {"checks": checks, "gate_passed": gate_passed}

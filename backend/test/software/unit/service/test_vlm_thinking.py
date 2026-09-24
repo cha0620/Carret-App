@@ -28,3 +28,18 @@ def test_defaults_cap_verify_and_disable_cheap_calls(monkeypatch):
     monkeypatch.setattr(settings, "vlm_thinking", {})
     assert vlm.thinking("verify").thinking_budget == 2048
     assert vlm.thinking("classify").thinking_level.lower() == "minimal"
+
+
+def test_unknown_or_bool_values_fall_back_to_default(monkeypatch):
+    monkeypatch.setattr(settings, "vlm_thinking", {"verify": "off", "judge": True, "classify": "LOW"})
+    assert vlm.thinking("verify") is None
+    assert vlm.thinking("judge") is None
+    assert vlm.thinking("classify").thinking_level.lower() == "low"
+
+
+def test_broken_env_json_does_not_crash_settings(monkeypatch):
+    from app.core.config import Settings
+    monkeypatch.setenv("VLM_THINKING", "{not json")
+    assert Settings().vlm_thinking == {}
+    monkeypatch.setenv("VLM_THINKING", '{"verify": 1024}')
+    assert Settings().vlm_thinking == {"verify": 1024}

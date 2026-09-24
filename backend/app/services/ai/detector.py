@@ -102,7 +102,7 @@ def detect_defects(image_bytes: bytes, item: str = "object",
             "what":  str(d.get("what", "")).strip(),
             "where": str(d.get("where", "")).strip(),
         })
-    return anchors
+    return [a for a in anchors if a["what"]]
 
 
 def verify_and_locate(image_bytes, anchors,
@@ -110,14 +110,35 @@ def verify_and_locate(image_bytes, anchors,
     """결과 → 보존 여부 + 결과 좌표."""
     considered = considered or []
     data = _call(image_bytes, P.verify_prompt(anchors, item, considered), "verify")
-    checks = [c for c in map(_from_box_2d, data.get("checks", [])) if _valid_check(c)]
-    # 보존+좌표 있는 것만 _box 로 정제
-    return [{**c, **_box(c)} if c.get("preserved") and _has_box(c) else c
-            for c in checks]
+    raw = data.get("checks", []) if isinstance(data, dict) else []
+    return [_clean_check(c) for c in raw if isinstance(c, dict) and _valid_check(c)]
 
 
-def all_preserved(checks: list) -> bool:
-    """게이트용: 하자 전부 살아있는가 (빈 리스트 = 통과)."""
+_BOX_KEYS = ("x1", "y1", "x2", "y2")
+
+
+def _clean_check(c: dict) -> dict:
+    """VLM 응답 1개 → 게이트/말풍선이 믿고 쓸 수 있는 모양.
+    what 은 문자열, preserved 는 진짜 bool ("false" 문자열이 True 로 새지 않게),
+    좌표는 쓸 수 있을 때만 남기고 (정렬), 아니면 지운다 (엉뚱한 박스 방지)."""
+    c = _from_box_2d(c)
+    out = {k: v for k, v in c.items() if k not in _BOX_KEYS}
+    out["what"] = str(c["what"]).strip()
+    out["preserved"] = _as_bool(c.get("preserved", False))
+    if _has_box(c):
+        out.update(_box(c))
+    return out
+
+
+def all_preserved(checks: list, *, expected: int) -> bool:
+    """게이트용: 하자 전부 살아있는가.
+
+    expected = 확인을 요청한 앵커 수 (필수 — 빠뜨려서 빈 응답이 통과하지 않게).
+    VLM 이 그보다 적게 답하면(빈 응답 포함) 빠진 항목은 확인 못 한 것 = 통과로
+    치지 않는다. 앵커가 원래 없으면(expected=0) 빈 리스트 = 통과.
+    한계: 개수만 본다 — 앵커 하나를 둘로 쪼개고 다른 하나를 빠뜨리면 못 잡는다."""
+    if len(checks) < expected:
+        return False
     return all(c.get("preserved") for c in checks) if checks else True
 
 
@@ -224,11 +245,10 @@ def _valid_anchor(d: dict) -> bool:
 
 
 def _valid_check(c: dict) -> bool:
-    if not c.get("what"):
-        return False
-    if not c.get("preserved"):
-        return True            # 보존 안 됨 = 좌표 불필요, 게이트엔 필요
-    return _has_box(c)
+    """what 만 있으면 게이트 계산에 남긴다. 좌표는 말풍선용이라 bubbles() 가 따로
+    거른다 — 보존됐는데 좌표만 빠진 항목을 여기서 버리면 앵커 수보다 답이 적어져
+    all_preserved(expected=) 가 멀쩡한 결과를 실패로 판정한다."""
+    return bool(str(c.get("what") or "").strip())
 
 
 def _has_box(c: dict) -> bool:

@@ -1,5 +1,9 @@
-from pydantic import Field, AliasChoices
-from pydantic_settings import BaseSettings, SettingsConfigDict
+import json
+import logging
+from typing import Annotated
+
+from pydantic import Field, AliasChoices, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from typing import Literal
 
 
@@ -33,7 +37,19 @@ class Settings(BaseSettings):              # ⭐ 대문자 클래스
     VLM_KEY: str = ""
     VLM_MODEL: str = "gemini-3.5-flash"
     # 호출 이름별 생각 수준 덮어쓰기 (기본값은 app/core/vlm.py DEFAULT_THINKING)
-    vlm_thinking: dict[str, str | int] = Field(default_factory=dict)
+    vlm_thinking: Annotated[dict[str, str | int], NoDecode] = Field(default_factory=dict)
+
+    @field_validator("vlm_thinking", mode="before")
+    @classmethod
+    def _lenient_thinking(cls, v):
+        """튜닝용 설정 하나가 틀렸다고 앱 전체가 안 뜨면 안 된다 — 깨진 JSON 은 무시."""
+        if isinstance(v, str):
+            try:
+                v = json.loads(v) if v.strip() else {}
+            except json.JSONDecodeError:
+                logging.getLogger("carret.config").warning("VLM_THINKING JSON 파싱 실패 — 무시")
+                return {}
+        return v if isinstance(v, dict) else {}
 
     # 파이프라인 모드
     pipeline_mode:str = "real"  # ⭐ Literal 로 고정
