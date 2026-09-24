@@ -6,6 +6,7 @@ from google.genai import types
 
 from app.core.config import settings
 from app.core.prompt_registry import get_prompt_text
+from app.core.vlm import thinking
 from app.core.tracing import gemini_usage, observe
 from app.prompts.rubric import AXES, rubric_text
 
@@ -42,6 +43,7 @@ def judge(original: bytes, result: bytes) -> dict:
                 system_instruction=_system_prompt(),
                 temperature=0,
                 response_mime_type="application/json",   # ⭐ JSON 네이티브 강제
+                thinking_config=thinking("judge"),
             ),
         )
         report = _validate(json.loads(resp.text))

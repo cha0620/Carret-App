@@ -75,13 +75,20 @@ def test_usage_returns_none_when_usage_metadata_attr_missing_entirely():
 
 def test_usage_maps_fields_when_present():
     resp = _Resp(usage_metadata=_Usage(prompt=10, candidates=5, total=15))
-    assert _usage(resp) == {"input": 10, "output": 5, "total": 15}
+    assert _usage(resp) == {"input": 10, "output": 5, "thoughts": 0, "total": 15}
+
+
+def test_usage_folds_thinking_tokens_into_output():
+    """생각 토큰은 출력 단가로 청구되므로 output 에 합친다."""
+    u = _Usage(prompt=10, candidates=5, total=115)
+    u.thoughts_token_count = 100
+    assert _usage(_Resp(usage_metadata=u)) == {"input": 10, "output": 105, "thoughts": 100, "total": 115}
 
 
 def test_usage_defaults_falsy_fields_to_zero():
     """0 이나 None 이 오면(SDK 가 종종 그럼) 0 으로 방어."""
     resp = _Resp(usage_metadata=_Usage(prompt=None, candidates=0, total=None))
-    assert _usage(resp) == {"input": 0, "output": 0, "total": 0}
+    assert _usage(resp) == {"input": 0, "output": 0, "thoughts": 0, "total": 0}
 
 
 # ── _call(): 가짜 genai 클라이언트 ────────────────
@@ -189,7 +196,7 @@ def test_call_enabled_tracing_invokes_obs_update_with_output_and_usage(monkeypat
     assert fake_lf.calls[0]["as_type"] == "generation"
     assert fake_lf.obs.update_calls == [{
         "output": {"item": "lamp"},
-        "usage_details": {"input": 3, "output": 4, "total": 7},
+        "usage_details": {"input": 3, "output": 4, "thoughts": 0, "total": 7},
     }]
 
 
@@ -276,3 +283,60 @@ def test_check_photo_malformed_json_falls_through_to_valid_true(monkeypatch):
     result = check_photo(b"imgbytes")
 
     assert result == {"valid": True, "reason": ""}
+
+
+def test_from_box_2d_maps_gemini_order_to_xy():
+    """box_2d 는 [ymin, xmin, ymax, xmax] — y 가 먼저 (가로세로 전치 버그 방지)."""
+    from app.services.ai.detector import _from_box_2d
+    c = _from_box_2d({"what": "bear", "preserved": True, "box_2d": [493, 125, 851, 615]})
+    assert (c["x1"], c["y1"], c["x2"], c["y2"]) == (125, 493, 615, 851)
+    assert "box_2d" not in c
+
+
+def test_from_box_2d_keeps_legacy_xy_keys():
+    from app.services.ai.detector import _from_box_2d
+    c = {"what": "a", "preserved": True, "x1": 1, "y1": 2, "x2": 3, "y2": 4}
+    assert _from_box_2d(c) == c
+
+
+def test_from_box_2d_ignores_malformed():
+    from app.services.ai.detector import _from_box_2d
+    for bad in ([1, 2, 3], ["1", 2, 3, 4], None, [True, 1, 2, 3]):
+        c = {"what": "a", "preserved": True, "box_2d": bad}
+        assert _from_box_2d(c) == c
+
+
+def test_verify_and_locate_accepts_box_2d(monkeypatch):
+    from app.services.ai import detector
+    monkeypatch.setattr(detector, "_call", lambda *a, **k: {"checks": [
+        {"what": "logo", "preserved": True, "box_2d": [100, 200, 300, 400]},
+        {"what": "stain", "preserved": False},
+    ]})
+    checks = detector.verify_and_locate(b"img", [{"what": "logo", "where": "front"}])
+    assert (checks[0]["x1"], checks[0]["y1"], checks[0]["x2"], checks[0]["y2"]) == (200, 100, 400, 300)
+    assert checks[1]["preserved"] is False
+
+
+def test_zero_area_box_is_rejected():
+    from app.services.ai.detector import _has_box
+    assert not _has_box({"x1": 10, "y1": 10, "x2": 10, "y2": 50})
+    assert _has_box({"x1": 10, "y1": 10, "x2": 20, "y2": 50})
+
+
+def test_read_item_text_converts_boxes_and_drops_empty(monkeypatch):
+    from app.services.ai import detector
+    monkeypatch.setattr(detector, "_call", lambda *a, **k: {
+        "item_box_2d": [100, 200, 900, 800],
+        "texts": [{"text": "ROLEX", "box_2d": [300, 400, 350, 600]},
+                  {"text": "  "}, "junk", {"text": "29"}]})
+    out = detector.read_item_text(b"img", "watch")
+    assert out["item_box"] == {"x1": 200, "y1": 100, "x2": 800, "y2": 900}
+    assert out["texts"][0] == {"text": "ROLEX", "x1": 400, "y1": 300, "x2": 600, "y2": 350}
+    assert out["texts"][1] == {"text": "29"}
+    assert len(out["texts"]) == 2
+
+
+def test_read_item_text_without_item_box(monkeypatch):
+    from app.services.ai import detector
+    monkeypatch.setattr(detector, "_call", lambda *a, **k: {"texts": []})
+    assert detector.read_item_text(b"img") == {"item_box": None, "texts": []}

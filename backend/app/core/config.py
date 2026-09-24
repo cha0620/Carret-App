@@ -32,6 +32,8 @@ class Settings(BaseSettings):              # ⭐ 대문자 클래스
     # VLM (소문자 통일)
     VLM_KEY: str = ""
     VLM_MODEL: str = "gemini-3.5-flash"
+    # 호출 이름별 생각 수준 덮어쓰기 (기본값은 app/core/vlm.py DEFAULT_THINKING)
+    vlm_thinking: dict[str, str] = Field(default_factory=dict)
 
     # 파이프라인 모드
     pipeline_mode:str = "real"  # ⭐ Literal 로 고정

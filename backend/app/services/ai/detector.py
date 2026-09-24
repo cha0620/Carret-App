@@ -19,6 +19,7 @@ from google.genai import types
 from app.core.config import settings
 from app.core.tracing import gemini_usage as _usage
 from app.core.tracing import observe
+from app.core.vlm import thinking
 from app import prompts as P
 
 
@@ -37,6 +38,7 @@ def _call(image_bytes: bytes, prompt: str, name: str = "vlm_call") -> dict:
             config=types.GenerateContentConfig(
                 temperature=0,
                 response_mime_type="application/json",
+                thinking_config=thinking(name),
             ),
         )
         try:
@@ -47,6 +49,22 @@ def _call(image_bytes: bytes, prompt: str, name: str = "vlm_call") -> dict:
         if obs is not None:
             obs.update(output=data, usage_details=_usage(resp))
         return data
+
+
+def _from_box_2d(c: dict) -> dict:
+    """Gemini 기본 박스 포맷 box_2d=[ymin, xmin, ymax, xmax] (0-1000) → x1/y1/x2/y2.
+
+    Gemini 는 이 순서(y 먼저)로 학습돼 있어서, x1/y1/x2/y2 키로 달라고 하면
+    가끔 y 값을 x 자리에 채워 넣는다(가로세로 전치) — 그래서 모델에게는
+    익숙한 box_2d 로 받고 변환은 코드가 한다. box_2d 가 없으면(옛 프롬프트
+    버전 응답) x1.. 키를 그대로 둔다."""
+    b = c.get("box_2d")
+    if not (isinstance(b, (list, tuple)) and len(b) == 4
+            and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in b)):
+        return c
+    ymin, xmin, ymax, xmax = (int(round(v)) for v in b)
+    out = {k: v for k, v in c.items() if k != "box_2d"}
+    return {**out, "x1": xmin, "y1": ymin, "x2": xmax, "y2": ymax}
 
 
 def _box(d: dict) -> dict:
@@ -92,7 +110,7 @@ def verify_and_locate(image_bytes, anchors,
     """결과 → 보존 여부 + 결과 좌표."""
     considered = considered or []
     data = _call(image_bytes, P.verify_prompt(anchors, item, considered), "verify")
-    checks = [c for c in data.get("checks", []) if _valid_check(c)]
+    checks = [c for c in map(_from_box_2d, data.get("checks", [])) if _valid_check(c)]
     # 보존+좌표 있는 것만 _box 로 정제
     return [{**c, **_box(c)} if c.get("preserved") and _has_box(c) else c
             for c in checks]
@@ -101,6 +119,26 @@ def verify_and_locate(image_bytes, anchors,
 def all_preserved(checks: list) -> bool:
     """게이트용: 하자 전부 살아있는가 (빈 리스트 = 통과)."""
     return all(c.get("preserved") for c in checks) if checks else True
+
+
+def read_item_text(image_bytes: bytes, item: str = "object") -> dict:
+    """물건 "위에" 있는 글자만 읽는다 (배경·옷소매·소품 글자 제외, 자동 교정 금지).
+
+    반환: {"item_box": {x1..} | None, "texts": [{"text": str, x1..y2(있으면)}]}
+    item_box 는 OCR 을 물건 영역으로만 제한할 때 쓴다."""
+    data = _call(image_bytes, P.item_text_prompt(item), "item_text")
+    item_box = _from_box_2d({"box_2d": data.get("item_box_2d")})
+    item_box = _box(item_box) if _has_box(item_box) else None
+    texts = []
+    for t in data.get("texts", []):
+        if not isinstance(t, dict):
+            continue
+        text = str(t.get("text", "")).strip()
+        if not text:
+            continue
+        t = _from_box_2d(t)
+        texts.append({"text": text, **(_box(t) if _has_box(t) else {})})
+    return {"item_box": item_box, "texts": texts}
 
 
 def check_photo(image_bytes: bytes) -> dict:
@@ -158,7 +196,8 @@ def match_anchors(orig: list, result: list) -> dict:
             model=settings.VLM_MODEL,
             contents=[prompt],
             config=types.GenerateContentConfig(
-                temperature=0, response_mime_type="application/json"),
+                temperature=0, response_mime_type="application/json",
+                thinking_config=thinking("match")),
         )
         try:
             matches = json.loads(resp.text).get("matches", [])
@@ -193,7 +232,8 @@ def _valid_check(c: dict) -> bool:
 
 
 def _has_box(c: dict) -> bool:
-    return all(
-        isinstance(c.get(k), int) and 0 <= c[k] <= 1000
-        for k in ("x1", "y1", "x2", "y2")
-    )
+    """0-1000 범위 정수 4개 + 넓이 있음 (x1==x2 나 y1==y2 인 퇴화 박스는 말풍선/가드 크롭에 못 씀)."""
+    if not all(isinstance(c.get(k), int) and 0 <= c[k] <= 1000
+               for k in ("x1", "y1", "x2", "y2")):
+        return False
+    return c["x1"] != c["x2"] and c["y1"] != c["y2"]

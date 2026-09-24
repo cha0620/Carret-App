@@ -5,4 +5,6 @@ Rule 2: Items that are logos, brand marks, or printed text must remain
 
 For EACH entry decide:
 - preserved: true only if still visible under the rules
-- x1,y1,x2,y2: box in THIS photo (0-1000), required when preserved
+- box_2d: bounding box of the item in THIS photo as [ymin, xmin, ymax, xmax],
+  each normalized to 0-1000 (y = vertical from top, x = horizontal from left),
+  required when preserved

@@ -56,6 +56,10 @@ def verify_prompt(anchors: list, item: str, considered: list) -> str:
     )
 
 
+def item_text_prompt(item: str) -> str:
+    return get_prompt_text("item_text", fallback=frag("item_text"), item=item)
+
+
 def check_photo_prompt() -> str:
     template = "\n\n".join([frag("role_check_photo"), frag("schema_check_photo")])
     return get_prompt_text("check_photo", fallback=template)
