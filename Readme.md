@@ -20,7 +20,7 @@ a photo buyers can trust matters more than a pretty one.
 | **Problem** | Generative edit models "fix" scratches even when you only ask them to swap the background. In secondhand listings, that turns the photo into a misleading one |
 | **Solution** | Before generation, a prompt lock forbids restoration. After generation, a VLM checklist and local vector scores check that the defects are still there |
 | **Stack** | FastAPI · LangGraph · fal.ai (FLUX edit) · Gemini (VLM) · DINOv2 · SQLite · S3 · Langfuse · Vanilla JS |
-| **Quality** | 193 unit tests that make no external API calls and run on every PR, plus an eval suite that calls the real APIs (runs on main or a PR label) |
+| **Quality** | 245 unit tests that make no external API calls and run on every PR, plus an eval suite that calls the real APIs (runs on main or a PR label) |
 
 ---
 
@@ -57,7 +57,10 @@ flowchart LR
    separate from the VLM
 6. **verify (Wear Gate)**: the VLM gets a checklist ("confirm these defects
    are still visible") instead of an open question ("find problems").
-   It returns whether each defect survived and where it is in the result
+   It returns whether each defect survived and where it is in the result.
+   Coordinates are requested in Gemini's native `box_2d [ymin, xmin, ymax, xmax]`
+   format, and if the VLM answers for fewer defects than it was asked about
+   (including an empty answer), the gate fails
 7. **judge**: produces a fidelity / realism / trust report card, which is
    cached and attached to the trace as Langfuse Scores
 8. The UI overlays defect bubbles on the result and collects a star rating
@@ -99,9 +102,11 @@ backend/
     │   ├── config.py           # pydantic Settings (.env)
     │   ├── db.py               # SQLite schema + migrations
     │   ├── tracing.py          # Langfuse v4 OTEL (noop without keys)
+    │   ├── vlm.py              # per-call VLM thinking level (cost control)
     │   └── prompt_registry.py  # Langfuse prompts, falls back to local fragments on failure
     └── schemas/                # pydantic request/response (file_id regex = path-traversal guard)
 
+scripts/    run_text_check.py (text/logo damage check), seed_langfuse_prompts.py …
 frontend/   index.html (main app) · test.html (dev lab) · js/{api,render,main,dev}.js
 study/      dated dev logs: bug root causes, design calls, reversed decisions
 ```
@@ -144,6 +149,15 @@ that knows the disk layout.
   noop, so CI and tests stay safe
 - 🗂️ **Swappable storage**: `STORAGE_BACKEND=local|s3` switches the backend,
   and the serving URLs stay the same
+- 🧪 **All results at a glance**: the dev lab (`test.html`) shows every result
+  next to its original, with gate, guards, judge scores, DINO, rating and the
+  defect checklist on one screen (with filters, sorting and a summary)
+- 🔤 **Text/logo damage check (text_check)**: reads only the text **on the item**
+  (ignoring background, sleeves and props, with no spelling correction) and
+  compares original and result line by line
+- 💸 **VLM cost control**: each call has its own thinking level. verify gets a
+  2048-token thinking cap so it can't run away, and simple calls (classify,
+  auto_feedback) run without thinking
 
 ---
 
@@ -209,6 +223,7 @@ uvicorn main:app --reload   # http://localhost:8000 (frontend included)
 | `MAX_GENERATE_ATTEMPTS` | Regeneration cap (default 2, range 1–5) |
 | `DEV_TOOLS=false` | Disables the `/dev/*` routes (for deployment) |
 | `LANGFUSE_PUBLIC_KEY` / `SECRET_KEY` | Without them, tracing and prompt management are a noop |
+| `VLM_THINKING` | Per-call thinking override, e.g. `{"verify": "default", "judge": "low"}` (an integer = thinking token cap) |
 
 ### Tests
 
@@ -271,6 +286,32 @@ make e2e     # browser tests
 | CI's pip list drifted from `requirements.txt` | CI dependencies are a second source that has to be kept in sync by hand. Verify them in a clean venv |
 | Retrying with the same prompt repeated the same flaw | A retry has to carry the reason the previous attempt was rejected |
 | Bubble coordinates were off because of letterboxing | Compute overlay coordinates from the rendered image box, not the container |
+| Bubble boxes came back with x and y swapped (only 4 of 11 in place) | Ask for coordinates in the format the model was trained on (`box_2d [ymin, xmin, ymax, xmax]`) and convert in code. Check boxes by drawing them on the image |
+| The VLM "corrected" garbled text while reading it ("시한부일꽈" read as "시한부일까") | To check text preservation, show original and result side by side and ask what changed, instead of transcribing and diffing |
+| verify sometimes spent ~63,000 thinking tokens, ~$0.57 per call | Thinking tokens are invisible but billed at the output rate. Cap them per call and include them in Langfuse cost |
+| An empty verify answer passed the gate | A gate must not count "couldn't check" as a pass (fail-closed) |
+| main CI had been failing since 09-15 because `langfuse` wasn't installed | Update CI's dependency list whenever a new import appears |
+
+---
+
+## 📝 Recent Changes
+
+**2026-09-24**
+- Dev lab: **all results at a glance** (`GET /dev/results`); ran 10 more inbox originals
+- **Bubble coordinate fix**: asking for `x1,y1,x2,y2` made Gemini swap x and y →
+  switched to `box_2d`, 16/16 boxes in place on replay (Langfuse `verify` v2 published)
+- **text_check**: reads only text on the item, line-level order-independent comparison
+  (`metric.text_match`), `scripts/run_text_check.py`. The graphic tee failed for a real
+  reason: the generator redrew the small English paragraphs as gibberish
+- **Korean OCR trial**: EasyOCR misread even the originals and PaddleOCR was unstable on
+  CPU → not adopted
+- **Text-in-prompt trial**: adding the original's text to the generation prompt kept the
+  text on book (Korean), rolex and graphic almost intact. Side effect: an extra "賞" on the
+  certificate → needs repeated runs
+- **VLM cost**: thinking tokens were ~65% of the cost and verify occasionally ran away →
+  per-call thinking settings, thinking tokens now counted in Langfuse usage
+- **Stricter verify gate**: fails when there are fewer answers than defects; `preserved` normalized
+- CI: install `langfuse` in pytest jobs (main CI green again)
 
 ---
 
@@ -283,7 +324,13 @@ make e2e     # browser tests
 - [x] Langfuse tracing · prompt management · Scores
 - [x] Validation-driven regeneration (`validate_result`)
 - [x] Service layer restructure (`ai/` · `quality/` · `persistence/`)
-- [ ] Wire the output guards (`guards.py`) into the pipeline (implemented and tested; needs `embedder.crop_sim`)
+- [x] Output guards (`guards.py`) wired into `validate_result` (only the DINO band guard is effective today; OCR input and anchor crop guards are not wired yet)
+- [x] Fix transposed bubble coordinates (`box_2d`) + stricter verify gate
+- [x] VLM thinking-token control (per-call thinking settings)
+- [ ] Feed OCR into the guards + anchor crop guard (`embedder.crop_sim`)
+- [ ] Put the original's text into the generation prompt — a first run (one sample each) kept Korean and small text far better; needs repeated runs
+- [ ] Korean text damage check: line-crop comparison or a Korean-specialized OCR (local EasyOCR/PaddleOCR were inaccurate or unstable)
+- [ ] Match verify answers to defects by id (today the gate only checks the count)
 - [ ] Quantitative scorecard (CSV) + model A/B
 - [ ] Full S3 support (some dev tools still assume local paths)
 - [ ] Public demo deployment
