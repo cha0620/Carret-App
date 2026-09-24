@@ -16,6 +16,52 @@ SECONDHAND_LOCK = (
     "Only the background and lighting may change."
 )
 
+TEXT_LOCK_MAX_LINES = 30
+TEXT_LOCK_MAX_CHARS = 80
+
+
+def prompt_safe(text) -> str:
+    """이미지·VLM 에서 온 글자를 생성 프롬프트에 넣기 전 정리 — 개행·제어문자 제거,
+    따옴표 무력화, 길이 제한 (사진에 적힌 문장이 프롬프트 지시문처럼 읽히지 않게)."""
+    t = "".join(ch if ch.isprintable() else " " for ch in str(text))
+    t = " ".join(t.replace('"', "'").split())
+    return t[:TEXT_LOCK_MAX_CHARS]
+
+
+def _where(t: dict) -> str:
+    """0-1000 박스 중심 → "top-left" 같은 대략 위치 (같은 글자를 엉뚱한 곳에 또 그리지 않게)."""
+    if not all(k in t for k in ("x1", "y1", "x2", "y2")):
+        return ""
+    cx, cy = (t["x1"] + t["x2"]) / 2, (t["y1"] + t["y2"]) / 2
+    v = "top" if cy < 333 else "middle" if cy < 667 else "bottom"
+    h = "left" if cx < 333 else "center" if cx < 667 else "right"
+    return f"{v}-{h}"
+
+
+def text_lock(texts: list[dict]) -> str:
+    """원본 물건 위 글자 목록 → 생성 프롬프트에 덧붙일 문구.
+
+    생성 모델은 사진을 다시 그리며 작은 글씨·한글을 뭉개는데, 정답 글자를 알려주면
+    크게 나아진다 (2026-09-24 실험: book/rolex/graphic). 위치를 같이 줘서
+    같은 글자를 다른 곳에 한 번 더 그리는 부작용을 줄인다."""
+    lines, seen = [], set()
+    for t in texts[:TEXT_LOCK_MAX_LINES]:
+        text = prompt_safe(t.get("text", ""))
+        if not text:
+            continue
+        where = _where(t)
+        key = (text, where)
+        if key in seen:
+            continue
+        seen.add(key)
+        lines.append(f'"{text}"' + (f" ({where})" if where else ""))
+    if not lines:
+        return ""
+    return ("\n\nText printed on the product — keep each one exactly as in the input image, "
+            "letter for letter, same font, size and position. Do not retype, restyle, "
+            "translate, fix, move, duplicate, or add any text: " + "; ".join(lines) + ".")
+
+
 PRESETS = {
     "studio_white": {
         "name": "화이트 스튜디오",

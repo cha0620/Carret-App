@@ -42,38 +42,51 @@ def record_result(file_id, preset_key, result_name, item,
               json.dumps(bubbles, ensure_ascii=False), elapsed_s))
 
 
-def save_feedback(file_id, preset_key, rating, comment=None, source="user"):
-    """source="user"(기본, 실사용자 UI 제출)는 항상 덮어쓴다.
-    source="agent"(자동 피드백 에이전트)는 이미 실사용자 피드백이 있으면
-    건드리지 않는다 — 진짜 신호를 합성 신호가 지우면 안 되므로.
+FEEDBACK_TAGS = ("defect_lost", "text_broken", "shape_changed", "color_changed",
+                 "framing", "background", "bubble_wrong", "good")
 
-    체크(SELECT)와 쓰기(INSERT)를 분리하면 동시 요청(FastAPI 스레드풀)에서
-    레이스가 난다 — 에이전트 스레드가 "user 없음"을 본 직후, user 쓰기가
-    끼어들었다가 에이전트 쓰기가 뒤늦게 덮어쓸 수 있음. 그래서 판단까지
-    전부 하나의 원자적 UPSERT 문 안(CASE WHEN)에 넣는다: 기존 행이 user고
-    이번 쓰기가 user가 아니면 기존 값을 그대로 유지."""
+
+def save_feedback(file_id, preset_key, rating, comment=None, source="user", tags=None):
+    """(file_id, preset_key, source) 마다 한 줄 — 사람(user)과 에이전트(agent) 피드백이
+    나란히 남는다. 같은 source 로 다시 쓰면 갱신(upsert).
+    (예전엔 한 줄뿐이라 에이전트가 사람 것을 덮지 않도록 CASE WHEN 으로 막았는데,
+    이제는 줄이 달라서 서로 덮을 일이 없다.)"""
+    tags_json = json.dumps([t for t in (tags or []) if t in FEEDBACK_TAGS])
     with db.get_conn() as c:
         c.execute("""
-            INSERT INTO feedbacks(file_id, preset_key, rating, comment, source)
-            VALUES (?,?,?,?,?)
-            ON CONFLICT(file_id, preset_key) DO UPDATE SET
-              rating = CASE WHEN feedbacks.source='user' AND excluded.source!='user'
-                            THEN feedbacks.rating ELSE excluded.rating END,
-              comment = CASE WHEN feedbacks.source='user' AND excluded.source!='user'
-                             THEN feedbacks.comment ELSE excluded.comment END,
-              source = CASE WHEN feedbacks.source='user' AND excluded.source!='user'
-                            THEN feedbacks.source ELSE excluded.source END,
-              updated_at = CASE WHEN feedbacks.source='user' AND excluded.source!='user'
-                                THEN feedbacks.updated_at ELSE CURRENT_TIMESTAMP END
-        """, (file_id, preset_key, rating, comment, source))
+            INSERT INTO feedbacks(file_id, preset_key, rating, comment, source, tags)
+            VALUES (?,?,?,?,?,?)
+            ON CONFLICT(file_id, preset_key, source) DO UPDATE SET
+              rating=excluded.rating, comment=excluded.comment, tags=excluded.tags,
+              updated_at=CURRENT_TIMESTAMP
+        """, (file_id, preset_key, rating, comment, source, tags_json))
+
+
+def _row(r):
+    if r is None:
+        return None
+    d = dict(r)
+    d["tags"] = json.loads(d["tags"]) if d.get("tags") else []
+    return d
+
+
+def get_feedbacks(file_id, preset_key) -> dict:
+    """{"user": row|None, "agent": row|None} — 둘 다 보여줄 때."""
+    with db.get_conn() as c:
+        rows = c.execute(
+            "SELECT * FROM feedbacks WHERE file_id=? AND preset_key=?",
+            (file_id, preset_key)).fetchall()
+    out = {"user": None, "agent": None}
+    for r in rows:
+        if r["source"] in out:          # 모르는 source 가 사람 칸을 덮지 않게
+            out[r["source"]] = _row(r)
+    return out
 
 
 def get_feedback(file_id, preset_key):
-    with db.get_conn() as c:
-        row = c.execute(
-            "SELECT * FROM feedbacks WHERE file_id=? AND preset_key=?",
-            (file_id, preset_key)).fetchone()
-    return dict(row) if row else None
+    """대표 피드백 한 줄 — 사람 것이 있으면 사람 것, 없으면 에이전트 것."""
+    fb = get_feedbacks(file_id, preset_key)
+    return fb["user"] or fb["agent"]
 
 
 def get_result(file_id, preset_key):

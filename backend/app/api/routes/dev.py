@@ -116,8 +116,7 @@ def dev_auto_feedback(req: DevPairReq):
         _original_bytes(req.file_id), _result_bytes(req.file_id, req.preset))
     store.save_feedback(req.file_id, req.preset, out["rating"], out["comment"],
                          source="agent")
-    saved = store.get_feedback(req.file_id, req.preset)
-    return saved
+    return store.get_feedbacks(req.file_id, req.preset)["agent"]
 
 
 @router.post("/eval-pair")
@@ -297,7 +296,7 @@ def dev_results():
             "db": _safe(store.get_result, file_id, preset),
             "judge": _safe(_load_json, "quality", f"{file_id}_{preset}.json"),
             "inspect": _safe(_load_json, "quality", f"{file_id}_{preset}_inspect.json"),
-            "feedback": _safe(store.get_feedback, file_id, preset),
+            "feedback": _safe(store.get_feedbacks, file_id, preset) or {"user": None, "agent": None},
         })
     return {"items": items}
 

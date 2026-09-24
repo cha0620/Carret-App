@@ -126,3 +126,23 @@ def test_save_feedback_user_source_always_overwrites_regardless_of_prior_source(
     assert row["rating"] == 5
     assert row["comment"] == "real user now"
     assert row["source"] == "user"
+
+
+def test_user_and_agent_feedback_are_kept_side_by_side(feedback_db):
+    """사람이 코멘트를 달아도 에이전트 코멘트가 사라지지 않는다 (source 별로 한 줄)."""
+    store.save_feedback(FID, "studio_white", 5, "에이전트 의견", source="agent")
+    store.save_feedback(FID, "studio_white", 2, "로고가 깨졌어요", source="user",
+                        tags=["text_broken", "not_a_tag"])
+    fb = store.get_feedbacks(FID, "studio_white")
+    assert fb["agent"]["comment"] == "에이전트 의견" and fb["agent"]["rating"] == 5
+    assert fb["user"]["comment"] == "로고가 깨졌어요"
+    assert fb["user"]["tags"] == ["text_broken"]          # 모르는 태그는 버림
+    assert store.get_feedback(FID, "studio_white")["source"] == "user"   # 대표 = 사람 것
+
+
+def test_agent_rerun_updates_only_agent_row(feedback_db):
+    store.save_feedback(FID, "p", 2, "사람", source="user")
+    store.save_feedback(FID, "p", 4, "에이전트1", source="agent")
+    store.save_feedback(FID, "p", 3, "에이전트2", source="agent")
+    fb = store.get_feedbacks(FID, "p")
+    assert fb["user"]["comment"] == "사람" and fb["agent"]["comment"] == "에이전트2"

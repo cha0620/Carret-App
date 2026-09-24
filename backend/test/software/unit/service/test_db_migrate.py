@@ -90,3 +90,53 @@ def test_migrate_is_idempotent_when_column_already_exists(monkeypatch, tmp_path)
     with db.get_conn() as c:
         cols = {row["name"] for row in c.execute("PRAGMA table_info(feedbacks)")}
         assert "source" in cols
+
+
+def test_migrate_rebuilds_old_unique_key_keeping_rows(monkeypatch, tmp_path):
+    """옛 UNIQUE(file_id, preset_key) 테이블 → source 포함 키로 재생성, 행은 보존."""
+    db_path = tmp_path / "old_unique.db"
+    monkeypatch.setattr(settings, "db_path", str(db_path))
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""
+        CREATE TABLE feedbacks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_id TEXT NOT NULL, preset_key TEXT NOT NULL,
+            rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
+            comment TEXT, source TEXT NOT NULL DEFAULT 'user',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(file_id, preset_key))""")
+    conn.execute("INSERT INTO feedbacks(file_id, preset_key, rating, comment, source) "
+                 "VALUES (?,?,?,?,?)", (FID, "p", 4, "old agent", "agent"))
+    conn.commit(); conn.close()
+
+    db.init_db()
+    db.init_db()   # 두 번 돌려도 안전
+
+    from app.services.persistence import store
+    store.save_feedback(FID, "p", 2, "new user", source="user")
+    fb = store.get_feedbacks(FID, "p")
+    assert fb["agent"]["comment"] == "old agent" and fb["agent"]["tags"] == []
+    assert fb["user"]["comment"] == "new user"
+
+
+def test_migrate_cleans_leftover_new_table_and_is_idempotent(monkeypatch, tmp_path):
+    """예전 실패로 feedbacks_new 가 남아 있어도 기동이 막히지 않는다."""
+    db_path = tmp_path / "leftover.db"
+    monkeypatch.setattr(settings, "db_path", str(db_path))
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""CREATE TABLE feedbacks (id INTEGER PRIMARY KEY AUTOINCREMENT,
+        file_id TEXT NOT NULL, preset_key TEXT NOT NULL,
+        rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5), comment TEXT,
+        source TEXT NOT NULL DEFAULT 'user', created_at TIMESTAMP, updated_at TIMESTAMP,
+        UNIQUE(file_id, preset_key))""")
+    conn.execute("CREATE TABLE feedbacks_new (junk TEXT)")
+    conn.execute("INSERT INTO feedbacks(file_id, preset_key, rating) VALUES (?,?,?)", (FID, "p", 3))
+    conn.commit(); conn.close()
+
+    db.init_db(); db.init_db()
+
+    with db.get_conn() as c:
+        assert db._feedback_key_has_source(c)
+        assert c.execute("SELECT count(*) FROM feedbacks").fetchone()[0] == 1
+        assert c.execute("SELECT name FROM sqlite_master WHERE name='feedbacks_new'").fetchone() is None

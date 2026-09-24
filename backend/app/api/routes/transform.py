@@ -45,7 +45,8 @@ def transform(req: TransformRequest):
         bubbles=out["bubbles"],
         gate_passed=out["gate_passed"],
         item=out["item"],                           # ⭐
-        considered=out["considered"]
+        considered=out["considered"],
+        mode=out.get("mode", "generate"),
         
     )
 

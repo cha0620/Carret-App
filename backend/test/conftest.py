@@ -34,6 +34,26 @@ def isolated_storage(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def no_text_lock_vlm(monkeypatch):
+    """파이프라인의 read_text 단계는 실제 VLM 을 부른다 — 유닛 테스트에선 기본으로
+    끄고, 그 기능을 검증하는 테스트만 켠다 (네트워크·비용 0 유지)."""
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "text_lock", False)
+
+
+@pytest.fixture(autouse=True)
+def no_real_cutout_model(monkeypatch):
+    """배경 교체 모드의 rembg 모델(수백 MB)을 유닛 테스트가 실수로 띄우지 않게 —
+    부르면 바로 실패. 합성을 검증하는 테스트는 compose/cutout_alpha 를 직접 바꿔 끼운다."""
+    from app.services.ai import compositor
+
+    def _no_model():
+        raise RuntimeError("유닛 테스트에서 실제 오리기 모델 금지")
+    monkeypatch.setattr(compositor, "_load", _no_model)
+    monkeypatch.setattr(compositor, "cutout_alpha", lambda img: _no_model())
+
+
+@pytest.fixture(autouse=True)
 def isolated_db(monkeypatch, tmp_path):
     """⭐ 실제 프로덕션 SQLite 파일(data/carret.db)을 절대 건드리지 않도록
     매 테스트마다 격리된 tmp db 로 바꿔치기.

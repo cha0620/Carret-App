@@ -52,10 +52,10 @@ def test_dev_auto_feedback_does_not_overwrite_existing_user_feedback(client, fee
                     json={"file_id": FID, "preset": "studio_white"})
 
     assert r.status_code == 200
-    body = r.json()
-    assert body["rating"] == 5
-    assert body["comment"] == "real user comment"
-    assert body["source"] == "user"
+    body = r.json()                       # 응답 = 방금 만든 에이전트 피드백
+    assert body["source"] == "agent" and body["comment"] == "synthetic"
+    user = store.get_feedbacks(FID, "studio_white")["user"]   # 사람 피드백은 그대로
+    assert user["rating"] == 5 and user["comment"] == "real user comment"
 
 
 def test_dev_auto_feedback_404_when_original_missing(client, feedback_db, make_png):
