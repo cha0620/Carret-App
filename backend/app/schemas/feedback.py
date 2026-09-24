@@ -9,7 +9,9 @@ class FeedbackRequest(BaseModel):
     )
     preset_key: str = Field(description="변환에 사용된 preset 값")
     rating: int = Field(ge=1, le=5, description="1~5점 평점")
-    comment: str | None = Field(default=None, description="자유 코멘트")
+    comment: str | None = Field(default=None, max_length=2000, description="자유 코멘트")
+    tags: list[str] = Field(default_factory=list, max_length=10,
+                            description="문제 유형 태그 (store.FEEDBACK_TAGS 밖의 값은 버림)")
 
 
 class FeedbackResponse(BaseModel):
@@ -18,5 +20,6 @@ class FeedbackResponse(BaseModel):
     rating: int
     comment: str | None = None
     source: str = "user"
+    tags: list[str] = []
     created_at: str | None = None
     updated_at: str | None = None

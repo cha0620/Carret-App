@@ -297,7 +297,7 @@ def dev_results():
             "db": _safe(store.get_result, file_id, preset),
             "judge": _safe(_load_json, "quality", f"{file_id}_{preset}.json"),
             "inspect": _safe(_load_json, "quality", f"{file_id}_{preset}_inspect.json"),
-            "feedback": _safe(store.get_feedback, file_id, preset),
+            "feedback": _safe(store.get_feedbacks, file_id, preset) or {"user": None, "agent": None},
         })
     return {"items": items}
 

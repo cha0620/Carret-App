@@ -144,6 +144,16 @@
   .rs-checks { margin:0; padding:0; list-style:none; }
   .rs-checks li { padding:2px 0; }
   .rs-checks li.bad { color:#b42318; font-weight:600; }
+  .fb-box { margin-top:12px; padding:12px; border-radius:var(--radius-sm); background:var(--accent-soft); }
+  .fb-box h4 { margin:0 0 6px; font-size:11px; color:var(--muted); }
+  .fb-row { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:8px; }
+  .fb-star { border:none; background:none; font-size:20px; line-height:1; color:#d6d3cf; cursor:pointer; padding:0 1px; }
+  .fb-star.on { color:#f5a524; }
+  .fb-tags { display:flex; flex-wrap:wrap; gap:4px; }
+  .fb-tag { font-size:11px; padding:3px 9px; border-radius:999px; border:1px solid var(--line); background:#fff; color:var(--ink); cursor:pointer; }
+  .fb-tag.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .fb-comment { width:100%; font:inherit; font-size:12px; padding:8px 10px; border:1px solid var(--line); border-radius:var(--radius-sm); resize:vertical; margin-bottom:8px; background:#fff; }
+  .fb-status { font-size:12px; color:var(--muted); }
   .rs-toolbar select {
     font-size:12px; padding:8px 10px; border:1px solid var(--line);
     border-radius:var(--radius-sm); background:#fff;
@@ -214,7 +224,7 @@
 
   <section class="section">
     <div class="section-title">파이프라인 결과 한눈에 보기 (storage/result)</div>
-    <p class="hint">inbox·업로드로 돌린 결과 전부를 원본과 나란히 봅니다. 결과 위 초록 박스 = 보존된 하자 위치,
+    <p class="hint">inbox·업로드로 돌린 결과 전부를 원본과 나란히 봅니다. 카드 아래 "내 피드백"에서 별점·태그·코멘트를 달거나 고칠 수 있습니다 (에이전트 코멘트는 그대로 남음). 결과 위 초록 박스 = 보존된 하자 위치,
       빨간 ❌ = 결과에서 사라졌다고 판정된 하자. 이미지를 누르면 원본 크기로 열립니다.</p>
     <div class="btn-row rs-toolbar" style="margin-bottom:10px;">
       <select id="rs-filter">
@@ -222,6 +232,8 @@
         <option value="gate_fail">게이트 실패만</option>
         <option value="gate_pass">게이트 통과만</option>
         <option value="blocked">가드 차단만</option>
+        <option value="mine_none">내 피드백 안 단 것</option>
+        <option value="mine_done">내 피드백 단 것</option>
       </select>
       <select id="rs-sort">
         <option value="new">최신순</option>

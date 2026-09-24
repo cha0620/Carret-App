@@ -34,9 +34,10 @@ CREATE TABLE IF NOT EXISTS feedbacks (
     rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
     comment TEXT,
     source TEXT NOT NULL DEFAULT 'user',
+    tags TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(file_id, preset_key)
+    UNIQUE(file_id, preset_key, source)
 );
 """
 
@@ -57,6 +58,41 @@ def _migrate(c):
     cols = {row["name"] for row in c.execute("PRAGMA table_info(feedbacks)")}
     if "source" not in cols:
         c.execute("ALTER TABLE feedbacks ADD COLUMN source TEXT NOT NULL DEFAULT 'user'")
+    if "tags" not in cols:
+        c.execute("ALTER TABLE feedbacks ADD COLUMN tags TEXT")
+    _migrate_feedback_unique(c)
+
+
+def _migrate_feedback_unique(c):
+    """UNIQUE(file_id, preset_key) → UNIQUE(file_id, preset_key, source).
+
+    예전엔 한 결과에 피드백이 한 줄뿐이라 사람이 코멘트를 달면 에이전트 코멘트가
+    사라졌다. 둘을 나란히 남기려면 source 까지 키에 넣어야 하는데, SQLite 는
+    UNIQUE 제약을 바꾸는 ALTER 가 없어서 테이블을 새로 만들어 옮긴다 (행은 그대로)."""
+    sql = c.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='feedbacks'").fetchone()
+    if sql is None or "UNIQUE(file_id, preset_key, source)" in sql["sql"]:
+        return
+    c.executescript("""
+        CREATE TABLE feedbacks_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_id TEXT NOT NULL,
+            preset_key TEXT NOT NULL,
+            rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
+            comment TEXT,
+            source TEXT NOT NULL DEFAULT 'user',
+            tags TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(file_id, preset_key, source)
+        );
+        INSERT INTO feedbacks_new(id, file_id, preset_key, rating, comment, source, tags,
+                                  created_at, updated_at)
+            SELECT id, file_id, preset_key, rating, comment, source, tags, created_at, updated_at
+            FROM feedbacks;
+        DROP TABLE feedbacks;
+        ALTER TABLE feedbacks_new RENAME TO feedbacks;
+    """)
 
 
 def init_db():

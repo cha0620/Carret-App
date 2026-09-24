@@ -80,9 +80,9 @@ def test_full_item_bundles_everything(client, feedback_db, tmp_storage, make_png
     assert it["db"]["item"] == "mug"
     assert it["judge"] == judge
     assert it["inspect"] == inspect
-    assert it["feedback"]["rating"] == 4
-    assert it["feedback"]["comment"] == "괜찮은 결과네요"
-    assert it["feedback"]["source"] == "agent"
+    assert it["feedback"]["user"] is None
+    assert it["feedback"]["agent"]["rating"] == 4
+    assert it["feedback"]["agent"]["comment"] == "괜찮은 결과네요"
 
 
 def test_missing_optional_artifacts_are_none(client, feedback_db, tmp_storage):
@@ -96,7 +96,7 @@ def test_missing_optional_artifacts_are_none(client, feedback_db, tmp_storage):
     assert it["orig"] is None
     assert it["judge"] is None
     assert it["inspect"] is None
-    assert it["feedback"] is None
+    assert it["feedback"] == {"user": None, "agent": None}
     assert it["db"] is None
     assert it["name"] is None
 
@@ -223,8 +223,8 @@ def test_same_file_id_multiple_presets_are_separate_items(client, feedback_db, t
     assert [i["preset"] for i in items] == ["lifestyle", "studio_white"]
     assert all(i["orig"] == f"/storage/original/{fid}.jpg" for i in items)
     by_preset = {i["preset"]: i for i in items}
-    assert by_preset["studio_white"]["feedback"]["rating"] == 5
-    assert by_preset["lifestyle"]["feedback"] is None
+    assert by_preset["studio_white"]["feedback"]["user"]["rating"] == 5
+    assert by_preset["lifestyle"]["feedback"] == {"user": None, "agent": None}
 
 
 def test_broken_json_only_blanks_that_item(client, feedback_db, tmp_storage):

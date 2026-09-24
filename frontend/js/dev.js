@@ -170,6 +170,16 @@ loadTextCheck();
 
 // ---- 파이프라인 결과 한눈에 보기 (storage/result) ----
 let rsItems = [];
+let rsShownItems = [];
+
+// 피드백 태그 — 백엔드 store.FEEDBACK_TAGS 와 같은 키
+const FB_TAGS = {
+  defect_lost: '하자 사라짐', text_broken: '글자·로고 깨짐', shape_changed: '물건 모양 변형',
+  color_changed: '색감 변함', framing: '구도·잘림', background: '배경 어색',
+  bubble_wrong: '말풍선 위치 틀림', good: '좋음',
+};
+const fbOf = it => it.feedback || { user: null, agent: null };
+const ratingOf = it => fbOf(it).user?.rating ?? fbOf(it).agent?.rating;
 
 const num = v => (typeof v === 'number' ? v : null);
 const fmt = (v, d = 2) => (num(v) == null ? '-' : v.toFixed(d));
@@ -189,10 +199,12 @@ function rsFilterSort(items) {
     if (f === 'gate_fail') return ins.gate_passed === false;
     if (f === 'gate_pass') return ins.gate_passed === true;
     if (f === 'blocked') return ins.status === 'blocked';
+    if (f === 'mine_none') return !fbOf(it).user;
+    if (f === 'mine_done') return !!fbOf(it).user;
     return true;
   });
   const key = {
-    rating: it => it.feedback?.rating,
+    rating: ratingOf,
     fidelity: it => it.judge?.fidelity,
     dino: it => it.inspect?.visual_similarity,
   }[$('rs-sort').value];
@@ -205,21 +217,24 @@ function rsSummary(items) {
   const passed = ins.filter(i => i.gate_passed === true).length;
   const blocked = ins.filter(i => i.status === 'blocked').length;
   const avg = arr => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null);
-  const ratings = items.map(it => it.feedback?.rating).filter(isNum);
+  const mine = items.map(it => fbOf(it).user?.rating).filter(isNum);
+  const agent = items.map(it => fbOf(it).agent?.rating).filter(isNum);
   const fid = items.map(it => it.judge?.fidelity).filter(isNum);
   const dino = ins.map(i => i.visual_similarity).filter(isNum);
   return [
     chip(`총 ${items.length}장`),
     chip(`게이트 통과 ${passed}/${items.length}`, items.length ? passed === items.length : null),
     chip(`차단 ${blocked}`, blocked ? false : null),
-    chip(`평균 별점 ${fmt(avg(ratings), 1)}`),
+    chip(`내 피드백 ${mine.length}/${items.length}`),
+    chip(`내 평균 ★${fmt(avg(mine), 1)}`),
+    chip(`에이전트 평균 ★${fmt(avg(agent), 1)}`),
     chip(`평균 fidelity ${fmt(avg(fid), 1)}`),
     chip(`평균 DINO ${fmt(avg(dino), 3)}`),
   ].join('');
 }
 
 function rsCard(it, idx) {
-  const ins = it.inspect || {}, j = it.judge, fb = it.feedback;
+  const ins = it.inspect || {}, j = it.judge, { user: mine, agent } = fbOf(it);
   const name = it.name || it.file_id.slice(0, 8);
   const checks = ins.checks || [];
   const kept = checks.filter(c => c.preserved).length;
@@ -230,7 +245,8 @@ function rsCard(it, idx) {
     j ? chip(`F/R/T ${j.fidelity}/${j.realism}/${j.trust}`, j.fidelity >= 4) : chip('judge 없음'),
     chip(`DINO ${fmt(ins.visual_similarity, 3)}`),
     ins.gen_attempts ? chip(`생성 ${ins.gen_attempts}회`, ins.gen_attempts === 1 ? null : false) : '',
-    fb ? chip(`${fb.source === 'user' ? '사람' : '에이전트'} ${stars(fb.rating)}`, fb.rating >= 4) : '',
+    agent ? chip(`에이전트 ${stars(agent.rating)}`, agent.rating >= 4) : '',
+    mine ? chip(`나 ${stars(mine.rating)}`, mine.rating >= 4) : chip('내 피드백 없음'),
     isNum(it.db?.elapsed_s) ? chip(`${it.db.elapsed_s.toFixed(0)}s`) : '',
   ].join('');
   const checkList = checks.length
@@ -252,11 +268,77 @@ function rsCard(it, idx) {
       <div><h4>하자 체크리스트 (verify)</h4><ul class="rs-checks">${checkList}</ul></div>
       <div>
         <h4>judge 분석</h4><div class="tc-summary" style="margin-top:0">${esc(j?.analysis) || '-'}</div>
-        <h4 style="margin-top:8px">피드백 코멘트</h4><div class="tc-summary" style="margin-top:0">${esc(fb?.comment) || '-'}</div>
+        <h4 style="margin-top:8px">에이전트 코멘트</h4><div class="tc-summary" style="margin-top:0">${esc(agent?.comment) || '-'}</div>
       </div>
     </div>
+    ${fbEditor(it)}
   </div>`;
 }
+
+function fbEditor(it) {
+  const mine = fbOf(it).user;
+  const rating = mine?.rating || 0;
+  const tags = new Set(mine?.tags || []);
+  const starBtns = [1, 2, 3, 4, 5].map(v =>
+    `<button type="button" class="fb-star ${v <= rating ? 'on' : ''}" data-v="${v}">★</button>`).join('');
+  const tagBtns = Object.entries(FB_TAGS).map(([k, label]) =>
+    `<button type="button" class="fb-tag ${tags.has(k) ? 'on' : ''}" data-tag="${k}">${esc(label)}</button>`).join('');
+  const when = mine ? `마지막 저장 ${esc(mine.updated_at || mine.created_at || '')}` : '아직 저장 안 함';
+  return `<div class="fb-box" data-fid="${esc(it.file_id)}" data-preset="${esc(it.preset)}" data-rating="${rating}">
+    <h4>내 피드백</h4>
+    <div class="fb-row"><span class="fb-stars">${starBtns}</span><span class="fb-tags">${tagBtns}</span></div>
+    <textarea class="fb-comment" rows="2" maxlength="2000" placeholder="무엇이 좋았고 무엇이 문제인지 적어주세요 (예: 왼쪽 소매 얼룩이 사라짐)">${esc(mine?.comment || '')}</textarea>
+    <div class="btn-row"><button type="button" class="btn btn-primary fb-save">${mine ? '수정 저장' : '저장'}</button>
+      <span class="fb-status">${when}</span></div>
+  </div>`;
+}
+
+async function saveFeedback(box) {
+  const status = box.querySelector('.fb-status');
+  const rating = +box.dataset.rating;
+  if (!rating) { status.textContent = '⚠️ 별점을 먼저 선택하세요'; return; }
+  const tags = [...box.querySelectorAll('.fb-tag.on')].map(b => b.dataset.tag);
+  const comment = box.querySelector('.fb-comment').value.trim() || null;
+  status.textContent = '저장 중...';
+  try {
+    const r = await fetch('/api/feedback', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_id: box.dataset.fid, preset_key: box.dataset.preset, rating, comment, tags }),
+    });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.status);
+    const saved = await r.json();
+    const it = rsItems.find(x => x.file_id === box.dataset.fid && x.preset === box.dataset.preset);
+    if (it) it.feedback = { ...fbOf(it), user: saved };
+    $('rs-summary').innerHTML = rsSummary(rsItems);
+    // 이 카드만 다시 그린다 — 다른 카드에 쓰던 코멘트가 날아가지 않게
+    const card = box.closest('.tc-item');
+    const idx = rsShownItems.indexOf(it);
+    if (it && idx >= 0) {
+      card.outerHTML = rsCard(it, idx);
+      const fresh = $('rs-list').querySelector(`.rs-overlay[data-idx="${idx}"]`);
+      if (fresh) drawBoxes(fresh, (it.inspect?.checks || []).filter(c => c.preserved), '#2ecc71');
+      const newStatus = $('rs-list').querySelector(`.fb-box[data-fid="${it.file_id}"][data-preset="${it.preset}"] .fb-status`);
+      if (newStatus) newStatus.textContent = '✅ 저장됨';
+    }
+  } catch (e) {
+    status.textContent = `❌ 저장 실패: ${e.message}`;
+  }
+}
+
+// 카드가 다시 그려져도 동작하도록 목록에 이벤트 위임
+$('rs-list').addEventListener('click', e => {
+  const box = e.target.closest('.fb-box');
+  if (!box) return;
+  const star = e.target.closest('.fb-star');
+  if (star) {
+    box.dataset.rating = star.dataset.v;
+    box.querySelectorAll('.fb-star').forEach(b => b.classList.toggle('on', +b.dataset.v <= +star.dataset.v));
+    return;
+  }
+  const tag = e.target.closest('.fb-tag');
+  if (tag) { tag.classList.toggle('on'); return; }
+  if (e.target.closest('.fb-save')) saveFeedback(box);
+});
 
 function renderResults() {
   const items = rsFilterSort(rsItems);
@@ -266,6 +348,7 @@ function renderResults() {
     return;
   }
   const shown = items.slice(0, rsShown);   // 이미지가 많으면 느려지니 나눠서 그린다
+  rsShownItems = shown;
   $('rs-list').innerHTML = shown.map(rsCard).join('') + (items.length > shown.length
     ? `<button id="btn-rs-more" class="btn btn-ghost">더 보기 (${items.length - shown.length}장 남음)</button>` : '');
   const more = $('btn-rs-more');
