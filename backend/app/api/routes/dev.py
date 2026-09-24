@@ -89,7 +89,7 @@ def dev_verify(req: DevPairReq):
         _result_bytes(req.file_id, req.preset), anchors)   # ⭐ 저장본 계약
     return {"anchors": anchors, "checks": checks,
             "bubbles": detector.bubbles(checks),
-            "gate_passed": detector.all_preserved(checks)}
+            "gate_passed": detector.all_preserved(checks, expected=len(anchors))}
 
 
 @router.post("/transform-with-result")

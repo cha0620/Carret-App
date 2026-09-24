@@ -37,11 +37,11 @@ def test_bubbles_only_preserved_with_box():
 
 
 def test_all_preserved_empty_true():
-    assert all_preserved([]) is True
+    assert all_preserved([], expected=0) is True
 
 
 def test_all_preserved_detects_false():
-    assert all_preserved([{"preserved": True}, {"preserved": False}]) is False
+    assert all_preserved([{"preserved": True}, {"preserved": False}], expected=2) is False
 
 
 def test_match_empty_result_all_missed():
@@ -340,3 +340,50 @@ def test_read_item_text_without_item_box(monkeypatch):
     from app.services.ai import detector
     monkeypatch.setattr(detector, "_call", lambda *a, **k: {"texts": []})
     assert detector.read_item_text(b"img") == {"item_box": None, "texts": []}
+
+
+def test_all_preserved_fails_when_fewer_checks_than_anchors():
+    """VLM 이 빈 응답/일부만 답하면 확인 못 한 앵커가 있으니 통과가 아니다."""
+    assert all_preserved([], expected=2) is False
+    assert all_preserved([{"preserved": True}], expected=2) is False
+    assert all_preserved([{"preserved": True}, {"preserved": True}], expected=2) is True
+
+
+def test_verify_keeps_preserved_check_without_box_for_gate(monkeypatch):
+    from app.services.ai import detector
+    monkeypatch.setattr(detector, "_call", lambda *a, **k: {"checks": [
+        {"what": "logo", "preserved": True},
+        {"what": "stain", "preserved": True, "box_2d": [1, 2, 30, 40]},
+    ]})
+    checks = detector.verify_and_locate(b"img", [{"what": "logo", "where": "a"}, {"what": "stain", "where": "b"}])
+    assert len(checks) == 2
+    assert detector.all_preserved(checks, expected=2) is True
+    assert [b["what"] for b in detector.bubbles(checks)] == ["stain"]   # 말풍선은 좌표 있는 것만
+
+
+def test_verify_normalizes_string_bool_and_bad_boxes(monkeypatch):
+    """"false" 문자열이 True 로 새면 게이트가 fail-open — bool 로 정규화, 못 쓰는 좌표는 지움."""
+    from app.services.ai import detector
+    monkeypatch.setattr(detector, "_call", lambda *a, **k: {"checks": [
+        {"what": "stain", "preserved": "false"},
+        {"what": 7, "preserved": "true", "x1": 1.5, "y1": 2, "x2": 3, "y2": 4},
+        {"what": "no flag"},
+        "junk",
+    ]})
+    checks = detector.verify_and_locate(b"img", [{"what": "a", "where": "b"}] * 3)
+    assert [c["preserved"] for c in checks] == [False, True, False]
+    assert checks[1]["what"] == "7" and "x1" not in checks[1]
+    assert detector.all_preserved(checks, expected=3) is False
+
+
+def test_verify_non_dict_response_is_empty(monkeypatch):
+    from app.services.ai import detector
+    monkeypatch.setattr(detector, "_call", lambda *a, **k: [])
+    assert detector.verify_and_locate(b"img", []) == []
+
+
+def test_detect_drops_anchors_without_what(monkeypatch):
+    from app.services.ai import detector
+    monkeypatch.setattr(detector, "_call", lambda *a, **k: {"defects": [
+        {"what": "", "where": "x"}, {"what": "stain", "where": "sleeve"}]})
+    assert [a["what"] for a in detector.detect_defects(b"img")] == ["stain"]

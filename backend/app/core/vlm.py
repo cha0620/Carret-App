@@ -4,18 +4,41 @@ gemini-3.x flash 는 답하기 전에 속으로 생각하는데, 이 생각 토�
 안 보이지만 출력 토큰 단가로 청구된다 (verify 는 출력 195 토큰에 생각이
 ~2,200 토큰이었다). 단순 판단은 생각을 끄고, 좌표/세밀한 비교만 조금 남긴다.
 
-값: "minimal" | "low" | "medium" | "high" | "default"(모델 기본값, 설정 안 함).
+값: "minimal" | "low" | "medium" | "high" | "default"(모델 기본값, 설정 안 함),
+    또는 정수 = 생각 토큰 상한(thinking_budget) — 생각은 하되 폭주만 막을 때.
 .env 의 VLM_THINKING='{"verify": "default"}' 처럼 호출별로 덮어쓸 수 있다.
 """
+import logging
+
 from google.genai import types
 
 from app.core.config import settings
 
-DEFAULT_THINKING: dict[str, str] = {}
+logger = logging.getLogger("carret.vlm")
+LEVELS = {"minimal", "low", "medium", "high"}
+
+# 2026-09-24 실험(저장 결과 8장, 기본 설정과 판정 비교) 기준:
+#   verify  : 기본값은 가끔 생각 ~63,000 토큰까지 폭주(1회 ~$0.57). 끄면(minimal/low) 판정이
+#             어긋나고, 상한 2048 이면 8장 중 7장이 기본과 같은 판정 + 폭주 차단.
+#   classify, auto_feedback : 꺼도 결과 동일(8/8, 별점 7/8) → minimal
+#   detect, judge, check_photo : 끄면 앵커가 빠지거나 점수가 2점씩 흔들림, 원래 싸다 → 기본값 유지
+DEFAULT_THINKING: dict[str, str | int] = {
+    "verify": 2048,
+    "classify": "minimal",
+    "auto_feedback": "minimal",
+}
 
 
 def thinking(name: str) -> types.ThinkingConfig | None:
     level = {**DEFAULT_THINKING, **settings.vlm_thinking}.get(name, "default")
-    if level == "default":
-        return None
-    return types.ThinkingConfig(thinking_level=level)
+    if isinstance(level, bool):          # JSON true/false 가 int 로 새지 않게
+        level = "default"
+    if isinstance(level, int) or str(level).strip().isdigit():
+        return types.ThinkingConfig(thinking_budget=int(level))
+    level = str(level).strip().lower()
+    if level in LEVELS:
+        return types.ThinkingConfig(thinking_level=level)
+    if level != "default":
+        # 설정 오타 하나로 매 호출이 SDK 검증 오류를 내지 않게 — 모델 기본값으로
+        logger.warning(f"VLM_THINKING[{name}]={level!r} 알 수 없는 값 — 모델 기본값 사용")
+    return None
