@@ -10,6 +10,7 @@ import threading
 import uuid
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -224,3 +225,47 @@ def dev_gallery():
     originals = [{"name": p.stem, "url": f"/storage/original/{p.name}"}
                  for p in sorted((storage.BASE / "original").glob("*.jpg"))]
     return {"pairs": pairs, "originals": originals}
+
+
+# ---- 텍스트/로고 깨짐 확인 (storage/text_check, 항상 로컬) ----
+# dataset 과 같은 "실험 자산" 이라 STORAGE_BACKEND(local/s3) 와 무관하게 로컬에서 읽는다.
+TEXT_CHECK_DIRS = {"input", "output"}
+
+
+def _text_check_root():
+    return storage.BASE / "text_check"
+
+
+@router.get("/text-check")
+def dev_text_check():
+    """input/ 원본마다 output/ 결과 + report.json 행을 묶어서 돌려준다."""
+    root = _text_check_root()
+    report_path = root / "output" / "report.json"
+    rows = {}
+    if report_path.exists():
+        rows = {r["file"]: r for r in json.loads(report_path.read_text())}
+    items = []
+    for src in sorted((root / "input").glob("*")):
+        if src.suffix.lower() not in INBOX_EXTS:
+            continue
+        results = sorted((root / "output").glob(f"{src.stem}_*.jpg"))
+        items.append({
+            "name": src.name,
+            "orig": f"/dev/text-check/img/input/{src.name}",
+            "results": [{"preset": r.stem[len(src.stem) + 1:],
+                         "url": f"/dev/text-check/img/output/{r.name}"}
+                        for r in results],
+            "report": rows.get(src.name),
+        })
+    return {"items": items}
+
+
+@router.get("/text-check/img/{folder}/{name}")
+def dev_text_check_img(folder: str, name: str):
+    if folder not in TEXT_CHECK_DIRS:
+        raise HTTPException(404, "폴더 없음")
+    base = (_text_check_root() / folder).resolve()
+    path = (base / name).resolve()
+    if not path.is_relative_to(base) or not path.is_file():
+        raise HTTPException(404, "파일 없음")
+    return FileResponse(path)
