@@ -167,3 +167,126 @@ async function loadTextCheck() {
 }
 $('btn-tc-reload').onclick = loadTextCheck;
 loadTextCheck();
+
+// ---- 파이프라인 결과 한눈에 보기 (storage/result) ----
+let rsItems = [];
+
+const num = v => (typeof v === 'number' ? v : null);
+const fmt = (v, d = 2) => (num(v) == null ? '-' : v.toFixed(d));
+const stars = n => {
+  if (num(n) == null) return '-';
+  const k = Math.max(0, Math.min(5, Math.round(n)));
+  return '★'.repeat(k) + '☆'.repeat(5 - k);
+};
+const isNum = v => typeof v === 'number';
+const RS_PAGE = 30;
+let rsShown = RS_PAGE;
+
+function rsFilterSort(items) {
+  const f = $('rs-filter').value;
+  const filtered = items.filter(it => {
+    const ins = it.inspect || {};
+    if (f === 'gate_fail') return ins.gate_passed === false;
+    if (f === 'gate_pass') return ins.gate_passed === true;
+    if (f === 'blocked') return ins.status === 'blocked';
+    return true;
+  });
+  const key = {
+    rating: it => it.feedback?.rating,
+    fidelity: it => it.judge?.fidelity,
+    dino: it => it.inspect?.visual_similarity,
+  }[$('rs-sort').value];
+  if (key) filtered.sort((a, b) => (key(a) ?? 99) - (key(b) ?? 99));   // 낮은 점수부터 = 문제부터
+  return filtered;
+}
+
+function rsSummary(items) {
+  const ins = items.map(it => it.inspect || {});
+  const passed = ins.filter(i => i.gate_passed === true).length;
+  const blocked = ins.filter(i => i.status === 'blocked').length;
+  const avg = arr => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null);
+  const ratings = items.map(it => it.feedback?.rating).filter(isNum);
+  const fid = items.map(it => it.judge?.fidelity).filter(isNum);
+  const dino = ins.map(i => i.visual_similarity).filter(isNum);
+  return [
+    chip(`총 ${items.length}장`),
+    chip(`게이트 통과 ${passed}/${items.length}`, items.length ? passed === items.length : null),
+    chip(`차단 ${blocked}`, blocked ? false : null),
+    chip(`평균 별점 ${fmt(avg(ratings), 1)}`),
+    chip(`평균 fidelity ${fmt(avg(fid), 1)}`),
+    chip(`평균 DINO ${fmt(avg(dino), 3)}`),
+  ].join('');
+}
+
+function rsCard(it, idx) {
+  const ins = it.inspect || {}, j = it.judge, fb = it.feedback;
+  const name = it.name || it.file_id.slice(0, 8);
+  const checks = ins.checks || [];
+  const kept = checks.filter(c => c.preserved).length;
+  const chips = [
+    chip(ins.item || 'item ?'),
+    chip(`게이트 ${ins.gate_passed == null ? '-' : ins.gate_passed ? '통과' : '실패'} (${kept}/${checks.length})`, ins.gate_passed),
+    ins.status === 'blocked' ? chip('가드 차단', false) : '',
+    j ? chip(`F/R/T ${j.fidelity}/${j.realism}/${j.trust}`, j.fidelity >= 4) : chip('judge 없음'),
+    chip(`DINO ${fmt(ins.visual_similarity, 3)}`),
+    ins.gen_attempts ? chip(`생성 ${ins.gen_attempts}회`, ins.gen_attempts === 1 ? null : false) : '',
+    fb ? chip(`${fb.source === 'user' ? '사람' : '에이전트'} ${stars(fb.rating)}`, fb.rating >= 4) : '',
+    isNum(it.db?.elapsed_s) ? chip(`${it.db.elapsed_s.toFixed(0)}s`) : '',
+  ].join('');
+  const checkList = checks.length
+    ? checks.map(c => `<li class="${c.preserved ? 'ok' : 'bad'}">${c.preserved ? '✅' : '❌'} ${esc(c.what)}</li>`).join('')
+    : '<li class="tc-empty">(앵커 없음)</li>';
+  const guards = (ins.guard_report || []).filter(g => !g.passed)
+    .map(g => chip(`${g.severity} ${g.name} ${fmt(g.value)}/${g.threshold}`, false)).join('');
+  return `<div class="tc-item">
+    <div class="tc-head"><b title="${esc(it.file_id)}">${esc(name)}</b>${chips}</div>
+    <div class="rs-panes">
+      <div class="pane"><span class="label">원본</span>
+        ${it.orig ? `<a href="${esc(it.orig)}" target="_blank"><img src="${esc(it.orig)}" alt="원본" loading="lazy"></a>` : '<p class="tc-empty">원본 없음</p>'}</div>
+      <div class="pane"><span class="label">${esc(it.preset)}</span>
+        <a href="${esc(it.result)}" target="_blank"><img src="${esc(it.result)}" alt="결과" loading="lazy"></a>
+        <div class="rs-overlay" data-idx="${idx}"></div></div>
+    </div>
+    ${guards ? `<div class="tc-head" style="margin-top:8px">${guards}</div>` : ''}
+    <div class="tc-texts">
+      <div><h4>하자 체크리스트 (verify)</h4><ul class="rs-checks">${checkList}</ul></div>
+      <div>
+        <h4>judge 분석</h4><div class="tc-summary" style="margin-top:0">${esc(j?.analysis) || '-'}</div>
+        <h4 style="margin-top:8px">피드백 코멘트</h4><div class="tc-summary" style="margin-top:0">${esc(fb?.comment) || '-'}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderResults() {
+  const items = rsFilterSort(rsItems);
+  $('rs-summary').innerHTML = rsSummary(rsItems);
+  if (!items.length) {
+    $('rs-list').innerHTML = '<p class="tc-empty">조건에 맞는 결과가 없습니다.</p>';
+    return;
+  }
+  const shown = items.slice(0, rsShown);   // 이미지가 많으면 느려지니 나눠서 그린다
+  $('rs-list').innerHTML = shown.map(rsCard).join('') + (items.length > shown.length
+    ? `<button id="btn-rs-more" class="btn btn-ghost">더 보기 (${items.length - shown.length}장 남음)</button>` : '');
+  const more = $('btn-rs-more');
+  if (more) more.onclick = () => { rsShown += RS_PAGE; renderResults(); };
+  // 보존된 하자 위치를 결과 위에 초록 박스로 (좌표 있는 것만)
+  $('rs-list').querySelectorAll('.rs-overlay').forEach(el => {
+    const it = shown[+el.dataset.idx];
+    drawBoxes(el, (it.inspect?.checks || []).filter(c => c.preserved), '#2ecc71');
+  });
+}
+
+async function loadResults() {
+  try {
+    const r = await fetch('/dev/results');
+    if (!r.ok) throw new Error(r.status);
+    rsItems = (await r.json()).items;
+    renderResults();
+  } catch (e) {
+    $('rs-list').innerHTML = `<p class="tc-empty">불러오기 실패: ${esc(e.message)}</p>`;
+  }
+}
+$('btn-rs-reload').onclick = loadResults;
+$('rs-filter').onchange = $('rs-sort').onchange = () => { rsShown = RS_PAGE; renderResults(); };
+loadResults();

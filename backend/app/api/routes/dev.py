@@ -6,6 +6,8 @@
 = 테스트는 프로덕션을 호출하지, 복사하지 않는다.
 """
 import json
+import logging
+import re
 import threading
 import uuid
 
@@ -225,6 +227,79 @@ def dev_gallery():
     originals = [{"name": p.stem, "url": f"/storage/original/{p.name}"}
                  for p in sorted((storage.BASE / "original").glob("*.jpg"))]
     return {"pairs": pairs, "originals": originals}
+
+
+FILE_ID_RE = re.compile(r"[0-9a-f]{32}")
+logger = logging.getLogger("carret.dev")
+
+
+def _load_json(kind: str, name: str):
+    data = storage.load(kind, name)
+    return json.loads(data.decode("utf-8")) if data is not None else None
+
+
+def _safe(fn, *args):
+    """항목 하나의 산출물이 깨져 있어도(쓰다 만 json, DB 락 등) 목록 전체를
+    500 으로 날리지 않는다 — 그 칸만 None 으로 비우고 로그만 남긴다."""
+    try:
+        return fn(*args)
+    except Exception:
+        logger.exception(f"[dev/results] {getattr(fn, '__name__', fn)}{args} 실패(무시)")
+        return None
+
+
+def _prefix_map(folder, sep: str) -> dict:
+    """폴더를 한 번만 훑어 {file_id: 파일} — 결과마다 glob 하지 않기 위함."""
+    out = {}
+    if folder.is_dir():
+        for f in folder.iterdir():
+            fid = f.name[:32]
+            if f.is_file() and FILE_ID_RE.fullmatch(fid) and f.name[32:33] == sep:
+                out.setdefault(fid, f)
+    return out
+
+
+@router.get("/results")
+def dev_results():
+    """파이프라인이 만든 결과 전부를 원본과 묶어서 한 번에 — 판정(judge),
+    인스펙트(anchors/checks/gate/guard), 피드백, 원본 이름을 모아 돌려준다.
+    계산은 하지 않는다: 이미 저장된 산출물을 읽기만 한다 (최신순).
+    목록·이미지 URL 은 로컬 storage 기준 (/storage 마운트와 짝)."""
+    originals = _prefix_map(storage.BASE / "original", ".")
+    done = _prefix_map(storage.BASE / "inbox" / "done", "_")
+    found = []
+    for p in (storage.BASE / "result").glob("*.jpg"):
+        file_id, _, preset = p.stem.partition("_")
+        if not FILE_ID_RE.fullmatch(file_id) or not preset:
+            continue
+        try:
+            mtime = p.stat().st_mtime
+        except FileNotFoundError:   # glob 과 stat 사이에 덮어쓰기/삭제
+            continue
+        found.append((mtime, p, file_id, preset))
+    found.sort(key=lambda t: t[0], reverse=True)
+
+    items = []
+    for mtime, p, file_id, preset in found:
+        orig = originals.get(file_id)
+        meta = _safe(store.get_original, file_id) or {}
+        # 원본 파일명: DB 에 없으면(메타 기록 도입 전 실행분) inbox/done/{file_id}_{원래이름} 에서 복원
+        name = meta.get("original_name")
+        if not name and file_id in done:
+            name = done[file_id].name[33:]
+        items.append({
+            "file_id": file_id,
+            "preset": preset,
+            "orig": f"/storage/original/{orig.name}" if orig else None,
+            "result": f"/storage/result/{p.name}",
+            "created": mtime,
+            "name": name,
+            "db": _safe(store.get_result, file_id, preset),
+            "judge": _safe(_load_json, "quality", f"{file_id}_{preset}.json"),
+            "inspect": _safe(_load_json, "quality", f"{file_id}_{preset}_inspect.json"),
+            "feedback": _safe(store.get_feedback, file_id, preset),
+        })
+    return {"items": items}
 
 
 # ---- 텍스트/로고 깨짐 확인 (storage/text_check, 항상 로컬) ----
