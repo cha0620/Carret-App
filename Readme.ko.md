@@ -30,37 +30,52 @@ Carret은 대충 찍은 중고 물품 사진을 깔끔한 스튜디오 스타일
 `StateGraph`로 구성되어 있습니다 (`backend/app/services/pipeline.py`).
 
 ```mermaid
-flowchart LR
-  L[load] --> C[classify<br/>물건 식별 + 체크리스트]
-  C --> D[detect<br/>원본 하자 앵커]
-  D --> G[generate<br/>배경 교체 · fal.ai]
-  G --> V{validate_result<br/>구도 잘림·자막?}
-  V -->|invalid, 재시도 여유 있음| G
-  V -->|ok| S[score_similarity<br/>DINOv2 코사인]
-  S --> VR[verify<br/>하자 보존 + 좌표]
-  VR --> I[save_inspect]
-  I --> J[run_judge<br/>품질 성적표]
-  J --> F[finalize<br/>말풍선]
+flowchart TD
+  L["load<br/>원본 + 프리셋"] --> C["classify<br/>물건 식별 + 체크리스트"]
+  C --> T["read_text<br/>물건 위 글자 + 물건 위치<br/>(TEXT_LOCK)"]
+  T --> D["detect<br/>원본 하자 앵커"]
+  D --> G["generate · fal.ai FLUX.2<br/>프리셋 + SECONDHAND_LOCK<br/>+ 원본 글자 목록<br/>(+ 반려 사유 / 사라진 하자)"]
+  G --> V{"validate_result<br/>① 출력 가드<br/>② 구도 잘림·자막 검사"}
+  V -->|"가드 실패 1회차<br/>seed 바꿔 재시도"| G
+  V -->|"구도 불량<br/>재생성 한도 남음"| G
+  V -->|"가드 2회 실패<br/>blocked = 원본 반환"| S
+  V -->|ok| S["score_similarity<br/>DINOv2 코사인"]
+  S --> VR{"verify (Wear Gate)<br/>하자·로고 보존 + box_2d 좌표<br/>답 수 &lt; 앵커 수면 실패"}
+  VR -->|"통과<br/>(또는 합성본)"| I
+  VR -->|"실패 1회차"| R["mark_gate_retry<br/>사라진 하자를 프롬프트에"]
+  R --> G
+  VR -->|"실패 2회차"| X["composite · 배경 교체 모드<br/>fal BiRefNet 오리기<br/>(실패 시 로컬 rembg)<br/>+ 프리셋 배경 + 그림자"]
+  X -->|"성공 → 다시 확인"| S
+  X -->|"오리기 실패<br/>생성본 유지"| I
+  I["save_inspect<br/>디버그 JSON (mode 등)"] --> J["run_judge<br/>fidelity · realism · trust"]
+  J --> F["finalize<br/>말풍선"]
 ```
 
 1. **classify**: VLM이 물건 종류를 알아내고 "이 물건이면 봐야 할 하자"
    체크리스트를 만든다 (예: 신발이면 밑창 마모, 앞코 주름)
-2. **detect**: 원본에서 하자를 찾아 *무엇이 / 어디에* 있는지 앵커로 남긴다
-3. **generate**: 프리셋(화이트 스튜디오 / 우든 테이블 / 미니멀 그레이)으로
+2. **read_text** (`TEXT_LOCK`, 기본 켬): 원본 물건 **위의** 글자를 읽어 generate
+   프롬프트에 대략 위치와 함께 넣는다 (생성 모델이 작은 글씨·한글을 뭉개는 것을 줄임).
+   물건 위치 박스도 함께 받아 배경 교체 모드에서 쓴다
+3. **detect**: 원본에서 하자를 찾아 *무엇이 / 어디에* 있는지 앵커로 남긴다
+4. **generate**: 프리셋(화이트 스튜디오 / 우든 테이블 / 미니멀 그레이)으로
    배경을 교체한다. 모든 프롬프트에 `SECONDHAND_LOCK`(복원·보정 금지)이
    붙는다
-4. **validate_result**: 결과가 잘리거나 자막이 덮였으면 **반려 사유를
+5. **validate_result**: 결과가 잘리거나 자막이 덮였으면 **반려 사유를
    프롬프트에 붙여서** 다시 생성한다. 같은 프롬프트로 다시 돌리지 않고,
    재시도 횟수는 설정으로 상한을 둔다
-5. **score_similarity**: VLM과 별개로 DINOv2 임베딩 유사도를 로컬에서 계산한다
-6. **verify (Wear Gate)**: "문제를 찾아라"라고 묻지 않고 "이 하자들이
+6. **score_similarity**: VLM과 별개로 DINOv2 임베딩 유사도를 로컬에서 계산한다
+7. **verify (Wear Gate)**: "문제를 찾아라"라고 묻지 않고 "이 하자들이
    아직 보이는지 확인해라"라고 묻는 체크리스트 방식으로, 하자 보존 여부와
    결과 이미지 속 좌표를 받아 온다. 좌표는 Gemini가 학습된 형식인
    `box_2d [ymin, xmin, ymax, xmax]`로 받고, VLM이 확인을 요청한 하자보다
    적게 답하면(빈 응답 포함) 게이트를 실패로 본다
-7. **judge**: fidelity / realism / trust 성적표를 만들고, 결과는 캐시와
+8. **게이트 실패 폴백**: verify 게이트가 실패하면 사라진 하자 목록을 프롬프트에 붙여
+   1회 재생성하고, 그래도 실패하면 **배경 교체 모드**로 넘어간다. 원본 물건을 오려
+   (fal BiRefNet, 실패하면 로컬 rembg) 프리셋 배경 위에 합성하므로 물건 픽셀은 원본
+   그대로다. 결과에는 `mode: composite`가 기록된다
+9. **judge**: fidelity / realism / trust 성적표를 만들고, 결과는 캐시와
    Langfuse Score에 남긴다
-8. UI는 결과 위에 하자 말풍선을 띄우고 판매자에게 별점과 코멘트를 받는다
+10. UI는 결과 위에 하자 말풍선을 띄우고 판매자에게 별점과 코멘트를 받는다
 
 ---
 

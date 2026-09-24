@@ -30,40 +30,57 @@ The transform pipeline is a [LangGraph](https://github.com/langchain-ai/langgrap
 `StateGraph` (`backend/app/services/pipeline.py`).
 
 ```mermaid
-flowchart LR
-  L[load] --> C[classify<br/>item + checklist]
-  C --> D[detect<br/>defect anchors]
-  D --> G[generate<br/>background swap · fal.ai]
-  G --> V{validate_result<br/>cropped / captioned?}
-  V -->|invalid, attempts left| G
-  V -->|ok| S[score_similarity<br/>DINOv2 cosine]
-  S --> VR[verify<br/>preserved + coords]
-  VR --> I[save_inspect]
-  I --> J[run_judge<br/>report card]
-  J --> F[finalize<br/>bubbles]
+flowchart TD
+  L["load<br/>original + preset"] --> C["classify<br/>item + checklist"]
+  C --> T["read_text<br/>text on the item + item box<br/>(TEXT_LOCK)"]
+  T --> D["detect<br/>defect anchors"]
+  D --> G["generate · fal.ai FLUX.2<br/>preset + SECONDHAND_LOCK<br/>+ original text list<br/>(+ rejection reason / lost defects)"]
+  G --> V{"validate_result<br/>1. output guards<br/>2. crop / caption check"}
+  V -->|"guard fail, 1st<br/>retry with new seed"| G
+  V -->|"bad framing<br/>attempts left"| G
+  V -->|"guard fail twice<br/>blocked = original"| S
+  V -->|ok| S["score_similarity<br/>DINOv2 cosine"]
+  S --> VR{"verify (Wear Gate)<br/>defects/logos kept + box_2d<br/>fewer answers than anchors = fail"}
+  VR -->|"pass<br/>(or composite)"| I
+  VR -->|"fail, 1st"| R["mark_gate_retry<br/>lost defects into prompt"]
+  R --> G
+  VR -->|"fail, 2nd"| X["composite · background-swap mode<br/>fal BiRefNet cutout<br/>(local rembg fallback)<br/>+ preset background + shadow"]
+  X -->|"ok → check again"| S
+  X -->|"cutout failed<br/>keep generated"| I
+  I["save_inspect<br/>debug JSON (mode etc.)"] --> J["run_judge<br/>fidelity · realism · trust"]
+  J --> F["finalize<br/>bubbles"]
 ```
 
 1. **classify**: the VLM identifies the item and builds a checklist of
    defects worth checking for that kind of item (for shoes: sole wear, toe creases)
-2. **detect**: finds defects in the original and records each one as a
+2. **read_text** (`TEXT_LOCK`, on by default): reads the text **on the item** in the
+   original and adds it, with rough positions, to the generate prompt (so the generator
+   garbles small text and Korean less). It also returns the item box used by
+   background-swap mode
+3. **detect**: finds defects in the original and records each one as a
    *what / where* anchor
-3. **generate**: replaces the background with a preset (studio white, warm
+4. **generate**: replaces the background with a preset (studio white, warm
    wood or minimal gray). Every prompt carries `SECONDHAND_LOCK`, which
    forbids restoration
-4. **validate_result**: if the result is cropped or covered by a caption,
+5. **validate_result**: if the result is cropped or covered by a caption,
    it is regenerated **with the rejection reason added to the prompt**
    rather than retried blindly. The number of attempts is capped by config
-5. **score_similarity**: computes a local DINOv2 embedding similarity,
+6. **score_similarity**: computes a local DINOv2 embedding similarity,
    separate from the VLM
-6. **verify (Wear Gate)**: the VLM gets a checklist ("confirm these defects
+7. **verify (Wear Gate)**: the VLM gets a checklist ("confirm these defects
    are still visible") instead of an open question ("find problems").
    It returns whether each defect survived and where it is in the result.
    Coordinates are requested in Gemini's native `box_2d [ymin, xmin, ymax, xmax]`
    format, and if the VLM answers for fewer defects than it was asked about
    (including an empty answer), the gate fails
-7. **judge**: produces a fidelity / realism / trust report card, which is
+8. **Gate-failure fallback**: if the verify gate fails, the pipeline regenerates once
+   with the lost defects added to the prompt. If it still fails, it switches to
+   **background-swap mode**: the original item is cut out (fal BiRefNet, local rembg as a
+   fallback) and placed on the preset background, so the item's pixels are the
+   original's. The result is recorded with `mode: composite`
+9. **judge**: produces a fidelity / realism / trust report card, which is
    cached and attached to the trace as Langfuse Scores
-8. The UI overlays defect bubbles on the result and collects a star rating
+10. The UI overlays defect bubbles on the result and collects a star rating
    and comment from the seller
 
 ---
