@@ -58,3 +58,5 @@ class TransformResponse(BaseModel):
     gate_passed: bool | None = None
     item: str = "object"
     considered: list[str] = []
+    mode: str = Field(default="generate",
+                      description='"generate" | "composite"(원본 물건 픽셀 + 배경만 교체) | "composite_failed"')

@@ -199,6 +199,7 @@ function rsFilterSort(items) {
     if (f === 'gate_fail') return ins.gate_passed === false;
     if (f === 'gate_pass') return ins.gate_passed === true;
     if (f === 'blocked') return ins.status === 'blocked';
+    if (f === 'composite') return (ins.mode || 'generate') !== 'generate';
     if (f === 'mine_none') return !fbOf(it).user;
     if (f === 'mine_done') return !!fbOf(it).user;
     return true;
@@ -225,6 +226,7 @@ function rsSummary(items) {
     chip(`총 ${items.length}장`),
     chip(`게이트 통과 ${passed}/${items.length}`, items.length ? passed === items.length : null),
     chip(`차단 ${blocked}`, blocked ? false : null),
+    chip(`배경 교체 ${ins.filter(i => i.mode === 'composite').length}`),
     chip(`내 피드백 ${mine.length}/${items.length}`),
     chip(`내 평균 ★${fmt(avg(mine), 1)}`),
     chip(`에이전트 평균 ★${fmt(avg(agent), 1)}`),
@@ -242,6 +244,9 @@ function rsCard(it, idx) {
     chip(ins.item || 'item ?'),
     chip(`게이트 ${ins.gate_passed == null ? '-' : ins.gate_passed ? '통과' : '실패'} (${kept}/${checks.length})`, ins.gate_passed),
     ins.status === 'blocked' ? chip('가드 차단', false) : '',
+    ins.mode === 'composite' ? chip('배경 교체 모드 (원본 물건 픽셀)') : '',
+    ins.mode === 'composite_failed' ? chip('배경 교체 실패', false) : '',
+    ins.gate_retried ? chip('게이트 재생성 1회') : '',
     j ? chip(`F/R/T ${j.fidelity}/${j.realism}/${j.trust}`, j.fidelity >= 4) : chip('judge 없음'),
     chip(`DINO ${fmt(ins.visual_similarity, 3)}`),
     ins.gen_attempts ? chip(`생성 ${ins.gen_attempts}회`, ins.gen_attempts === 1 ? null : false) : '',

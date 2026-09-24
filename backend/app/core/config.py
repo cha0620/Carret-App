@@ -32,6 +32,8 @@ class Settings(BaseSettings):              # ⭐ 대문자 클래스
     # 구도 잘림/자막 오버레이 감지 시 재생성 횟수 (최초 포함) — 상한 없으면
     # 오설정(.env 오타 등) 시 invalid 가 계속 나올 때 fal.ai/VLM 비용이 무한정 나간다.
     max_generate_attempts: int = Field(default=2, ge=1, le=5)
+    # 원본 물건 위 글자를 읽어 생성 프롬프트에 넣는다 (VLM 호출 1회 추가)
+    text_lock: bool = True
 
     # VLM (소문자 통일)
     VLM_KEY: str = ""

@@ -95,6 +95,7 @@ def _expected(out):
         "photo_check": out.get("photo_check"),
         "status": out.get("status", "pass"),
         "guard_report": out.get("guard_report", []),
+        "mode": out.get("mode", "generate"),
     }
 
 
@@ -116,7 +117,7 @@ def test_run_transform_mock_mode_bypasses_graph_and_tracing(monkeypatch, make_pn
         "result_name": "fid1_preset_a.jpg", "prompt_used": "PASS-THROUGH",
         "checks": [], "bubbles": [], "gate_passed": None,
         "item": "object", "considered": [],
-        "status": "pass", "guard_report": [],
+        "status": "pass", "guard_report": [], "mode": "generate",
     }
 
 
@@ -168,6 +169,7 @@ def test_run_transform_real_mode_enabled_tracing_updates_obs_and_flushes(monkeyp
         "gate_passed": True, "bubbles": 1, "item": "chair",
         "visual_similarity": 0.87,
         "gen_attempts": 1, "photo_check": {"valid": True, "reason": ""},
+        "mode": "generate",
     }}]
     assert fake_lf.flushed is True
 
@@ -292,6 +294,8 @@ def _patch_graph_deps(monkeypatch, make_png, guard_side_effects):
                         lambda orig, result: 0.9)
     monkeypatch.setattr(pipeline_mod.detector, "verify_and_locate", fake_verify)
     monkeypatch.setattr(pipeline_mod.judge, "judge", fake_judge)
+    monkeypatch.setattr(pipeline_mod.compositor, "compose",
+                        lambda original, bg, box=None: make_png(color=(9, 9, 9)))
     return calls
 
 
@@ -467,3 +471,102 @@ def test_real_guards_with_empty_ocr_pass(monkeypatch, make_png):
 
     assert out["status"] == "pass"
     assert calls["gen_seeds"] == [None]
+
+
+def test_text_lock_puts_original_text_into_generate_prompt(monkeypatch, make_png):
+    """원본 물건 위 글자를 읽어 generate 프롬프트에 넣고, 인스펙트에도 남긴다."""
+    import json
+    from app.core.config import settings
+    from app.services.persistence import storage
+    _patch_graph_deps(monkeypatch, make_png, [[]])
+    monkeypatch.setattr(settings, "text_lock", True)
+    monkeypatch.setattr(pipeline_mod.detector, "read_item_text", lambda img, item: {
+        "item_box": None,
+        "texts": [{"text": "시한부", "x1": 300, "y1": 100, "x2": 700, "y2": 200}]})
+    prompts = []
+    monkeypatch.setattr(pipeline_mod, "_generate_ai",
+                        lambda original, preset, seed=None: prompts.append(preset["prompt"]) or make_png())
+
+    out = pipeline_mod.run_transform("fid-g", "studio_white")
+
+    assert '"시한부" (top-center)' in prompts[0]
+    ins = json.loads(storage.load("quality", "fid-g_studio_white_inspect.json"))
+    assert ins["item_texts"][0]["text"] == "시한부"
+    assert out["status"] == "pass"
+
+
+def test_text_lock_read_failure_generates_without_text(monkeypatch, make_png):
+    from app.core.config import settings
+    _patch_graph_deps(monkeypatch, make_png, [[]])
+    monkeypatch.setattr(settings, "text_lock", True)
+
+    def boom(img, item):
+        raise RuntimeError("vlm down")
+    monkeypatch.setattr(pipeline_mod.detector, "read_item_text", boom)
+    prompts = []
+    monkeypatch.setattr(pipeline_mod, "_generate_ai",
+                        lambda original, preset, seed=None: prompts.append(preset["prompt"]) or make_png())
+
+    pipeline_mod.run_transform("fid-g", "studio_white")
+    assert "Text printed on the product" not in prompts[0]
+
+
+
+# ── 게이트 실패 → 1회 재생성 → 배경 교체 모드 ──
+def _verify_seq(monkeypatch, seq):
+    """verify 가 호출될 때마다 seq 의 preserved 값을 차례로 돌려준다."""
+    it = iter(seq)
+    calls = []
+
+    def fake_verify(img, anchors, item, considered):
+        calls.append(img)
+        return [{"what": "얼룩", "preserved": next(it)}]
+    monkeypatch.setattr(pipeline_mod.detector, "verify_and_locate", fake_verify)
+    return calls
+
+
+def test_gate_fail_once_regenerates_with_lost_defects_in_prompt(monkeypatch, make_png):
+    _patch_graph_deps(monkeypatch, make_png, [[], []])
+    _verify_seq(monkeypatch, [False, True])
+    prompts = []
+    monkeypatch.setattr(pipeline_mod, "_generate_ai",
+                        lambda original, preset, seed=None: prompts.append(preset["prompt"]) or make_png())
+
+    out = pipeline_mod.GRAPH.invoke({"file_id": "fid-g", "preset_key": "studio_white"})
+
+    assert len(prompts) == 2
+    assert '"얼룩"' in prompts[1] and '"얼룩"' not in prompts[0]
+    assert out["gate_passed"] is True and out.get("mode", "generate") == "generate"
+
+
+def test_gate_fail_twice_switches_to_composite(monkeypatch, make_png):
+    import json
+    from app.services.persistence import storage
+    _patch_graph_deps(monkeypatch, make_png, [[], []])
+    verify_calls = _verify_seq(monkeypatch, [False, False, True])
+    composed = make_png(color=(9, 9, 9))
+    monkeypatch.setattr(pipeline_mod.compositor, "compose", lambda original, bg, box=None: composed)
+
+    out = pipeline_mod.run_transform("fid-g", "studio_white")
+
+    assert out["mode"] == "composite" and out["gate_passed"] is True
+    assert len(verify_calls) == 3                     # 합성본을 다시 verify
+    saved = storage.load("result", "fid-g_studio_white.jpg")
+    assert _mean_color(saved)[0] < 30                   # 저장된 결과 = 합성본 (거의 검정)
+    assert _mean_color(verify_calls[-1])[0] < 30
+    ins = json.loads(storage.load("quality", "fid-g_studio_white_inspect.json"))
+    assert ins["mode"] == "composite" and ins["gate_retried"] is True
+
+
+def test_composite_failure_keeps_generated_result_and_stops(monkeypatch, make_png):
+    _patch_graph_deps(monkeypatch, make_png, [[], []])
+    verify_calls = _verify_seq(monkeypatch, [False, False])
+
+    def boom(original, bg, box=None):
+        raise ValueError("물건을 찾지 못함")
+    monkeypatch.setattr(pipeline_mod.compositor, "compose", boom)
+
+    out = pipeline_mod.run_transform("fid-g", "studio_white")
+
+    assert out["mode"] == "composite_failed" and out["gate_passed"] is False
+    assert len(verify_calls) == 2       # 무한 루프 없이 끝남
