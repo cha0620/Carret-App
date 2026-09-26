@@ -8,7 +8,7 @@
 4. 다음에 볼 것: 점수와 "결정 지점"
 5. 파이프라인 점검: 게이트 구멍 · 옛 점수 · 직렬 대기 · 글자 사후검증
 6. 오후: judge 한 벌로 · 대기 시간 단축 · verify 구멍
-
+7. 하루 마무리: PR 상태 · 남은 일 한 목록 ← **남은 일은 여기만 보면 된다**
 
 ---
 
@@ -108,19 +108,19 @@ Gemini 호출 한 번이 망가지는 경우:
 
 | 브랜치 | 내용 | 상태 |
 |---|---|---|
-| `fix/prompt-registry-gaps` | (어제~오늘 오전) 프롬프트 시딩 누락 + 잠금 코드 부착 | PR #18 open |
-| `fix/pipeline-gate-holes` | 오늘 파이프라인 작업 전부 + study | **PR #19** (base = #18 브랜치, #18 머지되면 main 으로) |
-| `chore/md-tooling` | markdownlint 설정 + md 뷰어 | **PR #20** (base = main) |
+| `fix/prompt-registry-gaps` | (어제~오늘 오전) 프롬프트 시딩 누락 + 잠금 코드 부착 | PR #18 머지 |
+| `fix/pipeline-gate-holes` | 오늘 파이프라인 작업 전부 + study | PR #19 머지 |
+| `chore/md-tooling` | markdownlint 설정 + md 뷰어 | PR #20 → 저녁에 #21 브랜치로 합침 (§7) |
 
 - 테스트: `pytest backend/test -m "not eval and not e2e"` → **579 passed**
-- 커밋 안 한 것: `ISSUES/Anchor.md` 삭제, `study/2026-09-26-next-study-scores-and-decisions.md` (오늘 이전부터 있던 변경)
+- (오전 기준) 커밋 안 한 것: `ISSUES/Anchor.md` 삭제 → 저녁에 정리 (§7). next-study 노트는 이 파일 §4 로 합침
 
-### 7. 다음에 할 것
+### 7. 다음에 할 것 (오전 기준 — 최종 목록은 §7)
 
 - [ ] **eval 로 숫자 보기** — OCR 가드 오차단률(`ocr_match` 0.95), 글자 사후검증 false fail, `text_heavy` 기준 12줄, composite 비율 변화
 - [ ] `detect_failed` / `composite_reason` 이 실제 트래픽에서 얼마나 나오는지 Langfuse 로 확인
-- [ ] genai 클라이언트 타임아웃 (실패 대신 매달리는 경우)
-- [ ] OCR 읽기 ∥ check_photo 병렬 (생성 1회당 VLM 2회 직렬)
+- [x] genai 클라이언트 타임아웃 (실패 대신 매달리는 경우) → §6-3
+- [x] OCR 읽기 ∥ check_photo 병렬 (생성 1회당 VLM 2회 직렬) → §6-3
 - [ ] 가드 seed 재시도 예산이 photo 재생성과 공유되는 것 — 의도 명시
 - [ ] 죽은 좌표 가드(`_guard_anchors`, `crop_sim` 없음) 살릴지 지울지
 - [x] `chore/md-tooling` push / PR → #20
@@ -535,7 +535,7 @@ backend/scripts/seed_langfuse_prompts.py   코드 fallback → Langfuse producti
 
 관련 섹션: §2 (그래프 문법),
 §3 (프롬프트 관리)
-관련 계획: 피드백 반영 계획 문서 (Phase 0~3) — https://claude.ai/code/artifact/e4c8e3b3-d69c-4a41-b765-5121a98d1bde
+관련 계획: 피드백 반영 계획 문서 (Phase 0~3) — <https://claude.ai/code/artifact/e4c8e3b3-d69c-4a41-b765-5121a98d1bde>
 
 ---
 
@@ -827,11 +827,11 @@ len(anchors) >= N (기본 꺼짐)           → "many_defects"
 
 최종: 단위 테스트 **579 passed** → PR #19 (#18 위에 쌓음).
 
-### 남은 것
+### 남은 것 (오전 기준 — 최종 목록은 §7)
 
 - [ ] eval 로 확인: OCR 가드 오차단률, 글자 사후검증 false fail, `text_heavy` 기준(12줄), composite 비율
-- [ ] genai 클라이언트 타임아웃
-- [ ] OCR 읽기와 check_photo 병렬화 (생성 1회당 VLM 2회가 직렬)
+- [x] genai 클라이언트 타임아웃 → §6-3
+- [x] OCR 읽기와 check_photo 병렬화 (생성 1회당 VLM 2회가 직렬) → §6-3
 - [ ] 가드 seed 재시도 예산이 photo 재생성과 공유됨 — 2번째 시도에서 처음 가드 실패하면 재시도 없이 composite (의도 명시 필요)
 - [ ] feature/defect 좌표 가드(`_guard_anchors`, `crop_sim` 없음)는 여전히 죽은 경로 — 살릴지 지울지
 
@@ -900,3 +900,54 @@ PR #19·#18 머지 후 이어서 한 것 (브랜치 `refactor/judge-single-path`
 - [ ] Langfuse 로 노드별 소요 시간 실측 — 이번 단축 효과 확인, verify 추측 실행 여부 판단
 - [ ] `/transform` 이 동기라 VLM 타임아웃이 겹치면 프록시 60초 제한에 걸릴 수 있음 (작업 큐 등 구조 검토)
 - [ ] 좌표 가드 크롭이 원본 임베딩 캐시를 밀어낼 수 있음 (지금은 죽은 경로라 영향 없음)
+
+---
+
+## 7. 하루 마무리: PR 상태 · 남은 일 한 목록
+
+### 7-1. PR 상태 (저녁)
+
+| PR | 브랜치 | 내용 | 상태 |
+|---|---|---|---|
+| #18 | `fix/prompt-registry-gaps` | 프롬프트 시딩 누락 + 잠금 코드 부착 | 머지 |
+| #19 | `fix/pipeline-gate-holes` | 게이트 구멍 · OCR 가드 · plan · judge 백그라운드 | 머지 |
+| #20 | `chore/md-tooling` | markdownlint 설정 + md 뷰어 (`make docs`) | open — #21 에 합침 |
+| #21 | `refactor/judge-single-path` | judge 한 벌 · 대기 시간 · verify 구멍 · README · 이 노트 | open |
+
+- md 도구를 #21 에 합친 이유: README 에 `make docs` 를 적으려면 그 브랜치에 Makefile·스크립트가 있어야 한다.
+  #20 을 먼저 머지하든 #21 만 머지하든 같은 커밋이라 충돌 없음.
+- README (한/영) 정리: 테스트 수(699), mermaid 에 `verify_failed` 경로와 OCR ∥ check_photo,
+  judge 한 곳, `VLM_TIMEOUT_S`, `make docs`, 실패와 교훈 4줄, 09-26 변경, 로드맵 체크.
+  "크롭 단위 하자 가시성" 같은 죽은 가드 설명은 뺐다.
+- 테스트: 유닛 **699 passed (12초)**, `-m "not eval and not e2e"` 전체 702.
+
+### 7-2. `ISSUES/Anchor.md` 정리
+
+비어 있던 이슈 초안이라 지우고 핵심만 아래 목록으로 옮겼다:
+detect 가 printed(인쇄)와 surface_damage 를 구분하지 못해 recall·precision 0.67.
+순서는 **GT 감사 → sanitize(어휘) → 프롬프트**, 5장으로 과적합하지 않게 이미지를 늘리거나 2장 홀드아웃.
+
+### 7-3. 남은 일 (오늘 전체 한 목록)
+
+측정 먼저 — 숫자 없이 고치지 않는다:
+
+- [ ] **eval** — OCR 가드 오차단률(`ocr_match` 0.95), 글자 사후검증 false fail, `text_heavy` 12줄, composite 비율
+- [ ] **Langfuse** — 노드별 소요 시간(이번 단축 효과), `detect_failed` / `verify_failed` / `composite_reason` 빈도
+  → verify 를 check_photo 와 추측 실행할지 판단
+
+정확도:
+
+- [ ] detect: printed vs surface_damage (R/P 0.67 → GT 감사부터, §7-2)
+
+구조 / 정리:
+
+- [ ] `/transform` 이 동기 — VLM 타임아웃이 겹치면 프록시 60초 제한 (작업 큐 검토)
+- [ ] 가드 seed 재시도 예산이 photo 재생성과 공유됨 — 의도 명시
+- [ ] 죽은 좌표 가드(`_guard_anchors`, `crop_sim` 없음) 살릴지 지울지 (살리면 원본 임베딩 캐시를 밀어내는지도 확인)
+- [ ] print / logger 혼용 (§1-3 #10)
+
+### 7-4. 오늘의 교훈 세 줄
+
+1. **"확인 못 함"을 통과로 치는 구멍은 한 군데만 있지 않다** — detect 에서 찾고, 오후에 verify 에서 또 찾았다.
+2. **"왜 이렇게 돼 있지?"는 grep 으로 답한다** — 동기 채점이 필요하다는 답은 추측이었고 틀렸다.
+3. **가짜는 실제 시그니처를 따라가야 한다** — 안 그러면 통과하면서 엉뚱한 경로를 검사하고, 심지어 실제 API 를 부른다.
