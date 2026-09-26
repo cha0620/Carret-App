@@ -181,6 +181,20 @@ len(anchors) >= N (기본 꺼짐)           → "many_defects"
 - 채점 대기 중엔 라우트가 quality 파일을 읽지 않음 (삭제 실패 시 옛 점수 반환 방지).
 - 가드 불합격 → 합성 성공 시에도 어떤 가드가 걸렸는지 `guard_report` 유지.
 
+## 9. 테스트에서 잡힌 버그 (tester)
+
+- **blocked 경로 KeyError** — 가드 2회 불합격 → 오리기 실패 → blocked 경로는 `verify` 를 안 거쳐서
+  `checks`/`gate_passed` 가 state 에 없다 → `save_inspect` 의 `s["checks"]` 에서 KeyError → **500**.
+  "원본을 그대로 내보낸다"는 가장 보수적인 경로가 오히려 죽고 있었다.
+  - 수정: 그 분기에서 `checks=[]`, `gate_passed=None` 을 채우고, 뒷단(`save_inspect`/`finalize`)도 `.get` 으로.
+  - 교훈: **분기가 늘면 "이 노드까지 오는 모든 길에서 이 키가 채워지나"를 따져야 한다.**
+    `TypedDict(total=False)` 라 타입 검사는 못 잡는다.
+- `_key_texts` 중복 제거가 부분 문자열이라 "on" 같은 짧은 글자가 `"print on chest"` 에 걸려 검증에서 빠짐
+  → 3글자 이상 + 단어 단위(`_covered_by`)로만.
+- `read_item_text` 가 `{"texts": null}` 에 TypeError → `or []`.
+
+최종: 단위 테스트 **579 passed** → PR #19 (#18 위에 쌓음).
+
 ## 남은 것
 
 - [ ] eval 로 확인: OCR 가드 오차단률, 글자 사후검증 false fail, `text_heavy` 기준(12줄), composite 비율
