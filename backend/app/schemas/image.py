@@ -59,7 +59,7 @@ class TransformResponse(BaseModel):
     item: str = "object"
     considered: list[str] = []
     composite_reason: str | None = Field(
-        default=None, description="배경 교체 이유: detect_failed | text_heavy | "
+        default=None, description="배경 교체 이유: detect_failed | text_dense | text_heavy | "
                                   "many_defects | guard_failed | gate_failed | verify_failed")
     judge_pending: bool = Field(default=False,
                                 description="성적표를 응답 뒤에 채점 중 — GET /api/quality/{file_id}/{preset} 폴링")

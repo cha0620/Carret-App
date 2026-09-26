@@ -128,7 +128,7 @@ def test_call_disabled_tracing_returns_parsed_json_unchanged(monkeypatch):
     fake_get_client, models = _make_fake_get_client(json.dumps({"item": "chair"}))
     monkeypatch.setattr(detector, "get_client", fake_get_client)
 
-    data = _call(b"imgbytes", "prompt text", "classify")
+    data = _call(b"imgbytes", "prompt text", "detect")
 
     assert data == {"item": "chair"}
     assert models.last_kwargs["model"] == detector.settings.VLM_MODEL
@@ -523,3 +523,301 @@ def test_match_anchors_bad_json_treats_all_as_new(monkeypatch):
     m = match_anchors(orig, result)
 
     assert m == {"matched": [], "missed": orig, "new": result}
+
+
+# ── 호출 이름별 이미지 해상도 · 모델 (app.core.vlm) ──
+from app.core.config import settings as _settings  # noqa: E402
+
+
+def _res_level(part):
+    r = part.media_resolution
+    return None if r is None else str(getattr(r.level, "value", r.level))
+
+
+@pytest.fixture()
+def vlm_defaults(monkeypatch):
+    """.env 덮어쓰기 없이 코드 기본값만."""
+    monkeypatch.setattr(_settings, "vlm_media_resolution", {})
+    monkeypatch.setattr(_settings, "vlm_models", {})
+    monkeypatch.setattr(_settings, "VLM_MODEL", "base-model")
+
+
+@pytest.mark.parametrize("name,expected", [
+    ("classify", "MEDIA_RESOLUTION_LOW"),
+    ("check_photo", "MEDIA_RESOLUTION_LOW"),
+    ("detect", None),
+    ("verify", None),
+    ("vlm_call", None),
+])
+def test_call_image_part_resolution_by_call_name(monkeypatch, vlm_defaults, name, expected):
+    import app.services.ai.detector as detector
+    fake_get_client, models = _make_fake_get_client(json.dumps({"ok": True}))
+    monkeypatch.setattr(detector, "get_client", fake_get_client)
+
+    _call(b"imgbytes", "prompt", name)
+
+    part, prompt = models.last_kwargs["contents"]
+    assert prompt == "prompt"
+    assert part.inline_data.data == b"imgbytes" and part.inline_data.mime_type == "image/jpeg"
+    assert _res_level(part) == expected
+
+
+def test_call_image_resolution_follows_settings_override(monkeypatch, vlm_defaults):
+    import app.services.ai.detector as detector
+    monkeypatch.setattr(_settings, "vlm_media_resolution", {"detect": "medium", "classify": "default"})
+    fake_get_client, models = _make_fake_get_client(json.dumps({"ok": True}))
+    monkeypatch.setattr(detector, "get_client", fake_get_client)
+    _call(b"i", "p", "detect")
+    assert _res_level(models.last_kwargs["contents"][0]) == "MEDIA_RESOLUTION_MEDIUM"
+    _call(b"i", "p", "classify")
+    assert _res_level(models.last_kwargs["contents"][0]) is None
+
+
+def test_call_uses_per_call_model_override(monkeypatch, vlm_defaults):
+    import app.services.ai.detector as detector
+    monkeypatch.setattr(_settings, "vlm_models", {"classify": "lite-model"})
+    fake_get_client, models = _make_fake_get_client(json.dumps({"ok": True}))
+    monkeypatch.setattr(detector, "get_client", fake_get_client)
+    _call(b"i", "p", "classify")
+    assert models.last_kwargs["model"] == "lite-model"
+    _call(b"i", "p", "detect")
+    assert models.last_kwargs["model"] == "base-model"
+
+
+@pytest.mark.parametrize("blank", ["", "  "])
+def test_call_blank_model_override_falls_back(monkeypatch, vlm_defaults, blank):
+    import app.services.ai.detector as detector
+    monkeypatch.setattr(_settings, "vlm_models", {"classify": blank})
+    fake_get_client, models = _make_fake_get_client(json.dumps({"ok": True}))
+    monkeypatch.setattr(detector, "get_client", fake_get_client)
+    _call(b"i", "p", "classify")
+    assert models.last_kwargs["model"] == "base-model"
+
+
+def test_call_observe_model_matches_generate_content_model(monkeypatch, vlm_defaults):
+    import contextlib
+    import app.services.ai.detector as detector
+    monkeypatch.setattr(_settings, "vlm_models", {"classify": "lite-model"})
+    seen = []
+
+    @contextlib.contextmanager
+    def fake_observe(name, **kw):
+        seen.append((name, kw.get("model")))
+        yield None
+    monkeypatch.setattr(detector, "observe", fake_observe)
+    fake_get_client, models = _make_fake_get_client(json.dumps({"ok": True}))
+    monkeypatch.setattr(detector, "get_client", fake_get_client)
+    _call(b"i", "p", "classify")
+    assert seen == [("classify", "lite-model")] and models.last_kwargs["model"] == "lite-model"
+
+
+def test_match_anchors_uses_match_model_and_no_image(monkeypatch, vlm_defaults):
+    import app.services.ai.detector as detector
+    monkeypatch.setattr(_settings, "vlm_models", {"match": "match-model", "classify": "x"})
+    fake_get_client, models = _make_fake_get_client(
+        json.dumps({"matched": [], "missed": [], "new": []}))
+    monkeypatch.setattr(detector, "get_client", fake_get_client)
+    match_anchors([{"what": "a", "where": "b"}], [{"what": "c", "where": "d"}])
+    assert models.last_kwargs["model"] == "match-model"
+    assert all(isinstance(c, str) for c in models.last_kwargs["contents"])
+
+
+def test_match_anchors_without_override_uses_base_model(monkeypatch, vlm_defaults):
+    import app.services.ai.detector as detector
+    fake_get_client, models = _make_fake_get_client(
+        json.dumps({"matched": [], "missed": [], "new": []}))
+    monkeypatch.setattr(detector, "get_client", fake_get_client)
+    match_anchors([{"what": "a", "where": "b"}], [{"what": "c", "where": "d"}])
+    assert models.last_kwargs["model"] == "base-model"
+
+
+# ══ detect_full: 하자 + text_level + item_box (VLM 1회) ══
+_STAIN = {"category": "surface_damage", "what": "stain", "where": "sleeve"}
+_PRINT = {"category": "print", "what": "logo: NIKE", "where": "chest"}
+
+
+def _full(monkeypatch, resp, **kw):
+    from app.services.ai import detector
+    monkeypatch.setattr(detector, "_call", lambda *a, **k: resp)
+    return detector.detect_full(b"img", **kw)
+
+
+def test_detect_full_text_levels_constant():
+    from app.services.ai import detector
+    assert detector.TEXT_LEVELS == ("none", "simple", "dense")
+
+
+@pytest.mark.parametrize("level", ["none", "simple", "dense"])
+def test_detect_full_known_text_level_kept(monkeypatch, capsys, level):
+    out = _full(monkeypatch, {"defects": [_STAIN], "text_level": level})
+    assert out["text_level"] == level
+    assert "text_level" not in capsys.readouterr().out   # 정상 값은 로그 없음
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (" DENSE ", "dense"), ("Simple", "simple"), ("NONE\n", "none"), ("\tdense", "dense"),
+])
+def test_detect_full_text_level_case_and_whitespace(monkeypatch, raw, expected):
+    assert _full(monkeypatch, {"defects": [], "text_level": raw})["text_level"] == expected
+
+
+@pytest.mark.parametrize("raw", ["lots", "medium", "", "   ", None, 3, 0, False,
+                                 ["dense"], {"level": "dense"}, "dense text"])
+def test_detect_full_unknown_text_level_is_simple_and_logged(monkeypatch, capsys, raw):
+    out = _full(monkeypatch, {"defects": [], "text_level": raw})
+    assert out["text_level"] == "simple"
+    log = capsys.readouterr().out
+    assert "[detect]" in log and "text_level" in log and repr(raw) in log
+
+
+def test_detect_full_missing_text_level_is_simple_and_logged(monkeypatch, capsys):
+    out = _full(monkeypatch, {"defects": [_STAIN]})
+    assert out["text_level"] == "simple"
+    log = capsys.readouterr().out
+    assert "[detect]" in log and "None" in log     # 빠진 값은 None 으로 찍힌다
+
+
+def test_detect_full_none_with_print_anchor_becomes_simple(monkeypatch, capsys):
+    """모순(글자 없음 + print 하자) — 글자 보호를 끄지 않도록 simple."""
+    out = _full(monkeypatch, {"defects": [_STAIN, _PRINT], "text_level": "none"})
+    assert out["text_level"] == "simple"
+    assert [a["category"] for a in out["anchors"]] == ["surface_damage", "print"]
+
+
+def test_detect_full_none_with_print_anchor_case_insensitive_level(monkeypatch):
+    assert _full(monkeypatch, {"defects": [_PRINT], "text_level": " None "})["text_level"] == "simple"
+
+
+@pytest.mark.parametrize("defects", [
+    [],
+    [_STAIN],
+    [{"category": "other", "what": "print on chest", "where": "x"}],   # 카테고리가 print 가 아님
+    [{"category": "print", "what": "", "where": "x"}],                 # what 없음 → 앵커에서 빠짐
+    [{"category": "PRINT", "what": "logo", "where": "x"}],             # 목록 밖 → other
+])
+def test_detect_full_none_without_print_anchor_stays_none(monkeypatch, defects):
+    assert _full(monkeypatch, {"defects": defects, "text_level": "none"})["text_level"] == "none"
+
+
+@pytest.mark.parametrize("level", ["simple", "dense"])
+def test_detect_full_print_anchor_does_not_change_other_levels(monkeypatch, level):
+    assert _full(monkeypatch, {"defects": [_PRINT], "text_level": level})["text_level"] == level
+
+
+def test_detect_full_unknown_level_with_print_anchor_is_simple(monkeypatch):
+    assert _full(monkeypatch, {"defects": [_PRINT], "text_level": "?"})["text_level"] == "simple"
+
+
+def test_detect_full_item_box_converted_from_gemini_order(monkeypatch):
+    out = _full(monkeypatch, {"defects": [], "text_level": "none",
+                              "item_box_2d": [100, 200, 300, 400]})
+    assert out["item_box"] == {"x1": 200, "y1": 100, "x2": 400, "y2": 300}
+
+
+def test_detect_full_item_box_swapped_corners_sorted(monkeypatch):
+    out = _full(monkeypatch, {"defects": [], "item_box_2d": [900, 800, 100, 50]})
+    assert out["item_box"] == {"x1": 50, "y1": 100, "x2": 800, "y2": 900}
+
+
+def test_detect_full_item_box_floats_rounded(monkeypatch):
+    out = _full(monkeypatch, {"defects": [], "item_box_2d": [10.4, 20.6, 300.5, 999.9]})
+    assert out["item_box"] == {"x1": 21, "y1": 10, "x2": 1000, "y2": 300}
+
+
+@pytest.mark.parametrize("box", [
+    None, [], [1, 2, 3], [1, 2, 3, 4, 5], "0,0,10,10", {"ymin": 0},
+    ["0", "0", "10", "10"], [True, 0, 10, 10],
+    [0, 0, 1001, 10],        # 범위 밖
+    [-1, 0, 10, 10],
+    [0, 100, 500, 100],      # 폭 0
+    [200, 0, 200, 500],      # 높이 0
+    [None, 0, 10, 10],
+])
+def test_detect_full_invalid_item_box_is_none(monkeypatch, box):
+    out = _full(monkeypatch, {"defects": [_STAIN], "text_level": "none", "item_box_2d": box})
+    assert out["item_box"] is None
+    assert out["anchors"][0]["what"] == "stain"     # 박스가 깨져도 하자는 살린다
+
+
+def test_detect_full_missing_item_box_is_none(monkeypatch):
+    assert _full(monkeypatch, {"defects": []})["item_box"] is None
+
+
+def test_detect_full_ignores_legacy_item_box_key(monkeypatch):
+    """item_box_2d 만 읽는다 — x1.. 키로 준 item_box 는 쓰지 않는다."""
+    out = _full(monkeypatch, {"defects": [], "item_box": {"x1": 1, "y1": 1, "x2": 9, "y2": 9}})
+    assert out["item_box"] is None
+
+
+@pytest.mark.parametrize("resp", MALFORMED)
+def test_detect_full_malformed_raises_when_strict(monkeypatch, resp):
+    from app.services.ai import detector
+    monkeypatch.setattr(detector, "_call", lambda *a, **k: resp)
+    with pytest.raises(ValueError):
+        detector.detect_full(b"img", strict=True)
+
+
+@pytest.mark.parametrize("resp", MALFORMED + [{"text_level": "dense",
+                                                "item_box_2d": [0, 0, 500, 500]}])
+def test_detect_full_malformed_default_is_empty_simple_no_box(monkeypatch, resp):
+    """defects 가 없으면 다른 필드가 멀쩡해도 버린다 (응답 전체를 못 믿음)."""
+    from app.services.ai import detector
+    monkeypatch.setattr(detector, "_call", lambda *a, **k: resp)
+    assert detector.detect_full(b"img") == {"anchors": [], "text_level": "simple",
+                                            "item_box": None}
+
+
+def test_detect_full_strict_valid_response_ok(monkeypatch):
+    out = _full(monkeypatch, {"defects": [], "text_level": "dense"}, strict=True)
+    assert out == {"anchors": [], "text_level": "dense", "item_box": None}
+
+
+def test_detect_full_strict_is_keyword_only():
+    from app.services.ai import detector
+    with pytest.raises(TypeError):
+        detector.detect_full(b"img", "chair", [], True)
+
+
+def test_detect_full_calls_detect_prompt_with_item_and_hints(monkeypatch):
+    from app.services.ai import detector
+    seen = []
+    monkeypatch.setattr(detector.P, "detect_prompt",
+                        lambda item, considered: seen.append((item, considered)) or "PROMPT")
+    monkeypatch.setattr(detector, "_call",
+                        lambda img, prompt, name="": seen.append((img, prompt, name)) or
+                        {"defects": []})
+    detector.detect_full(b"img", "mug", ["chip"])
+    detector.detect_full(b"img2")
+    assert seen == [("mug", ["chip"]), (b"img", "PROMPT", "detect"),
+                    ("object", []), (b"img2", "PROMPT", "detect")]
+
+
+def test_detect_defects_is_detect_full_anchors(monkeypatch):
+    from app.services.ai import detector
+    resp = {"defects": [_STAIN, _PRINT], "text_level": "dense",
+            "item_box_2d": [0, 0, 500, 500]}
+    monkeypatch.setattr(detector, "_call", lambda *a, **k: resp)
+    assert detector.detect_defects(b"img", strict=True) == detector.detect_full(b"img")["anchors"]
+    assert isinstance(detector.detect_defects(b"img"), list)
+
+
+def test_detect_defects_forwards_args_to_detect_full(monkeypatch):
+    from app.services.ai import detector
+    seen = []
+    monkeypatch.setattr(detector, "detect_full",
+                        lambda img, item, considered, *, strict: seen.append(
+                            (img, item, considered, strict)) or {"anchors": ["A"]})
+    assert detector.detect_defects(b"i", "cup", ["x"], strict=True) == ["A"]
+    assert seen == [(b"i", "cup", ["x"], True)]
+
+
+# ── classify: 목록으로 감싼 응답 (lite 모델) ──
+@pytest.mark.parametrize("raw, item", [
+    ([{"item": "stapler", "considered": ["rust"]}], "stapler"),   # 객체 하나를 목록으로
+    ([], "object"),                                                # 빈 목록 → 폴백
+    (["stapler"], "object"),                                       # 객체가 아닌 목록 → 폴백
+])
+def test_classify_accepts_list_wrapped_response(monkeypatch, raw, item):
+    import app.services.ai.detector as detector
+    monkeypatch.setattr(detector, "_call", lambda *a, **k: raw)
+    assert detector.classify(b"img")["item"] == item

@@ -39,6 +39,7 @@ def detect_template() -> str:
         "Item-specific hints: {{hints}}",
         frag("categories"),
         frag("rules_detect"),
+        frag("text_level"),
         frag("schema_detect"),
     ])
 
@@ -57,7 +58,9 @@ def check_photo_template() -> str:
 
 def detect_prompt(item: str, considered: list) -> str:
     hints = ", ".join(considered) if considered else "any visible issue"
-    return get_prompt_text("detect", fallback=detect_template(), item=item, hints=hints)
+    # "detect_v2": text_level·item_box_2d 를 받는 응답 형식 — 옛 "detect"(defects 만)와 이름을
+    # 나눠, 배포된 옛 코드가 새 프롬프트를 받거나 코드 롤백 뒤 프롬프트만 남는 일이 없게 한다.
+    return get_prompt_text("detect_v2", fallback=detect_template(), item=item, hints=hints)
 
 
 def verify_prompt(anchors: list, item: str, considered: list) -> str:

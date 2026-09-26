@@ -124,3 +124,60 @@ def test_judge_enabled_tracing_invokes_obs_update_with_validated_output(monkeypa
     assert fake_lf.calls[0]["name"] == "judge"
     assert fake_lf.calls[0]["as_type"] == "generation"
     assert fake_lf.obs.update_calls == [{"output": raw, "usage_details": None}]
+
+
+# ── 호출별 모델 · 이미지 Part (app.core.vlm) ──
+from app.core.config import settings as _settings  # noqa: E402
+
+
+def _res_level(part):
+    r = part.media_resolution
+    return None if r is None else str(getattr(r.level, "value", r.level))
+
+
+def _valid_raw():
+    return json.dumps({"analysis": "ok", "fidelity": 4, "realism": 4, "trust": 4})
+
+
+def test_judge_uses_judge_model_override(monkeypatch):
+    import app.services.ai.judge as judge_mod
+    monkeypatch.setattr(_settings, "VLM_MODEL", "base-model")
+    monkeypatch.setattr(_settings, "vlm_models", {"judge": "judge-model", "classify": "x"})
+    fake_get_client, models = _make_fake_get_client(_valid_raw())
+    monkeypatch.setattr(judge_mod, "get_client", fake_get_client)
+    judge(b"orig", b"result")
+    assert models.last_kwargs["model"] == "judge-model"
+
+
+@pytest.mark.parametrize("models_setting", [{}, {"judge": ""}, {"judge": "  "}, {"classify": "x"}])
+def test_judge_without_override_uses_base_model(monkeypatch, models_setting):
+    import app.services.ai.judge as judge_mod
+    monkeypatch.setattr(_settings, "VLM_MODEL", "base-model")
+    monkeypatch.setattr(_settings, "vlm_models", models_setting)
+    fake_get_client, models = _make_fake_get_client(_valid_raw())
+    monkeypatch.setattr(judge_mod, "get_client", fake_get_client)
+    judge(b"orig", b"result")
+    assert models.last_kwargs["model"] == "base-model"
+
+
+def test_judge_passes_two_png_image_parts_in_order(monkeypatch):
+    import app.services.ai.judge as judge_mod
+    monkeypatch.setattr(_settings, "vlm_media_resolution", {})
+    fake_get_client, models = _make_fake_get_client(_valid_raw())
+    monkeypatch.setattr(judge_mod, "get_client", fake_get_client)
+    judge(b"orig", b"result")
+    a, b, prompt = models.last_kwargs["contents"]
+    assert (a.inline_data.data, b.inline_data.data) == (b"orig", b"result")
+    assert a.inline_data.mime_type == b.inline_data.mime_type == "image/png"
+    assert _res_level(a) is None and _res_level(b) is None      # judge 는 기본(high)
+    assert isinstance(prompt, str)
+
+
+def test_judge_image_parts_follow_resolution_override(monkeypatch):
+    import app.services.ai.judge as judge_mod
+    monkeypatch.setattr(_settings, "vlm_media_resolution", {"judge": "low"})
+    fake_get_client, models = _make_fake_get_client(_valid_raw())
+    monkeypatch.setattr(judge_mod, "get_client", fake_get_client)
+    judge(b"orig", b"result")
+    a, b, _ = models.last_kwargs["contents"]
+    assert _res_level(a) == _res_level(b) == "MEDIA_RESOLUTION_LOW"

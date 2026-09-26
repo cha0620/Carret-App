@@ -52,10 +52,38 @@ def test_detect_prompt_still_contains_fragment_content():
     assert P.frag("role_detect").replace("{{item}}", "hoodie") in text
     assert P.frag("categories") in text
     assert P.frag("rules_detect") in text
+    assert P.frag("text_level") in text
     assert P.frag("schema_detect") in text
     # placeholder must be gone after compile
     assert "{{hints}}" not in text
     assert "{{item}}" not in text
+
+
+def test_detect_template_orders_text_level_between_rules_and_schema():
+    t = P.detect_template()
+    i_rules, i_level, i_schema = (t.index(P.frag(n)) for n in
+                                  ("rules_detect", "text_level", "schema_detect"))
+    assert i_rules < i_level < i_schema
+    assert t.count(P.frag("text_level")) == 1
+
+
+def test_detect_template_asks_for_text_level_and_item_box():
+    t = P.detect_template()
+    for word in ('"none"', '"simple"', '"dense"', "text_level", "item_box_2d"):
+        assert word in t
+    assert "When unsure" in P.frag("text_level")
+    assert "item_box_2d" in P.frag("schema_detect")
+
+
+def test_detect_prompt_requests_detect_v2_with_template_fallback(monkeypatch):
+    seen = []
+
+    def fake(name, fallback, **kw):
+        seen.append((name, fallback, kw))
+        return "X"
+    monkeypatch.setattr(P, "get_prompt_text", fake)
+    assert P.detect_prompt("mug", ["chip"]) == "X"
+    assert seen == [("detect_v2", P.detect_template(), {"item": "mug", "hints": "chip"})]
 
 
 def test_verify_prompt_contains_item_checklist_and_anchor_lines():

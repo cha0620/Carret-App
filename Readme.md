@@ -20,7 +20,7 @@ a photo buyers can trust matters more than a pretty one.
 | **Problem** | Generative edit models "fix" scratches even when you only ask them to swap the background. In secondhand listings, that turns the photo into a misleading one |
 | **Solution** | Before generation, a prompt lock forbids restoration. After generation, a VLM checklist and local vector scores check that the defects are still there |
 | **Stack** | FastAPI · LangGraph · fal.ai (FLUX edit) · Gemini (VLM) · DINOv2 · SQLite · S3 · Langfuse · Vanilla JS |
-| **Quality** | 699 unit tests that make no external API calls and run on every PR, plus an eval suite that calls the real APIs (runs on main or a PR label) |
+| **Quality** | 1239 unit tests that make no external API calls and run on every PR, plus an eval suite that calls the real APIs (runs on main or a PR label) |
 
 ---
 
@@ -31,14 +31,15 @@ The transform pipeline is a [LangGraph](https://github.com/langchain-ai/langgrap
 
 ```mermaid
 flowchart TD
-  L["load<br/>original + preset"] --> C["classify<br/>item + checklist"]
-  C --> T["read_text<br/>text on the item + item box<br/>(TEXT_LOCK)"]
-  C --> D["detect<br/>defect anchors<br/>(2 tries, else detect_failed)"]
-  T --> P{"plan<br/>can generation keep it?"}
-  D --> P
-  P -->|"detect failed /<br/>text-heavy item"| X
-  P -->|ok| G["generate · fal.ai FLUX.2<br/>preset + SECONDHAND_LOCK<br/>+ original text list<br/>(+ rejection reason / lost defects)"]
-  G --> V{"validate_result<br/>output guards (OCR text compare)<br/>∥ crop / caption check"}
+  L["load<br/>original + preset"] --> C["classify<br/>item + checklist<br/>(lite model)"]
+  C --> D["detect<br/>defect anchors + text_level<br/>+ item box (2 tries, else detect_failed)"]
+  D --> P{"plan<br/>can generation keep it?"}
+  P -->|"detect failed /<br/>dense small text"| X
+  P -->|"text simple"| T["read_text<br/>text on the item (TEXT_LOCK)<br/>12+ lines → composite"]
+  T --> G
+  T -->|text_heavy| X
+  P -->|"text none"| G["generate · fal.ai FLUX.2<br/>preset + SECONDHAND_LOCK<br/>+ original text list<br/>(+ rejection reason / lost defects)"]
+  G --> V{"validate_result<br/>output guard (OCR text)<br/>∥ crop / caption check<br/>→ cutout DINO + patch compare (soft)"}
   V -->|"guard fail, 1st<br/>retry with new seed"| G
   V -->|"bad framing<br/>attempts left"| G
   V -->|"guard fail twice"| X
@@ -50,7 +51,7 @@ flowchart TD
   VR -->|"call failed twice<br/>(verify_failed)"| X
   VR -->|"fail, 2nd"| X["composite · background-swap mode<br/>fal BiRefNet cutout<br/>(local rembg fallback)<br/>+ preset background + shadow"]
   X -->|"ok → check again"| S
-  X -->|"cutout failed<br/>before generating"| G
+  X -->|"cutout failed before generating<br/>(read_text first if text not read yet)"| G
   X -->|"cutout failed: keep generated<br/>(guards failed → blocked = original)"| I
   I["save_inspect<br/>debug JSON (mode, composite_reason)"] --> F["finalize<br/>bubbles"]
   F -.->|"after the response<br/>(background)"| J["judge_and_save<br/>fidelity · realism · trust"]
@@ -58,23 +59,31 @@ flowchart TD
 
 1. **classify**: the VLM identifies the item and builds a checklist of
    defects worth checking for that kind of item (for shoes: sole wear, toe creases)
-2. **read_text** (`TEXT_LOCK`, on by default): reads the text **on the item** in the
-   original and adds it, with rough positions, to the generate prompt (so the generator
-   garbles small text and Korean less). It also returns the item box used by
-   background-swap mode
-3. **detect** (runs in parallel with read_text): finds defects in the original and
-   records each one as a *what / where* anchor. If it fails twice, the run is marked
-   `detect_failed` instead of being treated as "no defects"
-4. **plan**: when generation clearly can't keep the item honest (defects couldn't be
-   detected, or the item carries lots of small text), it skips generation and goes
-   straight to background-swap mode
+2. **detect**: finds defects in the original and records each one as a *what / where*
+   anchor. The same call also returns how much text is on the item (`text_level`:
+   none / simple / dense) and the item box. If it fails twice, the run is marked
+   `detect_failed` instead of being treated as "no defects". Watermarks, captions and
+   background objects on the photo are not reported as defects
+3. **plan**: when generation clearly can't keep the item honest (defects couldn't be
+   detected, or `dense` small text), it skips generation and goes straight to
+   background-swap mode. With no text (`none`) it generates without reading text
+4. **read_text** (`TEXT_LOCK`, on by default, only for `simple`): reads the text **on the
+   item** in the original and adds it, with rough positions, to the generate prompt (so the
+   generator garbles small text and Korean less). If it reads 12+ lines, it goes to
+   background-swap mode (safety net)
 5. **generate**: replaces the background with a preset (studio white, warm
    wood or minimal gray). Every prompt carries `SECONDHAND_LOCK`, which
    forbids restoration
 6. **validate_result**: output guards first. The text on the item is read again from the
    result and compared line by line with the original; a hard failure is retried once
    with a new seed, then sent to background-swap mode. The framing check (check_photo)
-   runs **in parallel** with that OCR read (and is cancelled if a guard blocks). If the result is
+   runs **in parallel** with that OCR read (and is cancelled if a guard blocks). Once the guards
+   pass, while waiting for check_photo, the item is **cut out** of both original and result, placed on the same gray background
+   and compared with DINOv2 (`item_dino`, soft: catches a swapped item or a changed
+   shape, color or pattern). The same cutout pair is aligned with ECC and compared per DINO
+   **patch** too (`item_patch`, soft: the lowest 1% of inner patches, aimed at a change in one
+   spot such as a single scratch). With `LOCAL_OCR_GUARD=true`, EasyOCR reads the text once more
+   (`ocr_local`, soft, for eval). If the result is
    cropped or covered by a caption, it is regenerated **with the rejection reason added
    to the prompt** rather than retried blindly. The number of attempts is capped by config
 7. **score_similarity**: a local DINOv2 embedding similarity, separate from the VLM
@@ -205,7 +214,7 @@ trusting it.
 
 **2. LLM judgment is separated from deterministic metrics.**
 A VLM judge's scores shift with prompt and model versions. So the project
-adds deterministic signals: DINOv2 similarity and OCR text matching
+adds deterministic signals: DINOv2 similarity (whole image and cut-out item) and OCR text matching
 (`quality/guards.py`). When a guard computation fails,
 the exception is raised instead of letting the result pass. When a check stage
 (detect, verify) call fails, the run is marked `detect_failed` / `verify_failed`
@@ -228,7 +237,7 @@ that still boot when `.env` contains unknown keys.
 
 **5. Built to be testable.**
 External calls live only in `services/ai/`, which makes them easy to mock.
-That's why 699 unit tests finish in about 12 seconds with no network
+That's why 1239 unit tests finish in about 25 seconds with no network
 (and `unit/conftest.py` blocks any accidental real VLM call). The
 dev replay (`run_transform_with_result`) skips only the generation step and
 **calls the production node functions directly**. The logic is never
@@ -260,6 +269,9 @@ uvicorn main:app --reload   # http://localhost:8000 (frontend included)
 | `LANGFUSE_PUBLIC_KEY` / `SECRET_KEY` | Without them, tracing and prompt management are a noop |
 | `VLM_TIMEOUT_S` | Timeout for a single VLM call (default 60 s) |
 | `VLM_THINKING` | Per-call thinking override, e.g. `{"verify": "default", "judge": "low"}` (an integer = thinking token cap) |
+| `VLM_MEDIA_RESOLUTION` | Per-call image resolution override (`low`/`medium`/`high`/`default`), e.g. `{"check_photo": "high"}`. Image tokens depend on this level, not on pixel size |
+| `VLM_MODELS` | Per-call model override (falls back to `VLM_MODEL`), e.g. `{"classify": "gemini-3.5-flash-lite"}` |
+| `LOCAL_OCR_GUARD=true` | Soft guard that re-checks text with EasyOCR (for eval; install easyocr separately) |
 
 ### Tests
 
@@ -311,6 +323,11 @@ make docs    # browse the repo's .md files (http://localhost:8090, renders merma
 - **Bytes and metadata are stored separately**: images go to storage
   (local/S3), and metadata goes to SQLite
 - **Every integration is optional**: the app behaves the same without Langfuse or S3
+- **VLM cost is set per call**: image tokens depend on the resolution level, not pixel size
+  (gemini-3.x: low 268 / high 1,066). Calls that only need the big picture (item class, framing)
+  use low + a lite model; calls that look for small scratches and text (detect, verify, text
+  reading) use high. Every call has a thinking-token cap (`DEFAULT_THINKING` /
+  `DEFAULT_MEDIA_RESOLUTION` / `DEFAULT_MODELS` in `vlm.py`)
 
 ---
 
@@ -336,12 +353,32 @@ make docs    # browse the repo's .md files (http://localhost:8090, renders merma
 | The most conservative path (blocked = return the original) crashed with a KeyError → 500 | As branches grow, check that every path into a node fills the keys it reads. `TypedDict(total=False)` won't catch it |
 | judge existed twice: a graph node and `judge_later` | Answer "why is it like this?" by grepping the callers. Nothing actually needed synchronous judging |
 | After parallelizing, tests called real Gemini with the `.env` key; a fake that didn't accept a new argument passed through the wrong path | Fakes must follow the real signature, or tests pass while checking the wrong thing |
+| A seller's watermark became a "defect to keep", so good results failed the gate | Not the model: the category examples in our prompt listed "watermark". Read the prompt first when chasing false positives |
+| One text-reading call used 62,912 thinking tokens ($0.57), 25% of the last 500 calls' cost | Only capped calls are safe. When adding a VLM call, set its thinking config too |
+| Tried to cut VLM cost by sending smaller images | `count_tokens` (free) showed 384px costs the same tokens. Cost comes from the resolution level and thinking tokens |
+| fal's CDN returned a 500 HTML page that was passed on as image bytes, and PIL crashed | Check the status code on every external download; retry 5xx once, follow redirects |
+| In the model comparison, 3.8-flash failed item classification 17/17 | Not the model: it rejects our `thinking_level="minimal"`. Changing models means changing per-call settings too |
 
 ---
 
 ## 📝 Recent Changes
 
+**2026-09-26 (night)**
+- **Default VLM 3.5-flash → 3.8-flash**: on 19 photos with real defects it found the real defects as
+  well as 3.5 and skipped 3.5's false ones (scalloped rim, distressed finish), at half the price.
+  Item classification and framing check use 3.5-flash-lite
+- **VLM cost**: per-call resolution (low/high), model and thinking caps. About $0.035–0.045 per photo
+  (measured, FLUX included)
+- **`text_level` routing**: detect also judges how much text is on the item → no text skips text
+  reading, dense small text goes straight to background swap. The new response format lives in
+  Langfuse `detect_v2` (the deployed old server keeps `detect`)
+- **Watermark false positive fixed**; new soft guards `item_patch` (cutout patch compare) and
+  `ocr_local` (EasyOCR)
+- **fal download bug**: an error page was passed on as an image → status check + 5xx retry
+
 **2026-09-26**
+- **Product DINO guard**: removed the coordinate crop guard that never ran; added `item_dino` (soft),
+  which compares the cut-out items
 - **Pipeline gate holes closed** (PR #19): failed detect → `detect_failed`, judge cache removed,
   OCR output guard wired in, pre-generation `plan` routing, post-check of key text, dev path =
   production graph, blocked / composite shown in the UI, `considered` XSS fixed
@@ -387,7 +424,14 @@ make docs    # browse the repo's .md files (http://localhost:8090, renders merma
 - [x] Put the original's text into the generation prompt (`TEXT_LOCK`, on by default)
 - [x] Don't count failed detect / verify calls as a pass (`detect_failed`, `verify_failed`)
 - [ ] Validate thresholds with eval: OCR guard false-block rate, `text_heavy` cutoff (12 lines), composite rate
-- [ ] Anchor crop guard (`_guard_anchors`; `embedder.crop_sim` doesn't exist) — revive or remove
+- [x] Removed the coordinate crop guards → `item_dino` compares the cut-out items (soft)
+- [ ] Set the `item_dino` threshold (0.80 today, a placeholder) from eval and decide whether it becomes hard
+- [ ] Decide how to handle small defects (scratches) the generator can't keep — pasting original pixels back, etc.
+  (patch-level comparison is in as the soft `item_patch`; threshold from eval)
+- [x] VLM cost control: per-call resolution, model and thinking caps; default model 3.8-flash
+- [x] Skip text reading / go straight to background swap by `text_level`
+- [ ] Background-swap quality: reframe to catalog-style composition, non-generative upscaling
+- [ ] Run the judge on a sample or in batch mode (now the most expensive VLM call)
 - [ ] detect precision: tell printed apart from surface_damage (R/P 0.67 today)
 - [ ] Korean text damage check: line-crop comparison or a Korean-specialized OCR (local EasyOCR/PaddleOCR were inaccurate or unstable)
 - [ ] Match verify answers to defects by id (today the gate only checks the count)

@@ -11,7 +11,8 @@ from google.genai import types
 
 from app.core.config import settings
 from app.core.prompt_registry import get_prompt_text
-from app.core.vlm import get_client, thinking
+from app.core.vlm import get_client, image_part, thinking
+from app.core.vlm import model as vlm_model
 from app.core.tracing import gemini_usage, observe
 
 _SYSTEM_TEMPLATE = """You are the SELLER on a secondhand marketplace, looking at your \
@@ -33,13 +34,13 @@ def generate_feedback(original: bytes, result: bytes) -> dict:
     user_prompt = ("Image1: BEFORE (original), Image2: AFTER (result). "
                    "You are the seller who just got this AFTER photo back. "
                    "Rate 1-5 and leave one short comment. JSON only.")
-    with observe("auto_feedback", as_type="generation", model=settings.VLM_MODEL,
+    with observe("auto_feedback", as_type="generation", model=vlm_model("auto_feedback"),
                  input=user_prompt) as obs:
         resp = client.models.generate_content(
-            model=settings.VLM_MODEL,
+            model=vlm_model("auto_feedback"),
             contents=[
-                types.Part.from_bytes(data=original, mime_type="image/png"),
-                types.Part.from_bytes(data=result, mime_type="image/png"),
+                image_part(original, "image/png", "auto_feedback"),
+                image_part(result, "image/png", "auto_feedback"),
                 user_prompt,
             ],
             config=types.GenerateContentConfig(

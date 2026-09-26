@@ -18,7 +18,8 @@ from google.genai import types
 from app.core.config import settings
 from app.core.tracing import gemini_usage as _usage
 from app.core.tracing import observe
-from app.core.vlm import get_client, thinking
+from app.core.vlm import get_client, image_part, thinking
+from app.core.vlm import model as vlm_model
 from app import prompts as P
 
 
@@ -26,12 +27,12 @@ from app import prompts as P
 def _call(image_bytes: bytes, prompt: str, name: str = "vlm_call") -> dict:
     """공통 VLM 호출 (temp 0 + JSON 모드)."""
     client = get_client()
-    with observe(name, as_type="generation", model=settings.VLM_MODEL,
+    with observe(name, as_type="generation", model=vlm_model(name),
                  input=prompt) as obs:
         resp = client.models.generate_content(
-            model=settings.VLM_MODEL,
+            model=vlm_model(name),
             contents=[
-                types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+                image_part(image_bytes, "image/jpeg", name),
                 prompt,
             ],
             config=types.GenerateContentConfig(
@@ -78,6 +79,9 @@ def classify(image_bytes: bytes) -> dict:
     """물건 식별 + 루브릭 수립 (실패 시 개방형 폴백)."""
     try:
         out = _call(image_bytes, P.classify_prompt(), "classify")
+        # lite 모델은 가끔 객체 하나를 목록으로 감싸 준다 ([{"item": ...}]) — 2026-09-26, 19장 중 1번
+        if isinstance(out, list) and out and isinstance(out[0], dict):
+            out = out[0]
         return {
             "item": str(out.get("item", "object")).strip() or "object",
             "considered": [str(c).strip()
@@ -88,18 +92,46 @@ def classify(image_bytes: bytes) -> dict:
         return {"item": "object", "considered": []}
 
 
+TEXT_LEVELS = ("none", "simple", "dense")
+
+
+def detect_full(image_bytes: bytes, item: str = "object",
+                considered: list | None = None, *, strict: bool = False) -> dict:
+    """하자 앵커 + 물건 위 글자 수준 + 물건 위치 (VLM 1회).
+
+    반환: {"anchors": [...], "text_level": "none"|"simple"|"dense", "item_box": {x1..} | None}
+    text_level 이 없거나 모르는 값이면 "simple" — 예전 동작(글자 읽기 후 생성)과 같은 쪽으로.
+    strict 는 detect_defects 와 같다."""
+    data = _call(image_bytes, P.detect_prompt(item, considered or []), "detect")
+    if not isinstance(data, dict) or not isinstance(data.get("defects"), list):
+        if strict:
+            raise ValueError(f"detect: 응답에 defects 목록 없음: {str(data)[:200]}")
+        return {"anchors": [], "text_level": "simple", "item_box": None}
+    anchors = _anchors(data["defects"])
+    level = str(data.get("text_level") or "").strip().lower()
+    if level not in TEXT_LEVELS:
+        # 프롬프트가 옛 버전이거나 응답이 빠뜨림 — 조용히 simple 이 되면 관측이 안 된다
+        print(f"[detect] text_level 없음/모름({data.get('text_level')!r}) → simple")
+        level = "simple"
+    elif level == "none" and any(a["category"] == "print" for a in anchors):
+        # 한 응답 안의 모순 — 글자 앵커가 있으면 글자 보호(TEXT_LOCK·OCR 가드)를 끄지 않는다
+        level = "simple"
+    item_box = _from_box_2d({"box_2d": data.get("item_box_2d")})
+    return {"anchors": anchors, "text_level": level,
+            "item_box": _box(item_box) if _has_box(item_box) else None}
+
+
 def detect_defects(image_bytes: bytes, item: str = "object",
                     considered: list | None = None, *, strict: bool = False) -> list:
     """strict=True (파이프라인): 빈/깨진 응답(JSON 파싱 실패 → {})을 "하자 없음"이
     아니라 실패로 보고 예외 — [] 로 돌려주면 게이트가 검증할 게 없다며 통과시킨다.
     eval/dev 호출부는 기본값(False)으로 예전처럼 [] 를 받는다 (배치가 한 건에 멈추지 않게)."""
-    data = _call(image_bytes, P.detect_prompt(item, considered or []), "detect")
-    if not isinstance(data, dict) or not isinstance(data.get("defects"), list):
-        if strict:
-            raise ValueError(f"detect: 응답에 defects 목록 없음: {str(data)[:200]}")
-        return []
+    return detect_full(image_bytes, item, considered, strict=strict)["anchors"]
+
+
+def _anchors(defects: list) -> list:
     anchors = []
-    for d in data.get("defects", []):
+    for d in defects:
         cat = str(d.get("category", "other")).strip()
         if cat not in P.VALID_CATEGORIES:      # 목록 밖이면 other 로
             cat = "other"
@@ -224,10 +256,10 @@ def match_anchors(orig: list, result: list) -> dict:
 
     prompt = P.match_prompt(orig, result)
     client = get_client()
-    with observe("match", as_type="generation", model=settings.VLM_MODEL,
+    with observe("match", as_type="generation", model=vlm_model("match"),
                  input=prompt) as obs:
         resp = client.models.generate_content(
-            model=settings.VLM_MODEL,
+            model=vlm_model("match"),
             contents=[prompt],
             config=types.GenerateContentConfig(
                 temperature=0, response_mime_type="application/json",

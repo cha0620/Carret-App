@@ -42,3 +42,6 @@ backend/storage/text_check/output/
 
 # ===== 개인 LLM 위키 (별도 로컬 git, 이 저장소엔 안 올림) =====
 llm-wiki/
+
+# 진짜 하자 평가 사진 (외부 매물·개인 사진일 수 있어 git 에서 제외)
+backend/storage/real_defects/
