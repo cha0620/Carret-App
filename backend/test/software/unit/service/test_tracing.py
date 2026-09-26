@@ -219,3 +219,68 @@ def test_get_langfuse_returns_cached_client_without_reconstructing(monkeypatch):
     monkeypatch.setattr(tracing, "_client", sentinel, raising=False)
 
     assert tracing.get_langfuse() is sentinel
+
+
+# ── observe(trace_id=..., parent_span_id=...) : 백그라운드 이어 붙이기 ──
+def test_observe_trace_id_sets_trace_context(monkeypatch):
+    fake = FakeLangfuseClient()
+    monkeypatch.setattr(tracing, "get_langfuse", lambda: fake)
+    with tracing.observe("judge_async", trace_id="t1", input={"a": 1}):
+        pass
+    assert fake.calls == [{"name": "judge_async", "as_type": "span",
+                           "input": {"a": 1}, "trace_context": {"trace_id": "t1"}}]
+
+
+def test_observe_trace_id_and_parent_span(monkeypatch):
+    fake = FakeLangfuseClient()
+    monkeypatch.setattr(tracing, "get_langfuse", lambda: fake)
+    with tracing.observe("judge_async", trace_id="t1", parent_span_id="s1"):
+        pass
+    assert fake.calls[0]["trace_context"] == {"trace_id": "t1", "parent_span_id": "s1"}
+
+
+@pytest.mark.parametrize("trace_id,parent", [(None, "s1"), ("", "s1"), (None, None)])
+def test_observe_parent_without_trace_id_is_ignored(monkeypatch, trace_id, parent):
+    fake = FakeLangfuseClient()
+    monkeypatch.setattr(tracing, "get_langfuse", lambda: fake)
+    with tracing.observe("x", trace_id=trace_id, parent_span_id=parent):
+        pass
+    assert "trace_context" not in fake.calls[0]
+    assert "trace_id" not in fake.calls[0] and "parent_span_id" not in fake.calls[0]
+
+
+def test_observe_trace_id_empty_parent_not_added(monkeypatch):
+    fake = FakeLangfuseClient()
+    monkeypatch.setattr(tracing, "get_langfuse", lambda: fake)
+    with tracing.observe("x", trace_id="t1", parent_span_id=""):
+        pass
+    assert fake.calls[0]["trace_context"] == {"trace_id": "t1"}
+
+
+def test_observe_disabled_with_trace_id_still_noop():
+    with tracing.observe("x", trace_id="t1", parent_span_id="s1") as obs:
+        assert obs is None
+
+
+# ── current_trace_id() ──
+def test_current_trace_id_disabled_is_none():
+    assert tracing.current_trace_id() is None
+
+
+def test_current_trace_id_returns_client_value(monkeypatch):
+    fake = FakeLangfuseClient()
+    fake.get_current_trace_id = lambda: "abc"
+    monkeypatch.setattr(tracing, "get_langfuse", lambda: fake)
+    assert tracing.current_trace_id() == "abc"
+
+
+def test_current_trace_id_swallows_client_errors(monkeypatch):
+    fake = FakeLangfuseClient()      # get_current_trace_id 없음 → AttributeError
+
+    monkeypatch.setattr(tracing, "get_langfuse", lambda: fake)
+    assert tracing.current_trace_id() is None
+
+    def boom():
+        raise RuntimeError("no active span")
+    fake.get_current_trace_id = boom
+    assert tracing.current_trace_id() is None

@@ -94,21 +94,32 @@ def run_output_guards(orig: bytes, result: bytes, anchors: list[dict],
                 name=f"defect_visible[{i}]", passed=vis >= DEFECT_VISIBILITY_THRESHOLD,
                 value=vis, threshold=DEFECT_VISIBILITY_THRESHOLD, severity="hard"))
 
-    ocr_ratio = metric.text_recall(" ".join(ocr_before), " ".join(ocr_after))
+    # 줄 단위·순서 무관 비교 — VLM 이 같은 글자를 다른 순서로 읽어도 깎이지 않고,
+    # 줄 하나가 뭉개지면(NIKE→NlKE) 그 줄 점수만큼 recall 이 떨어진다.
+    m = metric.text_match(ocr_before, ocr_after)
+    ocr_ratio = m["recall"]
     guards.append(GuardResult(
         name="ocr_match", passed=ocr_ratio >= OCR_MATCH_THRESHOLD,
         value=ocr_ratio, threshold=OCR_MATCH_THRESHOLD, severity="hard"))
 
-    added = set(ocr_after) - set(ocr_before)
+    # 원본 어느 줄과도 안 닮은 새 글자. soft(관측용): 두 번의 VLM 읽기가 줄을 다르게
+    # 쪼개기만 해도("NIKE AIR" → "NIKE" + "AIR") 생겨서 hard 로 두면 오차단이 잦다.
+    # 새로 얹힌 자막·워터마크는 check_photo(구도/오버레이 검사)가 따로 잡는다.
+    added = m["added"]
     guards.append(GuardResult(
         name="no_added_text", passed=len(added) == 0,
-        value=float(len(added)), threshold=0.0, severity="hard"))
+        value=float(len(added)), threshold=0.0, severity="soft"))
 
-    dino = embedder.cosine_similarity(orig, result)
+    # dino_band 는 soft(관측용) — 계산 실패(모델 로드/메모리)로 이미 비용 든 변환을
+    # 500 으로 날리지 않는다. hard 가드의 "예외는 삼키지 않는다" 원칙은 그대로.
     lo, hi = DINO_BAND
-    guards.append(GuardResult(
-        name="dino_band", passed=lo <= dino <= hi,
-        value=dino, threshold=lo, severity="soft"))
+    try:
+        dino = embedder.cosine_similarity(orig, result)
+        guards.append(GuardResult(
+            name="dino_band", passed=lo <= dino <= hi,
+            value=dino, threshold=lo, severity="soft"))
+    except Exception as e:
+        print(f"[guards] dino_band 계산 실패(soft, 무시): {e}")
 
     for g in guards:
         score(g.name, g.value, data_type="NUMERIC")   # 키 없으면 noop (tracing.py 컨벤션)

@@ -3,6 +3,15 @@
 const PRESET = 'studio_white';   // 프리셋 선택 UI는 없앰 — 항상 화이트 스튜디오로 변환
 
 let fileId = null;
+let qualityPoll = null;          // 성적표 폴링 (변환마다 하나만)
+let qualityToken = 0;            // 폴링 세대 — 끊긴 폴링의 늦은 응답을 버리기 위함
+const QUALITY_POLL_MAX = 40;     // 3초 × 40 = 2분 — judge 가 실패하면 파일이 안 생긴다
+
+function stopQualityPoll() {
+  clearInterval(qualityPoll);
+  qualityPoll = null;
+  qualityToken++;                // 이미 날아간 fetch 응답도 무효화
+}
 
 const dropzone  = document.getElementById('dropzone');
 const fileInput = document.getElementById('file');
@@ -88,18 +97,30 @@ runBtn.onclick = async () => {
     afterImg.hidden = false;
 
     renderMetaChips(data);
-    renderGate(data.gate_passed ?? null);
-    
-    // 성적표는 백그라운드 → 폴링으로 뒤따름
-    renderQuality(null);  // 일단 숨김
-    const qUrl = `/storage/quality/${fileId}_${PRESET}.json`;
-    const poll = setInterval(async () => {
-      const r = await fetch(qUrl + '?t=' + Date.now());
-      if (r.ok) {
-        renderQuality(await r.json());
-        clearInterval(poll);
-      }
-    }, 3000);
+    renderGate(data);
+
+    // 성적표는 응답 뒤 백그라운드에서 채점 → judge_pending 일 때만 폴링.
+    // 이전 변환의 폴링은 먼저 끊고(겹쳐 쌓임 방지), 횟수 상한을 둔다 (judge 실패 시 404 무한 폴링 방지)
+    renderQuality(data.quality ?? null);
+    stopQualityPoll();
+    if (!data.quality && data.judge_pending) {
+      const qUrl = `/api/quality/${fileId}/${PRESET}`;
+      const token = qualityToken;
+      let tries = 0;
+      qualityPoll = setInterval(async () => {
+        if (++tries > QUALITY_POLL_MAX) { stopQualityPoll(); return; }
+        try {
+          const r = await fetch(qUrl + '?t=' + Date.now());
+          if (token !== qualityToken) return;          // 새 업로드/변환으로 끊긴 폴링
+          if (r.ok) {
+            const q = await r.json();
+            if (token !== qualityToken) return;
+            renderQuality(q);
+            stopQualityPoll();
+          }
+        } catch (_) { /* 네트워크 오류 — 다음 틱에 다시 */ }
+      }, 3000);
+    }
 
     // 피드백: 우선 빈 박스 표시, 기존 피드백 있으면 채워넣기
     currentRating = 0;
@@ -115,8 +136,11 @@ runBtn.onclick = async () => {
       // 피드백 조회 실패는 변환 결과 표시를 막지 않음
     }
 
-    statusEl.textContent = '완료! 🎉';
+    statusEl.textContent = data.status === 'blocked'
+      ? '변환 결과를 내보내지 않았어요 (아래 안내 참고)'
+      : data.judge_pending ? '완료! 🎉 (성적표 채점 중…)' : '완료! 🎉';
   } catch (e) {
+    stopQualityPoll();
     statusEl.textContent = '변환 실패: ' + e.message;
   } finally {
     runBtn.disabled = false;

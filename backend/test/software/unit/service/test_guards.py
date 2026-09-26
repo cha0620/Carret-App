@@ -72,8 +72,8 @@ def test_empty_anchors_passes_when_ocr_and_dino_ok(monkeypatch, make_png):
     assert not any(g.name.startswith(("feature_preserved", "defect_visible")) for g in guards_out)
 
 
-# ── 4. added_text 발생 → block ──────────────────────
-def test_added_text_blocks(monkeypatch, make_png):
+# ── 4. added_text 발생 → soft (관측만, 차단 아님) ─────
+def test_added_text_alone_is_soft_and_passes(monkeypatch, make_png):
     _patch_cosine(monkeypatch, 0.9)
     orig, result = make_png(), make_png()
 
@@ -81,8 +81,59 @@ def test_added_text_blocks(monkeypatch, make_png):
         orig, result, [], ["brand"], ["brand", "SALE 50%"])
     status, failed = guards.decide(guards_out)
 
+    assert status == "pass"
+    added = next(g for g in guards_out if g.name == "no_added_text")
+    assert added.passed is False and added.severity == "soft" and added.value == 1.0
+    ocr = next(g for g in guards_out if g.name == "ocr_match")
+    assert ocr.passed is True
+
+
+def test_added_text_uses_text_match_added_not_set_difference(monkeypatch, make_png):
+    """정확 일치 집합 차가 아니라 text_match 의 added — 대소문자·공백만 다른 줄은 새 글자가 아님."""
+    _patch_cosine(monkeypatch, 0.9)
+    orig, result = make_png(), make_png()
+    guards_out = guards.run_output_guards(
+        orig, result, [], ["Brand  Name"], ["brand name"])
+    added = next(g for g in guards_out if g.name == "no_added_text")
+    assert added.passed is True and added.value == 0.0
+
+
+def test_added_text_value_counts_text_match_added(monkeypatch, make_png):
+    import app.services.quality.metric as metric_mod
+    monkeypatch.setattr(metric_mod, "text_match",
+                        lambda b, a: {"recall": 1.0, "changed": [], "added": ["x", "y"]})
+    _patch_cosine(monkeypatch, 0.9)
+    orig, result = make_png(), make_png()
+    guards_out = guards.run_output_guards(orig, result, [], ["a"], ["a"])
+    added = next(g for g in guards_out if g.name == "no_added_text")
+    assert added.value == 2.0 and added.passed is False
+
+
+def test_ocr_order_independent(monkeypatch, make_png):
+    _patch_cosine(monkeypatch, 0.9)
+    orig, result = make_png(), make_png()
+    guards_out = guards.run_output_guards(
+        orig, result, [], ["NIKE", "AIR", "29"], ["29", "AIR", "NIKE"])
+    status, _ = guards.decide(guards_out)
+    assert status == "pass"
+    assert next(g for g in guards_out if g.name == "ocr_match").value == 1.0
+
+
+def test_ocr_garbled_line_blocks(monkeypatch, make_png):
+    _patch_cosine(monkeypatch, 0.9)
+    orig, result = make_png(), make_png()
+    guards_out = guards.run_output_guards(orig, result, [], ["NIKE"], ["NlKE"])
+    status, failed = guards.decide(guards_out)
     assert status == "block"
-    assert any(g.name == "no_added_text" for g in failed)
+    assert [g.name for g in failed] == ["ocr_match"]
+
+
+def test_ocr_all_text_lost_blocks(monkeypatch, make_png):
+    _patch_cosine(monkeypatch, 0.9)
+    orig, result = make_png(), make_png()
+    guards_out = guards.run_output_guards(orig, result, [], ["NIKE"], [])
+    ocr = next(g for g in guards_out if g.name == "ocr_match")
+    assert ocr.value == 0.0 and ocr.passed is False
 
 
 # ── 5. 경계값 정확 동작 ───────────────────────────────
@@ -98,16 +149,26 @@ def test_feature_threshold_boundary_0_90_exactly_passes(monkeypatch, make_png):
     assert feature.passed is True
 
 
-def test_ocr_match_threshold_boundary_0_95_exactly_passes(monkeypatch, make_png):
+@pytest.mark.parametrize("recall,passed", [(0.95, True), (0.949, False), (1.0, True)])
+def test_ocr_match_threshold_boundary_0_95(monkeypatch, make_png, recall, passed):
+    """ocr_match 는 text_match 의 recall 로 판정 (text_recall 아님)."""
     import app.services.quality.metric as metric_mod
-    monkeypatch.setattr(metric_mod, "text_recall", lambda a, b: 0.95)
+    seen = []
+    monkeypatch.setattr(metric_mod, "text_match",
+                        lambda b, a: seen.append((b, a)) or
+                        {"recall": recall, "changed": [], "added": []})
+
+    def poison(*a):
+        raise AssertionError("text_recall 은 더 이상 쓰지 않는다")
+    monkeypatch.setattr(metric_mod, "text_recall", poison)
     _patch_cosine(monkeypatch, 0.9)
     orig, result = make_png(), make_png()
 
-    guards_out = guards.run_output_guards(orig, result, [], ["a"], ["a"])
+    guards_out = guards.run_output_guards(orig, result, [], ["a", "b"], ["b", "a"])
     ocr = next(g for g in guards_out if g.name == "ocr_match")
 
-    assert ocr.passed is True
+    assert seen == [(["a", "b"], ["b", "a"])]   # 줄 목록 그대로 (이어붙이지 않음)
+    assert ocr.passed is passed and ocr.value == recall and ocr.severity == "hard"
 
 
 # ── 6. tracing 꺼짐 부작용 0 ─────────────────────────
@@ -170,3 +231,36 @@ def test_feature_anchor_without_crop_sim_raises_by_design(make_png):
 
     with pytest.raises(AttributeError):
         guards.run_output_guards(orig, result, [_anchor("feature")], [], [])
+
+
+# ── dino_band: 계산 실패는 삼키고 가드만 빠진다 (soft) ──
+def test_dino_failure_omits_dino_band_without_raising(monkeypatch, make_png):
+    def boom(o, r):
+        raise RuntimeError("OOM")
+    monkeypatch.setattr(embedder, "cosine_similarity", boom)
+    orig, result = make_png(), make_png()
+
+    guards_out = guards.run_output_guards(orig, result, [], ["a"], ["a"])
+
+    assert [g.name for g in guards_out] == ["ocr_match", "no_added_text"]
+    assert guards.decide(guards_out)[0] == "pass"
+
+
+def test_dino_failure_does_not_swallow_hard_defect_guard_errors(monkeypatch, make_png):
+    """defect 가시성(hard)도 cosine 을 쓰지만 그 예외는 그대로 전파 (fail-open 금지)."""
+    def boom(o, r):
+        raise RuntimeError("OOM")
+    monkeypatch.setattr(embedder, "cosine_similarity", boom)
+    orig, result = make_png(), make_png()
+    with pytest.raises(RuntimeError):
+        guards.run_output_guards(orig, result, [_anchor("defect")], [], [])
+
+
+@pytest.mark.parametrize("value,passed", [(0.75, True), (0.7499, False)])
+def test_dino_band_lower_bound(monkeypatch, make_png, value, passed):
+    lo, hi = guards.DINO_BAND
+    _patch_cosine(monkeypatch, lo if passed else lo - 0.0001)
+    orig, result = make_png(), make_png()
+    guards_out = guards.run_output_guards(orig, result, [], [], [])
+    dino = next(g for g in guards_out if g.name == "dino_band")
+    assert dino.passed is passed and dino.severity == "soft"

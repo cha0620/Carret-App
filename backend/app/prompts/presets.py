@@ -29,7 +29,7 @@ def prompt_safe(text) -> str:
     return t[:TEXT_LOCK_MAX_CHARS]
 
 
-def _where(t: dict) -> str:
+def text_where(t: dict) -> str:
     """0-1000 박스 중심 → "top-left" 같은 대략 위치 (같은 글자를 엉뚱한 곳에 또 그리지 않게)."""
     if not all(k in t for k in ("x1", "y1", "x2", "y2")):
         return ""
@@ -50,7 +50,7 @@ def text_lock(texts: list[dict]) -> str:
         text = prompt_safe(t.get("text", ""))
         if not text:
             continue
-        where = _where(t)
+        where = text_where(t)
         key = (text, where)
         if key in seen:
             continue

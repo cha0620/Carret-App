@@ -90,8 +90,15 @@ def classify(image_bytes: bytes) -> dict:
 
 
 def detect_defects(image_bytes: bytes, item: str = "object",
-                    considered: list | None = None) -> list:
+                    considered: list | None = None, *, strict: bool = False) -> list:
+    """strict=True (파이프라인): 빈/깨진 응답(JSON 파싱 실패 → {})을 "하자 없음"이
+    아니라 실패로 보고 예외 — [] 로 돌려주면 게이트가 검증할 게 없다며 통과시킨다.
+    eval/dev 호출부는 기본값(False)으로 예전처럼 [] 를 받는다 (배치가 한 건에 멈추지 않게)."""
     data = _call(image_bytes, P.detect_prompt(item, considered or []), "detect")
+    if not isinstance(data, dict) or not isinstance(data.get("defects"), list):
+        if strict:
+            raise ValueError(f"detect: 응답에 defects 목록 없음: {str(data)[:200]}")
+        return []
     anchors = []
     for d in data.get("defects", []):
         cat = str(d.get("category", "other")).strip()
@@ -142,16 +149,19 @@ def all_preserved(checks: list, *, expected: int) -> bool:
     return all(c.get("preserved") for c in checks) if checks else True
 
 
-def read_item_text(image_bytes: bytes, item: str = "object") -> dict:
+def read_item_text(image_bytes: bytes, item: str = "object", *, strict: bool = False) -> dict:
     """물건 "위에" 있는 글자만 읽는다 (배경·옷소매·소품 글자 제외, 자동 교정 금지).
 
     반환: {"item_box": {x1..} | None, "texts": [{"text": str, x1..y2(있으면)}]}
     item_box 는 OCR 을 물건 영역으로만 제한할 때 쓴다."""
     data = _call(image_bytes, P.item_text_prompt(item), "item_text")
+    if strict and not (isinstance(data, dict) and isinstance(data.get("texts"), list)):
+        # 가드용 결과 읽기: 깨진 응답({})을 "글자 전부 사라짐"(recall 0)으로 읽으면 안 된다
+        raise ValueError(f"item_text: 응답에 texts 목록 없음: {str(data)[:200]}")
     item_box = _from_box_2d({"box_2d": data.get("item_box_2d")})
     item_box = _box(item_box) if _has_box(item_box) else None
     texts = []
-    for t in data.get("texts", []):
+    for t in data.get("texts") or []:     # {"texts": null} 도 "글자 없음"
         if not isinstance(t, dict):
             continue
         text = str(t.get("text", "")).strip()

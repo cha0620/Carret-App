@@ -17,7 +17,7 @@ FID = "0123456789abcdef0123456789abcdef"   # 패턴에 맞는 32-hex
 def test_transform_keeps_bubbles(client, tmp_storage, monkeypatch):
     (tmp_storage / "original" / f"{FID}.jpg").write_bytes(b"fake")
     monkeypatch.setattr("app.services.pipeline.run_transform",
-                        lambda fid, p: FAKE_OUT)
+                        lambda fid, p, **kw: FAKE_OUT)
     body = client.post("/api/transform",
                        json={"file_id": FID, "preset": "studio_white"}).json()
     assert body["bubbles"][0]["x1"] == 100
