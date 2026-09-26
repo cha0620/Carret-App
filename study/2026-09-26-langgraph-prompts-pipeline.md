@@ -7,6 +7,7 @@
 3. 프롬프트 관리: 지금 어떻게 유지되고 있나
 4. 다음에 볼 것: 점수와 "결정 지점"
 5. 파이프라인 점검: 게이트 구멍 · 옛 점수 · 직렬 대기 · 글자 사후검증
+6. 오후: judge 한 벌로 · 대기 시간 단축 · verify 구멍
 
 
 ---
@@ -833,3 +834,69 @@ len(anchors) >= N (기본 꺼짐)           → "many_defects"
 - [ ] OCR 읽기와 check_photo 병렬화 (생성 1회당 VLM 2회가 직렬)
 - [ ] 가드 seed 재시도 예산이 photo 재생성과 공유됨 — 2번째 시도에서 처음 가드 실패하면 재시도 없이 composite (의도 명시 필요)
 - [ ] feature/defect 좌표 가드(`_guard_anchors`, `crop_sim` 없음)는 여전히 죽은 경로 — 살릴지 지울지
+
+---
+
+## 6. 오후: judge 한 벌로 · 대기 시간 단축 · verify 구멍
+
+PR #19·#18 머지 후 이어서 한 것 (브랜치 `refactor/judge-single-path`).
+
+### 6-1. 왜 그동안 "끝나자마자 성적표"가 필요했나 → 사실 필요 없었다
+
+- 처음엔 "ingest·dev 가 바로 읽어서 동기 채점이 필요하다"고 답했는데 **틀렸다.** 코드를 보니:
+  - `ingest.py` 는 결과 **이미지만** 읽어 auto_feedback 에 넘긴다 (성적표 안 읽음)
+  - dev 는 나중에 `/dev/results` 로 읽는다
+  - 직후에 읽던 건 **transform 라우트 응답(`quality`)뿐**
+- 진짜 이유: 9/5 (`6c2e35e`) LangGraph 로 옮길 때 judge 를 그래프 한 단계로 **순서대로** 넣었고 그대로 굳었다.
+  프론트엔 "백그라운드 → 폴링" 주석이 있었지만 실제론 응답에 이미 성적표가 있어 폴링이 헛돌았다.
+- 교훈: **"왜 이렇게 돼 있지?"는 호출부를 grep 해서 실제로 읽는 곳을 확인하고 답한다.** 추측으로 답하면 틀린다.
+
+### 6-2. judge 를 한 벌로 (`d5fced4`)
+
+- 전: `run_judge` 노드 + `judge_later` 에 채점·저장·점수 부착이 **두 벌**.
+- 후: 그래프에서 빼고 `judge_and_save()` 하나. "언제"만 호출부가 정한다.
+  - 라우트: 응답 뒤 `BackgroundTasks` (trace_id / parent_span_id 로 같은 트레이스)
+  - `run_transform` 기본값·dev: 그래프 직후 바로 (현재 트레이스에 자동 중첩)
+- 리뷰가 잡은 race: 삭제를 "시작 시"로만 옮기면, 그래프가 도는 동안 **이전 요청의 백그라운드 채점이 옛 점수를 저장**
+  → 새 결과 옆에 뜬다. → 그래프 직후 한 번 더 삭제.
+- 부수 변화: storage 의 저장본(정규화된, 사용자가 보는 이미지)을 채점 — 과거 점수와 소폭 차이 가능.
+
+### 6-3. 대기 시간 (`77f361c`)
+
+```text
+전: classify → detect∥read_text → FLUX → OCR → check_photo → verify   (VLM 5회 직렬)
+후: classify → detect∥read_text → FLUX → (OCR ∥ check_photo) → verify (VLM 4회 직렬)
+```
+
+| 한 것 | 효과 |
+|---|---|
+| OCR 읽기 ∥ check_photo | 생성 1회당 VLM 왕복 1회 ↓ (가드가 막으면 check_photo 가 헛돔 — 시작 전이면 취소) |
+| Gemini 클라이언트 공용 (`core/vlm.get_client`) | 호출마다 새 연결(TLS) 안 맺음 |
+| 타임아웃 60초 | 응답이 멈춰도 요청이 무한정 매달리지 않음 |
+| 원본 DINO 임베딩 LRU 캐시 | 재생성·합성 때 원본 재임베딩 생략 |
+
+- 스레드로 넘길 때 **`contextvars.copy_context().run`** — 안 하면 Langfuse(OTEL) 컨텍스트가 끊겨 check_photo 가 별도 트레이스로 찍힌다.
+- 풀 크기: 처음 4 → 리뷰 "동시 요청 몰리면 큐 대기로 직렬보다 느려짐" → 32 + 대기 상한.
+- 안 한 것: verify 를 check_photo 와 **추측 실행** — 구도 불량 재생성 비율을 모르면 판단 불가 (Langfuse 로 먼저 측정).
+
+### 6-4. verify 호출 실패가 게이트를 통과하던 구멍
+
+- 타임아웃을 넣다가 발견: `verify` 가 예외면 `gate_passed=None` → 라우팅이 **None 을 통과로** 취급.
+  detect 실패 구멍(§5)과 **같은 종류**의 구멍이 한 군데 더 있었다.
+- 수정: 2회 시도 → `verify_failed` → 생성본은 재생성 없이 composite, 합성본은 None. 깨진 응답(`{}`)도 `strict=True` 로 실패 처리.
+- 재시도는 **다시 해서 나아질 오류만** (`core/vlm.retryable`): 타임아웃·429·5xx·깨진 응답. 400·코드 오류는 바로 중단.
+- UI: `detect_failed || verify_failed` = "검사하지 못했습니다" 배지.
+
+### 6-5. 테스트가 잡은 것
+
+- 병렬화 후 가드 차단 테스트 2개가 **`.env` 의 실제 키로 Gemini 를 부르고 있었다** (백그라운드 스레드라 모의 해제 뒤에 실행되기도).
+  → `unit/conftest.py`: 실제 VLM 차단 + 테스트마다 백그라운드 future 회수.
+- `test_pipeline_retry` 의 detect 가짜가 새 `strict` 인자를 못 받아 **TypeError → detect_failed 경로**를 타면서도 통과하고 있었다.
+  → 가짜는 `**kw` 를 받게. (가짜가 실제 시그니처를 안 따라가면 "통과하지만 엉뚱한 걸 검사하는" 테스트가 된다)
+- 최종 **702 passed**.
+
+### 남은 것 (오후)
+
+- [ ] Langfuse 로 노드별 소요 시간 실측 — 이번 단축 효과 확인, verify 추측 실행 여부 판단
+- [ ] `/transform` 이 동기라 VLM 타임아웃이 겹치면 프록시 60초 제한에 걸릴 수 있음 (작업 큐 등 구조 검토)
+- [ ] 좌표 가드 크롭이 원본 임베딩 캐시를 밀어낼 수 있음 (지금은 죽은 경로라 영향 없음)
