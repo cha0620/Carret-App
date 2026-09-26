@@ -33,22 +33,26 @@ The transform pipeline is a [LangGraph](https://github.com/langchain-ai/langgrap
 flowchart TD
   L["load<br/>original + preset"] --> C["classify<br/>item + checklist"]
   C --> T["read_text<br/>text on the item + item box<br/>(TEXT_LOCK)"]
-  T --> D["detect<br/>defect anchors"]
-  D --> G["generate · fal.ai FLUX.2<br/>preset + SECONDHAND_LOCK<br/>+ original text list<br/>(+ rejection reason / lost defects)"]
-  G --> V{"validate_result<br/>1. output guards<br/>2. crop / caption check"}
+  C --> D["detect<br/>defect anchors<br/>(2 tries, else detect_failed)"]
+  T --> P{"plan<br/>can generation keep it?"}
+  D --> P
+  P -->|"detect failed /<br/>text-heavy item"| X
+  P -->|ok| G["generate · fal.ai FLUX.2<br/>preset + SECONDHAND_LOCK<br/>+ original text list<br/>(+ rejection reason / lost defects)"]
+  G --> V{"validate_result<br/>1. output guards (OCR text compare)<br/>2. crop / caption check"}
   V -->|"guard fail, 1st<br/>retry with new seed"| G
   V -->|"bad framing<br/>attempts left"| G
-  V -->|"guard fail twice<br/>blocked = original"| S
-  V -->|ok| S["score_similarity<br/>DINOv2 cosine"]
-  S --> VR{"verify (Wear Gate)<br/>defects/logos kept + box_2d<br/>fewer answers than anchors = fail"}
+  V -->|"guard fail twice"| X
+  V -->|ok| S["score_similarity<br/>DINOv2 cosine (reuses guard value)"]
+  S --> VR{"verify (Wear Gate)<br/>defects + key text kept, box_2d<br/>fewer answers than asked = fail"}
   VR -->|"pass<br/>(or composite)"| I
   VR -->|"fail, 1st"| R["mark_gate_retry<br/>lost defects into prompt"]
   R --> G
   VR -->|"fail, 2nd"| X["composite · background-swap mode<br/>fal BiRefNet cutout<br/>(local rembg fallback)<br/>+ preset background + shadow"]
   X -->|"ok → check again"| S
-  X -->|"cutout failed<br/>keep generated"| I
-  I["save_inspect<br/>debug JSON (mode etc.)"] --> J["run_judge<br/>fidelity · realism · trust"]
-  J --> F["finalize<br/>bubbles"]
+  X -->|"cutout failed<br/>before generating"| G
+  X -->|"cutout failed: keep generated<br/>(guards failed → blocked = original)"| I
+  I["save_inspect<br/>debug JSON (mode, composite_reason)"] --> F["finalize<br/>bubbles"]
+  F -.->|"after the response<br/>(background)"| J["judge_and_save<br/>fidelity · realism · trust"]
 ```
 
 1. **classify**: the VLM identifies the item and builds a checklist of
@@ -57,30 +61,38 @@ flowchart TD
    original and adds it, with rough positions, to the generate prompt (so the generator
    garbles small text and Korean less). It also returns the item box used by
    background-swap mode
-3. **detect**: finds defects in the original and records each one as a
-   *what / where* anchor
-4. **generate**: replaces the background with a preset (studio white, warm
+3. **detect** (runs in parallel with read_text): finds defects in the original and
+   records each one as a *what / where* anchor. If it fails twice, the run is marked
+   `detect_failed` instead of being treated as "no defects"
+4. **plan**: when generation clearly can't keep the item honest (defects couldn't be
+   detected, or the item carries lots of small text), it skips generation and goes
+   straight to background-swap mode
+5. **generate**: replaces the background with a preset (studio white, warm
    wood or minimal gray). Every prompt carries `SECONDHAND_LOCK`, which
    forbids restoration
-5. **validate_result**: if the result is cropped or covered by a caption,
-   it is regenerated **with the rejection reason added to the prompt**
-   rather than retried blindly. The number of attempts is capped by config
-6. **score_similarity**: computes a local DINOv2 embedding similarity,
-   separate from the VLM
-7. **verify (Wear Gate)**: the VLM gets a checklist ("confirm these defects
-   are still visible") instead of an open question ("find problems").
+6. **validate_result**: output guards first. The text on the item is read again from the
+   result and compared line by line with the original; a hard failure is retried once
+   with a new seed, then sent to background-swap mode. After that, if the result is
+   cropped or covered by a caption, it is regenerated **with the rejection reason added
+   to the prompt** rather than retried blindly. The number of attempts is capped by config
+7. **score_similarity**: a local DINOv2 embedding similarity, separate from the VLM
+   (reuses the value the guard already computed)
+8. **verify (Wear Gate)**: the VLM gets a checklist ("confirm these defects
+   are still visible") instead of an open question ("find problems"). The key text on
+   the item (largest lines, up to 8) is on the checklist too.
    It returns whether each defect survived and where it is in the result.
    Coordinates are requested in Gemini's native `box_2d [ymin, xmin, ymax, xmax]`
    format, and if the VLM answers for fewer defects than it was asked about
    (including an empty answer), the gate fails
-8. **Gate-failure fallback**: if the verify gate fails, the pipeline regenerates once
+9. **Gate-failure fallback**: if the verify gate fails, the pipeline regenerates once
    with the lost defects added to the prompt. If it still fails, it switches to
    **background-swap mode**: the original item is cut out (fal BiRefNet, local rembg as a
    fallback) and placed on the preset background, so the item's pixels are the
-   original's. The result is recorded with `mode: composite`
-9. **judge**: produces a fidelity / realism / trust report card, which is
-   cached and attached to the trace as Langfuse Scores
-10. The UI overlays defect bubbles on the result and collects a star rating
+   original's. The result is recorded with `mode: composite` and a `composite_reason`
+10. **judge** (outside the graph): produces a fidelity / realism / trust report card and
+   attaches it to the same trace as Langfuse Scores. The API runs it after the response
+   is sent, and the UI polls `GET /api/quality/{file_id}/{preset}` for it
+11. The UI overlays defect bubbles on the result and collects a star rating
    and comment from the seller
 
 ---

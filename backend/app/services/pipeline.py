@@ -12,8 +12,10 @@
        max_generate_attempts 까지 재생성
   2.5) score_similarity : 원본 vs 결과 DINOv2 코사인 유사도 (가드 값 재사용)
   3) verify     : 결과 → 하자·글자 보존 여부 + 좌표. 실패 → 1회 재생성 → composite
-  4) judge      : 품질 성적표 (매 실행 새로 채점, transform 라우트는 응답 뒤 백그라운드)
-  5) finalize   : bubbles + 로깅
+  4) finalize   : bubbles + 로깅
+  (그래프 밖) judge_and_save : 품질 성적표 — 그래프가 끝난 뒤 한 곳에서만 채점.
+       transform 라우트는 응답 뒤 백그라운드, 그 외(run_transform 기본값 ·
+       run_transform_with_result)는 그래프 직후 바로
 """
 
 import json
@@ -56,7 +58,6 @@ class State(TypedDict, total=False):
     composite_reason: str | None   # 배경 교체로 간 이유: detect_failed | text_heavy | many_defects
                                    #   | guard_failed | gate_failed
     guard_failed: bool         # 출력 가드가 seed 재시도까지 hard fail
-    defer_judge: bool          # judge 를 응답 뒤 백그라운드로 (transform 라우트)
     provided_result: bytes     # dev 그래프: generate 대신 쓸 결과 이미지
     composite_error: str | None
     result: bytes
@@ -486,51 +487,34 @@ def _clear_quality(name: str) -> None:
         print(f"[judge] 옛 성적표 삭제 실패(무시): {e}")
 
 
-def run_judge(s: State) -> dict:
-    """품질 성적표 — 매번 새로 채점하고 Langfuse 트레이스에 축별 점수도 부착."""
-    quality_name = f"{s['file_id']}_{s['preset_key']}.json"
-    # 캐시하지 않는다 — 파일명이 file_id/preset 뿐이라 재변환하면 새 결과에 옛 점수가
-    # 붙는다. 이전 성적표를 먼저 지워서 blocked·judge 실패 때도 옛 점수가 응답에
-    # 섞이지 않게 한다 (transform 라우트가 이 파일을 그대로 읽어 돌려줌).
-    _clear_quality(quality_name)
-    if s.get("status") == "blocked" or s.get("defer_judge"):
-        return {}   # defer: judge_later() 가 응답 뒤에 채점해서 같은 파일에 쓴다
-    try:
-        report = judge.judge(s["original"], s["result"])
-    except Exception as e:
-        print(f"[judge] 실패(무시): {e}")
-        report = None
-    if report:
-        storage.save(
-            "quality", quality_name,
-            json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8"),
-        )
-        try:
-            for axis in AXES:
-                score(axis, report[axis], data_type="NUMERIC")
-        except Exception as e:
-            print(f"[judge] 점수 부착 실패(무시): {e}")
-    return {}
+def judge_and_save(file_id: str, preset_key: str, *, trace_id: str | None = None,
+                   parent_span_id: str | None = None) -> None:
+    """품질 성적표 채점 → 저장 → 축별 점수 부착. 채점 구현은 여기 하나뿐이다.
 
-
-def judge_later(file_id: str, preset_key: str, trace_id: str | None = None,
-                parent_span_id: str | None = None) -> None:
-    """transform 응답을 보낸 뒤 BackgroundTasks 로 도는 채점 — 사용자가 judge
-    (VLM 왕복 1회)를 기다리지 않게. 점수는 같은 트레이스에 이어 붙인다.
-    채점 중에 같은 쌍이 다시 변환되면(결과 이미지가 바뀜) 옛 결과 점수는 버린다."""
+    그래프 밖에서 부른다 — 채점 결과를 기다려야 하는 단계가 그래프에 없고
+    (judge 는 결정에 안 쓰이는 관측 신호), 호출부마다 "언제" 채점할지가 달라서:
+      - transform 라우트: 응답을 보낸 뒤 BackgroundTasks 로 (사용자가 VLM 왕복을 안 기다림).
+        요청 컨텍스트가 끝났으니 trace_id/parent_span_id 로 같은 트레이스에 이어 붙인다.
+      - run_transform 기본값(ingest 등) · run_transform_with_result(dev): 그래프 직후
+        바로 (현재 트레이스에 자동 중첩).
+    원본·결과는 storage 에서 읽는다 — 사용자에게 서빙되는 저장본(정규화 후)을 채점
+    (예전 그래프 노드는 fal 이 준 정규화 전 바이트를 채점 — 과거 점수와 소폭 차이 가능).
+    채점 중에 같은 쌍이 다시 변환되면(결과 이미지가 바뀜) 옛 결과 점수는 버린다.
+    blocked(원본을 내보냄)면 호출부가 부르지 않는다. 실패는 모두 삼킨다 (관측 신호)."""
     name = f"{file_id}_{preset_key}"
     try:
         original = storage.load_original(file_id)
         result = storage.load("result", f"{name}.jpg")
         if original is None or result is None:
             return
-        with observe("judge_async", as_type="span", trace_id=trace_id,
-                     parent_span_id=parent_span_id, input={"file_id": file_id, "preset_key": preset_key}):
+        with observe("judge_and_save", as_type="span", trace_id=trace_id,
+                     parent_span_id=parent_span_id,
+                     input={"file_id": file_id, "preset_key": preset_key}):
             report = judge.judge(original, result)
             if not report:
                 return
             if storage.load("result", f"{name}.jpg") != result:
-                print("[judge_later] 채점 중 결과가 바뀜 → 버림")
+                print("[judge] 채점 중 결과가 바뀜 → 버림")
                 return
             storage.save("quality", f"{name}.json",
                          json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8"))
@@ -538,10 +522,13 @@ def judge_later(file_id: str, preset_key: str, trace_id: str | None = None,
                 # 확인~저장 사이에 재변환이 끼어듦 — 새 결과에 옛 점수가 남지 않게 지운다
                 _clear_quality(f"{name}.json")
                 return
-            for axis in AXES:
-                score(axis, report[axis], data_type="NUMERIC")
+            try:
+                for axis in AXES:
+                    score(axis, report[axis], data_type="NUMERIC")
+            except Exception as e:
+                print(f"[judge] 점수 부착 실패(무시): {e}")
     except Exception as e:
-        print(f"[judge_later] 실패(무시): {e}")
+        print(f"[judge] 실패(무시): {e}")
     finally:
         flush()
 
@@ -583,12 +570,12 @@ def use_provided(s: State) -> dict:
 def build(*, dev: bool = False):
     """dev=True: generate 를 use_provided 로 바꾸고 재생성·배경 교체 루프를 뺀 그래프.
     앞단(read_text ∥ detect)과 뒷단 노드는 운영 그래프와 같은 함수·같은 연결을 쓴다
-    — verify/judge 프롬프트 튜닝 결과가 운영과 어긋나지 않게."""
+    — verify 프롬프트 튜닝 결과가 운영과 어긋나지 않게 (judge 는 그래프 밖, 같은 함수)."""
     g = StateGraph(State)
     nodes = [("load", load), ("classify", classify_node),
              ("read_text", read_text), ("detect", detect), ("plan", plan),
              ("score_similarity", score_similarity), ("verify", verify),
-             ("save_inspect", save_inspect), ("run_judge", run_judge),
+             ("save_inspect", save_inspect),
              ("finalize", finalize)]
     nodes += ([("use_provided", use_provided)] if dev else
               [("generate", generate), ("validate_result", validate_result),
@@ -624,8 +611,7 @@ def build(*, dev: bool = False):
         g.add_conditional_edges("composite", _route_after_composite,
                                 {"ok": "score_similarity", "failed": "save_inspect",
                                  "generate": "generate"})
-    g.add_edge("save_inspect", "run_judge")
-    g.add_edge("run_judge", "finalize")
+    g.add_edge("save_inspect", "finalize")
     g.add_edge("finalize", END)
     return g.compile()
 
@@ -634,15 +620,15 @@ GRAPH = build()
 
 # 최악 경로 = 앞 4단계(load·classify·read_text∥detect·plan) + composite(생성 전, 실패)
 # + (generate·validate) × (재생성 한도 + 가드 재시도) × 2(게이트 재생성)
-# + score/verify 3회 + composite + 뒷 3노드 ≈ 35. max_generate_attempts=5 여도 넉넉하게.
+# + score/verify 3회 + composite + 뒷 2노드 ≈ 35. max_generate_attempts=5 여도 넉넉하게.
 # (LangGraph 기본 25 는 기본 설정에서도 경계라, 비용을 다 쓴 뒤 예외로 끝날 수 있었다)
 RECURSION_LIMIT = 80
 
 
 def run_transform(file_id: str, preset_key: str, *, defer_judge: bool = False) -> dict:
-    """defer_judge=True: 그래프 안에서 judge 를 돌리지 않고 결과에 judge_pending/trace_id
-    를 실어 보낸다 — 호출부(transform 라우트)가 응답 뒤 judge_later() 를 돌린다.
-    기본값(False)은 예전처럼 동기 채점 (eval/dev 는 반환 직후 성적표 파일을 읽는다)."""
+    """defer_judge=True: 채점하지 않고 결과에 judge_pending/trace_id 를 실어 보낸다 —
+    호출부(transform 라우트)가 응답 뒤 judge_and_save() 를 돌린다.
+    기본값(False)은 그래프 직후 여기서 바로 채점 (ingest 등 배치 호출부)."""
     t0 = time.time()
 
     # pass 모드 = 지름길 (그래프 안 탐)
@@ -663,10 +649,18 @@ def run_transform(file_id: str, preset_key: str, *, defer_judge: bool = False) -
         with observe("transform", as_type="span",
                      input={"file_id": file_id, "preset_key": preset_key},
                      metadata={"pipeline_mode": settings.pipeline_mode}) as obs:
-            init: State = {"file_id": file_id, "preset_key": preset_key}
-            if defer_judge:
-                init["defer_judge"] = True
-            out = GRAPH.invoke(init, {"recursion_limit": RECURSION_LIMIT})
+            # 옛 성적표는 시작할 때 지운다 — 파일명이 file_id/preset 뿐이라 남겨 두면
+            # 새 결과에 옛 점수가 붙는다 (blocked·채점 실패 때도)
+            _clear_quality(f"{file_id}_{preset_key}.json")
+            out = GRAPH.invoke({"file_id": file_id, "preset_key": preset_key},
+                               {"recursion_limit": RECURSION_LIMIT})
+            # 그래프 도중(새 결과 저장 전)에 이전 요청의 백그라운드 채점이 옛 결과 점수를
+            # 저장했을 수 있다 — 새 결과가 저장된 뒤 한 번 더 지운다. 이후에 그 채점이
+            # 저장하려 하면 judge_and_save 의 재확인(결과 바뀜)이 스스로 지운다.
+            _clear_quality(f"{file_id}_{preset_key}.json")
+            judged = out.get("status", "pass") != "blocked"   # 원본을 내보내면 채점 안 함
+            if judged and not defer_judge:
+                judge_and_save(file_id, preset_key)
 
             result = {
                 "result_name": out["result_name"],
@@ -684,7 +678,7 @@ def run_transform(file_id: str, preset_key: str, *, defer_judge: bool = False) -
                 "mode": out.get("mode", "generate"),
                 "composite_reason": out.get("composite_reason"),
                 "detect_failed": out.get("detect_failed", False),
-                "judge_pending": defer_judge and out.get("status", "pass") != "blocked",
+                "judge_pending": defer_judge and judged,
                 "trace_id": current_trace_id(),
                 "trace_span_id": getattr(obs, "id", None),
             }
@@ -727,11 +721,14 @@ def run_transform_with_result(file_id: str, preset_key: str, result_bytes: bytes
         with observe("transform_dev", as_type="span",
                      input={"file_id": file_id, "preset_key": preset_key},
                      metadata={"generate_skipped": True}) as obs:
+            _clear_quality(f"{file_id}_{preset_key}.json")
             # 매 호출 빌드 — 모듈의 노드 함수를 호출 시점에 묶는다 (dev 경로라 비용 무시 가능)
             s = build(dev=True).invoke(
                 {"file_id": file_id, "preset_key": preset_key,
                  "provided_result": result_bytes},
                 {"recursion_limit": RECURSION_LIMIT})
+            _clear_quality(f"{file_id}_{preset_key}.json")   # run_transform 과 같은 이유
+            judge_and_save(file_id, preset_key)   # judge 프롬프트 튜닝용 — 바로 채점
 
             result = {
                 "result_name": s["result_name"],

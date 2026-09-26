@@ -197,23 +197,21 @@ def test_run_transform_passes_through_composite_reason_and_detect_failed(monkeyp
 
 
 # ── run_transform(defer_judge=...) ──
-def test_run_transform_defer_judge_adds_flag_to_initial_state(monkeypatch):
+@pytest.mark.parametrize("defer", [True, False])
+def test_run_transform_initial_state_never_carries_defer_judge(monkeypatch, defer):
+    """defer_judge 는 State 에서 빠졌다 — 그래프 초기 state 는 모드와 무관하게 두 키뿐."""
     fake_graph = FakeGraph(_graph_out())
     monkeypatch.setattr(pipeline_mod, "GRAPH", fake_graph, raising=False)
+    monkeypatch.setattr(pipeline_mod, "judge_and_save", lambda f, p, **kw: None)
 
-    result = pipeline_mod.run_transform("fid-d", "preset_b", defer_judge=True)
+    result = pipeline_mod.run_transform("fid-d", "preset_b", defer_judge=defer)
 
-    assert fake_graph.invoked_with == {"file_id": "fid-d", "preset_key": "preset_b",
-                                       "defer_judge": True}
-    assert result["judge_pending"] is True
+    assert fake_graph.invoked_with == {"file_id": "fid-d", "preset_key": "preset_b"}
+    assert result["judge_pending"] is defer
 
 
-def test_run_transform_defer_judge_false_explicit_keeps_state_minimal(monkeypatch):
-    fake_graph = FakeGraph(_graph_out())
-    monkeypatch.setattr(pipeline_mod, "GRAPH", fake_graph, raising=False)
-    result = pipeline_mod.run_transform("fid-d", "preset_b", defer_judge=False)
-    assert "defer_judge" not in fake_graph.invoked_with
-    assert result["judge_pending"] is False
+def test_state_has_no_defer_judge_key():
+    assert "defer_judge" not in pipeline_mod.State.__annotations__
 
 
 def test_run_transform_defer_judge_blocked_is_not_pending(monkeypatch):
@@ -233,6 +231,100 @@ def test_run_transform_defer_judge_missing_status_counts_as_pass(monkeypatch):
 def test_run_transform_defer_judge_is_keyword_only():
     with pytest.raises(TypeError):
         pipeline_mod.run_transform("f", "p", True)
+
+
+class OrderedGraph(FakeGraph):
+    """invoke 시점을 공용 순서 기록에 남긴다."""
+    def __init__(self, out, order):
+        super().__init__(out)
+        self._order = order
+    def invoke(self, state, config=None):
+        self._order.append("graph")
+        return super().invoke(state, config)
+
+
+def _order_spies(monkeypatch, out):
+    """clear/graph/judge_and_save 호출 순서를 한 리스트에 기록."""
+    order = []
+    monkeypatch.setattr(pipeline_mod, "GRAPH", OrderedGraph(out, order), raising=False)
+    monkeypatch.setattr(pipeline_mod, "_clear_quality",
+                        lambda name: order.append(("clear", name)))
+    monkeypatch.setattr(pipeline_mod, "judge_and_save",
+                        lambda f, p, **kw: order.append(("judge", f, p, kw)))
+    return order
+
+
+def test_run_transform_inline_judges_exactly_once_after_graph(monkeypatch):
+    order = _order_spies(monkeypatch, _graph_out())
+    result = pipeline_mod.run_transform("fo", "p")
+    # 시작 시 삭제 → 그래프 → 그래프 직후 한 번 더 삭제 → 채점 1회 (트레이스 인자 없이)
+    assert order == [("clear", "fo_p.json"), "graph", ("clear", "fo_p.json"),
+                     ("judge", "fo", "p", {})]
+    assert result["judge_pending"] is False
+
+
+def test_run_transform_inline_missing_status_still_judges(monkeypatch):
+    out = _graph_out()
+    assert "status" not in out
+    order = _order_spies(monkeypatch, out)
+    pipeline_mod.run_transform("fo", "p", defer_judge=False)
+    assert [o for o in order if o[0] == "judge"] == [("judge", "fo", "p", {})]
+
+
+def test_run_transform_defer_never_calls_judge(monkeypatch):
+    order = _order_spies(monkeypatch, _graph_out())
+
+    def poison(*a, **k):
+        raise AssertionError("defer 면 judge 금지")
+    monkeypatch.setattr(pipeline_mod.judge, "judge", poison)
+    result = pipeline_mod.run_transform("fo", "p", defer_judge=True)
+    assert order == [("clear", "fo_p.json"), "graph", ("clear", "fo_p.json")]
+    assert result["judge_pending"] is True
+
+
+@pytest.mark.parametrize("defer", [True, False])
+def test_run_transform_blocked_never_judges(monkeypatch, defer):
+    order = _order_spies(monkeypatch, _graph_out(status="blocked"))
+
+    def poison(*a, **k):
+        raise AssertionError("blocked 에서 judge 금지")
+    monkeypatch.setattr(pipeline_mod.judge, "judge", poison)
+    result = pipeline_mod.run_transform("fo", "p", defer_judge=defer)
+    assert not any(o[0] == "judge" for o in order if isinstance(o, tuple))
+    assert result["judge_pending"] is False
+    assert result["status"] == "blocked"
+
+
+def test_run_transform_graph_exception_no_judge_but_flushes(monkeypatch):
+    order = []
+    flushed = []
+
+    class BoomGraph:
+        def invoke(self, state, config=None):
+            order.append("graph")
+            raise RuntimeError("fal down")
+    monkeypatch.setattr(pipeline_mod, "GRAPH", BoomGraph(), raising=False)
+    monkeypatch.setattr(pipeline_mod, "_clear_quality", lambda n: order.append(("clear", n)))
+    monkeypatch.setattr(pipeline_mod, "judge_and_save",
+                        lambda *a, **k: order.append(("judge",)))
+    monkeypatch.setattr(pipeline_mod, "flush", lambda: flushed.append(1))
+    with pytest.raises(RuntimeError):
+        pipeline_mod.run_transform("fo", "p")
+    assert order == [("clear", "fo_p.json"), "graph"]
+    assert flushed == [1]
+
+
+def test_mock_mode_never_judges(monkeypatch, make_png):
+    monkeypatch.setattr(settings, "pipeline_mode", "mock", raising=False)
+    storage.save("original", "fid-mj.jpg", make_png())
+
+    def poison(*a, **k):
+        raise AssertionError("mock 모드는 채점 안 함")
+    monkeypatch.setattr(pipeline_mod, "judge_and_save", poison)
+    monkeypatch.setattr(pipeline_mod.judge, "judge", poison)
+    for defer in (False, True):
+        out = pipeline_mod.run_transform("fid-mj", "preset_a", defer_judge=defer)
+        assert "judge_pending" not in out
 
 
 # ── run_transform(): real 모드, 트레이싱 활성 ──
@@ -292,8 +384,11 @@ def _patch_nodes(monkeypatch, checks, gate_passed, bubbles_out, visual_similarit
         "checks": checks, "gate_passed": gate_passed,
     })
     monkeypatch.setattr(pipeline_mod, "save_inspect", lambda s: {})
-    monkeypatch.setattr(pipeline_mod, "run_judge", lambda s: {})
+    judged = []
+    monkeypatch.setattr(pipeline_mod, "judge_and_save",
+                        lambda f, p, **kw: judged.append((f, p, kw)))
     monkeypatch.setattr(pipeline_mod, "finalize", lambda s: {"bubbles": bubbles_out})
+    return judged
 
 
 def test_run_transform_with_result_disabled_tracing_returns_expected_shape(monkeypatch, make_png):
@@ -355,7 +450,7 @@ def test_dev_graph_replaces_generate_with_use_provided_and_has_no_loops():
             ("read_text", "plan"), ("detect", "plan")} <= edges
     assert {("plan", "use_provided"), ("use_provided", "score_similarity"),
             ("score_similarity", "verify"), ("verify", "save_inspect"),
-            ("save_inspect", "run_judge"), ("run_judge", "finalize")} <= edges
+            ("save_inspect", "finalize")} <= edges
     # 조건부 분기 없음 = 각 노드의 나가는 간선이 하나뿐
     outs = {}
     for s, t in edges:
@@ -365,6 +460,63 @@ def test_dev_graph_replaces_generate_with_use_provided_and_has_no_loops():
 
 def test_prod_graph_has_no_use_provided():
     assert "use_provided" not in set(pipeline_mod.GRAPH.get_graph().nodes)
+
+
+@pytest.mark.parametrize("graph", [pipeline_mod.GRAPH, pipeline_mod.build(),
+                                   pipeline_mod.build(dev=True)],
+                         ids=["GRAPH", "build", "build_dev"])
+def test_graphs_have_no_judge_node_and_save_inspect_goes_to_finalize(graph):
+    """채점은 그래프 밖(judge_and_save) 한 곳뿐 — 그래프 안에 judge 노드가 없어야 한다."""
+    g = graph.get_graph()
+    nodes = set(g.nodes)
+    assert "run_judge" not in nodes
+    assert not any("judge" in n for n in nodes)
+    edges = {(e.source, e.target) for e in g.edges}
+    assert [t for s_, t in edges if s_ == "save_inspect"] == ["finalize"]
+    assert ("finalize", "__end__") in edges
+
+
+def test_removed_judge_entrypoints_are_gone():
+    assert not hasattr(pipeline_mod, "run_judge")
+    assert not hasattr(pipeline_mod, "judge_later")
+
+
+def test_run_transform_with_result_judges_once_after_graph(monkeypatch, make_png):
+    order = []
+    _patch_nodes(monkeypatch, [], True, [])
+    monkeypatch.setattr(pipeline_mod, "finalize",
+                        lambda s: order.append("graph_end") or {"bubbles": []})
+    monkeypatch.setattr(pipeline_mod, "_clear_quality", lambda n: order.append(("clear", n)))
+    monkeypatch.setattr(pipeline_mod, "judge_and_save",
+                        lambda f, p, **kw: order.append(("judge", f, p, kw)))
+    pipeline_mod.run_transform_with_result("fw", "p", make_png())
+    assert order == [("clear", "fw_p.json"), "graph_end", ("clear", "fw_p.json"),
+                     ("judge", "fw", "p", {})]
+
+
+def test_run_transform_with_result_judges_even_when_detect_failed(monkeypatch, make_png):
+    judged = _patch_nodes(monkeypatch, [], False, [],
+                          detect_out={"anchors": [], "detect_failed": True})
+    pipeline_mod.run_transform_with_result("fw", "p", make_png())
+    assert judged == [("fw", "p", {})]
+
+
+def test_run_transform_with_result_clears_stale_quality(monkeypatch, make_png):
+    _patch_nodes(monkeypatch, [], True, [])
+    storage.save("quality", "fw_p.json", b'{"stale": true}')
+    pipeline_mod.run_transform_with_result("fw", "p", make_png())
+    assert storage.load("quality", "fw_p.json") is None
+
+
+def test_run_transform_with_result_graph_exception_no_judge(monkeypatch, make_png):
+    judged = _patch_nodes(monkeypatch, [], True, [])
+
+    def boom(s):
+        raise RuntimeError("verify down")
+    monkeypatch.setattr(pipeline_mod, "verify", boom)
+    with pytest.raises(RuntimeError):
+        pipeline_mod.run_transform_with_result("fw", "p", make_png())
+    assert judged == []
 
 
 def test_run_transform_with_result_builds_graph_each_call(monkeypatch, make_png):
@@ -394,11 +546,14 @@ def test_dev_graph_real_nodes_detect_failed_gate_false_no_generate(monkeypatch, 
     monkeypatch.setattr(pipeline_mod, "_generate_ai", poison)
     monkeypatch.setattr(pipeline_mod.compositor, "compose", poison)
     monkeypatch.setattr(pipeline_mod.embedder, "cosine_similarity", lambda a, b: 0.8)
+    judge_calls = []
     monkeypatch.setattr(pipeline_mod.judge, "judge",
-                        lambda o, r: {"fidelity": 1, "realism": 1, "trust": 1})
+                        lambda o, r: judge_calls.append(1) or
+                        {"fidelity": 1, "realism": 1, "trust": 1})
 
     provided = make_png(color=(1, 2, 3))
     out = pipeline_mod.run_transform_with_result("fid-dv", "studio_white", provided)
+    assert judge_calls == [1]      # detect 실패여도 dev 경로는 채점 1회
 
     assert out["detect_failed"] is True
     assert out["gate_passed"] is False
@@ -1758,62 +1913,6 @@ def test_generate_resets_visual_similarity(monkeypatch):
 
 
 # ══ judge: 캐시 없음 + defer ═════════════════════════
-def _judge_state(**kw):
-    return {"file_id": "fj", "preset_key": "p", "original": b"O", "result": b"R", **kw}
-
-
-def _seed_stale_quality(name="fj_p.json"):
-    storage.save("quality", name, b'{"stale": true}')
-
-
-def test_run_judge_rejudges_even_if_quality_file_exists(monkeypatch):
-    _seed_stale_quality()
-    calls = []
-    monkeypatch.setattr(pipeline_mod.judge, "judge",
-                        lambda o, r: calls.append(1) or {"fidelity": 4, "realism": 3, "trust": 2})
-    pipeline_mod.run_judge(_judge_state())
-    assert calls == [1]
-    assert json.loads(storage.load("quality", "fj_p.json")) == {
-        "fidelity": 4, "realism": 3, "trust": 2}
-
-
-def test_run_judge_blocked_deletes_stale_and_skips_judge(monkeypatch):
-    _seed_stale_quality()
-
-    def poison(*a):
-        raise AssertionError("blocked 에서 judge 금지")
-    monkeypatch.setattr(pipeline_mod.judge, "judge", poison)
-    assert pipeline_mod.run_judge(_judge_state(status="blocked")) == {}
-    assert storage.load("quality", "fj_p.json") is None
-
-
-def test_run_judge_defer_deletes_stale_and_skips_judge(monkeypatch):
-    _seed_stale_quality()
-
-    def poison(*a):
-        raise AssertionError("defer 면 judge 금지")
-    monkeypatch.setattr(pipeline_mod.judge, "judge", poison)
-    assert pipeline_mod.run_judge(_judge_state(defer_judge=True)) == {}
-    assert storage.load("quality", "fj_p.json") is None
-
-
-def test_run_judge_defer_false_still_judges(monkeypatch):
-    monkeypatch.setattr(pipeline_mod.judge, "judge",
-                        lambda o, r: {"fidelity": 1, "realism": 1, "trust": 1})
-    pipeline_mod.run_judge(_judge_state(defer_judge=False))
-    assert storage.load("quality", "fj_p.json") is not None
-
-
-def test_run_judge_delete_failure_is_swallowed(monkeypatch):
-    def boom(kind, name):
-        raise PermissionError("s3:DeleteObject denied")
-    monkeypatch.setattr(pipeline_mod.storage, "delete", boom)
-    monkeypatch.setattr(pipeline_mod.judge, "judge",
-                        lambda o, r: {"fidelity": 2, "realism": 2, "trust": 2})
-    pipeline_mod.run_judge(_judge_state())
-    assert json.loads(storage.load("quality", "fj_p.json"))["fidelity"] == 2
-
-
 def test_clear_quality_swallows_and_targets_quality_kind(monkeypatch):
     seen = []
     monkeypatch.setattr(pipeline_mod.storage, "delete", lambda k, n: seen.append((k, n)))
@@ -1824,37 +1923,6 @@ def test_clear_quality_swallows_and_targets_quality_kind(monkeypatch):
         raise RuntimeError("x")
     monkeypatch.setattr(pipeline_mod.storage, "delete", boom)
     pipeline_mod._clear_quality("a.json")        # 예외 없음
-
-
-def test_run_judge_exception_leaves_no_stale_file(monkeypatch):
-    _seed_stale_quality()
-
-    def boom(*a):
-        raise RuntimeError("judge down")
-    monkeypatch.setattr(pipeline_mod.judge, "judge", boom)
-    assert pipeline_mod.run_judge(_judge_state()) == {}
-    assert storage.load("quality", "fj_p.json") is None
-
-
-@pytest.mark.parametrize("empty", [None, {}])
-def test_run_judge_empty_report_leaves_no_file(monkeypatch, empty):
-    _seed_stale_quality()
-    monkeypatch.setattr(pipeline_mod.judge, "judge", lambda o, r: empty)
-    pipeline_mod.run_judge(_judge_state())
-    assert storage.load("quality", "fj_p.json") is None
-
-
-def test_run_judge_score_failure_still_saves_report(monkeypatch):
-    monkeypatch.setattr(pipeline_mod.judge, "judge", lambda o, r: {"analysis": "partial"})
-    pipeline_mod.run_judge(_judge_state())
-    assert storage.load("quality", "fj_p.json") is not None
-
-
-def test_run_judge_no_existing_file_ok(monkeypatch):
-    monkeypatch.setattr(pipeline_mod.judge, "judge",
-                        lambda o, r: {"fidelity": 1, "realism": 1, "trust": 1})
-    pipeline_mod.run_judge(_judge_state())
-    assert storage.load("quality", "fj_p.json") is not None
 
 
 def test_mock_mode_deletes_stale_quality_file(monkeypatch, make_png):
@@ -1892,16 +1960,24 @@ def test_graph_defer_judge_skips_judge_and_marks_pending(monkeypatch, make_png):
     storage.save("quality", "fid-g_studio_white.json", b'{"stale": true}')
     out = pipeline_mod.run_transform("fid-g", "studio_white", defer_judge=True)
     assert calls["judge"] == 0 and out["judge_pending"] is True
+    assert storage.load("result", "fid-g_studio_white.jpg") is not None
     assert storage.load("quality", "fid-g_studio_white.json") is None
 
 
-# ══ judge_later (응답 뒤 백그라운드 채점) ═════════════
+def test_graph_inline_judge_runs_once_on_saved_result(monkeypatch, make_png):
+    calls = _patch_graph_deps(monkeypatch, make_png, [[]])
+    out = pipeline_mod.run_transform("fid-g", "studio_white")
+    assert calls["judge"] == 1 and out["judge_pending"] is False
+    assert json.loads(storage.load("quality", "fid-g_studio_white.json"))["analysis"] == "ok"
+
+
+# ══ judge_and_save (채점 구현 단일 경로) ═════════════
 REPORT = {"analysis": "bg", "fidelity": 4, "realism": 3, "trust": 5}
 
 
 @pytest.fixture()
 def jl(monkeypatch):
-    """judge_later 공통 준비: 원본/결과 저장 + flush/score 기록."""
+    """judge_and_save 공통 준비: 원본/결과 저장 + flush/score 기록."""
     storage.save("original", "fjl.png", ORIG_PNG)
     storage.save("result", "fjl_p.jpg", GEN_PNG)
     rec = {"flush": 0, "scores": [], "judge_args": []}
@@ -1913,8 +1989,8 @@ def jl(monkeypatch):
     return rec
 
 
-def test_judge_later_saves_report_and_scores(jl):
-    pipeline_mod.judge_later("fjl", "p")
+def test_judge_and_save_saves_report_and_scores(jl):
+    pipeline_mod.judge_and_save("fjl", "p")
     [(o, r)] = jl["judge_args"]
     assert _close(_mean_color(o), ORIG_COLOR) and _close(_mean_color(r), GEN_COLOR)
     assert json.loads(storage.load("quality", "fjl_p.json")) == REPORT
@@ -1924,35 +2000,35 @@ def test_judge_later_saves_report_and_scores(jl):
 
 
 @pytest.mark.parametrize("missing", ["original", "result"])
-def test_judge_later_missing_input_returns_and_flushes(jl, missing, tmp_storage):
+def test_judge_and_save_missing_input_returns_and_flushes(jl, missing, tmp_storage):
     if missing == "original":
         (tmp_storage / "original" / "fjl.png").unlink()
     else:
         (tmp_storage / "result" / "fjl_p.jpg").unlink()
-    pipeline_mod.judge_later("fjl", "p")
+    pipeline_mod.judge_and_save("fjl", "p")
     assert jl["judge_args"] == [] and jl["flush"] == 1
     assert storage.load("quality", "fjl_p.json") is None
 
 
 @pytest.mark.parametrize("empty", [None, {}])
-def test_judge_later_empty_report_saves_nothing(jl, monkeypatch, empty):
+def test_judge_and_save_empty_report_saves_nothing(jl, monkeypatch, empty):
     monkeypatch.setattr(pipeline_mod.judge, "judge", lambda o, r: empty)
-    pipeline_mod.judge_later("fjl", "p")
+    pipeline_mod.judge_and_save("fjl", "p")
     assert storage.load("quality", "fjl_p.json") is None
     assert jl["scores"] == [] and jl["flush"] == 1
 
 
-def test_judge_later_discards_when_result_changes_during_judge(jl, monkeypatch):
+def test_judge_and_save_discards_when_result_changes_during_judge(jl, monkeypatch):
     def slow_judge(o, r):
         storage.save("result", "fjl_p.jpg", COMP_PNG)    # 채점 중 재변환
         return dict(REPORT)
     monkeypatch.setattr(pipeline_mod.judge, "judge", slow_judge)
-    pipeline_mod.judge_later("fjl", "p")
+    pipeline_mod.judge_and_save("fjl", "p")
     assert storage.load("quality", "fjl_p.json") is None
     assert jl["scores"] == [] and jl["flush"] == 1
 
 
-def test_judge_later_result_changes_between_check_and_save_deletes_quality(jl, monkeypatch):
+def test_judge_and_save_result_changes_between_check_and_save_deletes_quality(jl, monkeypatch):
     real_save = storage.save
 
     def racing_save(kind, name, data):
@@ -1961,23 +2037,23 @@ def test_judge_later_result_changes_between_check_and_save_deletes_quality(jl, m
             real_save("result", "fjl_p.jpg", COMP_PNG)   # 저장 직후 재변환이 끼어듦
     monkeypatch.setattr(pipeline_mod.storage, "save", racing_save)
 
-    pipeline_mod.judge_later("fjl", "p")
+    pipeline_mod.judge_and_save("fjl", "p")
 
     assert storage.load("quality", "fjl_p.json") is None
     assert jl["scores"] == [] and jl["flush"] == 1
 
 
-def test_judge_later_result_deleted_during_judge_discards(jl, monkeypatch, tmp_storage):
+def test_judge_and_save_result_deleted_during_judge_discards(jl, monkeypatch, tmp_storage):
     def judge_then_delete(o, r):
         (tmp_storage / "result" / "fjl_p.jpg").unlink()
         return dict(REPORT)
     monkeypatch.setattr(pipeline_mod.judge, "judge", judge_then_delete)
-    pipeline_mod.judge_later("fjl", "p")
+    pipeline_mod.judge_and_save("fjl", "p")
     assert storage.load("quality", "fjl_p.json") is None
 
 
 @pytest.mark.parametrize("where", ["judge", "load", "save", "score"])
-def test_judge_later_swallows_exceptions_and_flushes(jl, monkeypatch, where):
+def test_judge_and_save_swallows_exceptions_and_flushes(jl, monkeypatch, where):
     def boom(*a, **k):
         raise RuntimeError(where)
     target = {"judge": (pipeline_mod.judge, "judge"),
@@ -1985,47 +2061,234 @@ def test_judge_later_swallows_exceptions_and_flushes(jl, monkeypatch, where):
               "save": (pipeline_mod.storage, "save"),
               "score": (pipeline_mod, "score")}[where]
     monkeypatch.setattr(*target, boom)
-    pipeline_mod.judge_later("fjl", "p")        # 예외 없음
+    pipeline_mod.judge_and_save("fjl", "p")        # 예외 없음
     assert jl["flush"] == 1
 
 
-def test_judge_later_score_failure_keeps_saved_report(jl, monkeypatch):
+def test_judge_and_save_score_failure_keeps_saved_report(jl, monkeypatch):
     monkeypatch.setattr(pipeline_mod.judge, "judge", lambda o, r: {"analysis": "no axes"})
-    pipeline_mod.judge_later("fjl", "p")
+    pipeline_mod.judge_and_save("fjl", "p")
     assert storage.load("quality", "fjl_p.json") is not None and jl["flush"] == 1
 
 
-def test_judge_later_attaches_to_given_trace_and_parent(monkeypatch):
+def test_judge_and_save_attaches_to_given_trace_and_parent(monkeypatch):
     fake_lf = _enable_fake_langfuse(monkeypatch)
     storage.save("original", "fjl.png", ORIG_PNG)
     storage.save("result", "fjl_p.jpg", GEN_PNG)
     monkeypatch.setattr(pipeline_mod.judge, "judge", lambda o, r: dict(REPORT))
 
-    pipeline_mod.judge_later("fjl", "p", "trace-9", "span-7")
+    pipeline_mod.judge_and_save("fjl", "p", trace_id="trace-9", parent_span_id="span-7")
 
     call = fake_lf.calls[0]
-    assert call["name"] == "judge_async" and call["as_type"] == "span"
+    assert call["name"] == "judge_and_save" and call["as_type"] == "span"
     assert call["trace_context"] == {"trace_id": "trace-9", "parent_span_id": "span-7"}
     assert call["input"] == {"file_id": "fjl", "preset_key": "p"}
     assert fake_lf.flushed is True
 
 
-def test_judge_later_trace_without_parent(monkeypatch):
+def test_judge_and_save_trace_without_parent(monkeypatch):
     fake_lf = _enable_fake_langfuse(monkeypatch)
     storage.save("original", "fjl.png", ORIG_PNG)
     storage.save("result", "fjl_p.jpg", GEN_PNG)
     monkeypatch.setattr(pipeline_mod.judge, "judge", lambda o, r: dict(REPORT))
-    pipeline_mod.judge_later("fjl", "p", "trace-9")
+    pipeline_mod.judge_and_save("fjl", "p", trace_id="trace-9")
     assert fake_lf.calls[0]["trace_context"] == {"trace_id": "trace-9"}
 
 
-def test_judge_later_no_trace_id_no_trace_context(monkeypatch):
+def test_judge_and_save_no_trace_id_no_trace_context(monkeypatch):
     fake_lf = _enable_fake_langfuse(monkeypatch)
     storage.save("original", "fjl.png", ORIG_PNG)
     storage.save("result", "fjl_p.jpg", GEN_PNG)
     monkeypatch.setattr(pipeline_mod.judge, "judge", lambda o, r: dict(REPORT))
-    pipeline_mod.judge_later("fjl", "p", None, "span-7")
+    pipeline_mod.judge_and_save("fjl", "p", trace_id=None, parent_span_id="span-7")
     assert "trace_context" not in fake_lf.calls[0]
+
+
+def test_judge_and_save_trace_args_are_keyword_only():
+    with pytest.raises(TypeError):
+        pipeline_mod.judge_and_save("fjl", "p", "trace-9")
+    with pytest.raises(TypeError):
+        pipeline_mod.judge_and_save("fjl", "p", "trace-9", "span-7")
+
+
+def test_judge_and_save_rejudges_even_if_quality_file_exists(jl):
+    storage.save("quality", "fjl_p.json", b'{"stale": true}')
+    pipeline_mod.judge_and_save("fjl", "p")
+    assert len(jl["judge_args"]) == 1
+    assert json.loads(storage.load("quality", "fjl_p.json")) == REPORT
+
+
+def test_judge_and_save_does_not_need_delete_permission(jl, monkeypatch):
+    """정상 경로에서는 delete 를 부르지 않는다 (S3 DeleteObject 권한 없어도 저장됨)."""
+    def boom(kind, name):
+        raise PermissionError("s3:DeleteObject denied")
+    monkeypatch.setattr(pipeline_mod.storage, "delete", boom)
+    pipeline_mod.judge_and_save("fjl", "p")
+    assert json.loads(storage.load("quality", "fjl_p.json")) == REPORT
+
+
+def test_judge_and_save_race_clear_failure_is_swallowed(jl, monkeypatch):
+    """저장 직후 결과가 바뀌어 지우려는데 delete 가 실패해도 예외 없이 끝나고 점수는 안 붙는다."""
+    real_save = storage.save
+
+    def racing_save(kind, name, data):
+        real_save(kind, name, data)
+        if kind == "quality":
+            real_save("result", "fjl_p.jpg", COMP_PNG)
+    monkeypatch.setattr(pipeline_mod.storage, "save", racing_save)
+
+    def boom(kind, name):
+        raise PermissionError("denied")
+    monkeypatch.setattr(pipeline_mod.storage, "delete", boom)
+    pipeline_mod.judge_and_save("fjl", "p")
+    assert jl["scores"] == [] and jl["flush"] == 1
+
+
+def test_judge_and_save_partial_scores_keep_report(jl, monkeypatch):
+    """축 하나만 빠져도 앞 축 점수는 이미 붙고, 보고서는 남는다."""
+    from app.prompts.rubric import AXES
+    partial = {"analysis": "x", AXES[0]: 3}
+    monkeypatch.setattr(pipeline_mod.judge, "judge", lambda o, r: dict(partial))
+    pipeline_mod.judge_and_save("fjl", "p")
+    assert json.loads(storage.load("quality", "fjl_p.json")) == partial
+    assert jl["scores"] == [(AXES[0], 3)] and jl["flush"] == 1
+
+
+# ── run_transform ↔ judge_and_save (옛 run_judge 노드 테스트에서 옮김) ──
+def _seed_pair(fid="frt", preset="p"):
+    storage.save("original", f"{fid}.png", ORIG_PNG)
+    storage.save("result", f"{fid}_{preset}.jpg", GEN_PNG)
+
+
+def test_run_transform_clears_stale_quality_before_graph(monkeypatch):
+    storage.save("quality", "frt_p.json", b'{"stale": true}')
+    seen = {}
+
+    class CheckGraph(FakeGraph):
+        def invoke(self, state, config=None):
+            seen["at_invoke"] = storage.load("quality", "frt_p.json")
+            return super().invoke(state, config)
+    monkeypatch.setattr(pipeline_mod, "GRAPH", CheckGraph(_graph_out()), raising=False)
+    pipeline_mod.run_transform("frt", "p", defer_judge=True)
+    assert seen["at_invoke"] is None
+    assert storage.load("quality", "frt_p.json") is None
+
+
+@pytest.mark.parametrize("defer", [True, False])
+def test_run_transform_blocked_clears_stale_and_never_judges(monkeypatch, defer):
+    _seed_pair()
+    storage.save("quality", "frt_p.json", b'{"stale": true}')
+
+    def poison(*a, **k):
+        raise AssertionError("blocked 에서 judge 금지")
+    monkeypatch.setattr(pipeline_mod.judge, "judge", poison)
+    monkeypatch.setattr(pipeline_mod, "GRAPH",
+                        FakeGraph(_graph_out(status="blocked")), raising=False)
+    out = pipeline_mod.run_transform("frt", "p", defer_judge=defer)
+    assert out["judge_pending"] is False
+    assert storage.load("quality", "frt_p.json") is None
+
+
+def test_run_transform_stale_report_written_during_graph_is_cleared(monkeypatch):
+    """이전 요청의 백그라운드 채점이 그래프 도중(새 결과 저장 전)에 옛 점수를 저장해도
+    defer 응답 뒤엔 남아 있으면 안 된다 — 그래프 직후 한 번 더 지운다."""
+    class RacingGraph(FakeGraph):
+        def invoke(self, state, config=None):
+            storage.save("quality", "frt_p.json", b'{"stale": "from old bg judge"}')
+            return super().invoke(state, config)
+    monkeypatch.setattr(pipeline_mod, "GRAPH", RacingGraph(_graph_out()), raising=False)
+    out = pipeline_mod.run_transform("frt", "p", defer_judge=True)
+    assert out["judge_pending"] is True
+    assert storage.load("quality", "frt_p.json") is None
+
+
+def test_run_transform_blocked_stale_report_written_during_graph_is_cleared(monkeypatch):
+    class RacingGraph(FakeGraph):
+        def invoke(self, state, config=None):
+            storage.save("quality", "frt_p.json", b'{"stale": true}')
+            return super().invoke(state, config)
+    monkeypatch.setattr(pipeline_mod, "GRAPH",
+                        RacingGraph(_graph_out(status="blocked")), raising=False)
+    pipeline_mod.run_transform("frt", "p")
+    assert storage.load("quality", "frt_p.json") is None
+
+
+def test_run_transform_with_result_stale_report_written_during_graph_is_cleared(
+        monkeypatch, make_png):
+    judged = _patch_nodes(monkeypatch, [], True, [])
+
+    def racing_finalize(s):
+        storage.save("quality", "fw_p.json", b'{"stale": true}')
+        return {"bubbles": []}
+    monkeypatch.setattr(pipeline_mod, "finalize", racing_finalize)
+    pipeline_mod.run_transform_with_result("fw", "p", make_png())
+    assert storage.load("quality", "fw_p.json") is None    # judge_and_save 는 no-op 스파이
+    assert judged == [("fw", "p", {})]
+
+
+def test_run_transform_delete_failure_is_swallowed_and_still_judges(monkeypatch):
+    _seed_pair()
+
+    def boom(kind, name):
+        raise PermissionError("s3:DeleteObject denied")
+    monkeypatch.setattr(pipeline_mod.storage, "delete", boom)
+    monkeypatch.setattr(pipeline_mod.judge, "judge",
+                        lambda o, r: {"fidelity": 2, "realism": 2, "trust": 2})
+    monkeypatch.setattr(pipeline_mod, "GRAPH", FakeGraph(_graph_out()), raising=False)
+    out = pipeline_mod.run_transform("frt", "p")
+    assert out["judge_pending"] is False
+    assert json.loads(storage.load("quality", "frt_p.json"))["fidelity"] == 2
+
+
+def test_run_transform_delete_failure_is_swallowed_when_deferred(monkeypatch):
+    def boom(kind, name):
+        raise PermissionError("denied")
+    monkeypatch.setattr(pipeline_mod.storage, "delete", boom)
+    monkeypatch.setattr(pipeline_mod, "GRAPH", FakeGraph(_graph_out()), raising=False)
+    assert pipeline_mod.run_transform("frt", "p", defer_judge=True)["judge_pending"] is True
+
+
+def test_run_transform_judge_exception_leaves_no_stale_file(monkeypatch):
+    _seed_pair()
+    storage.save("quality", "frt_p.json", b'{"stale": true}')
+
+    def boom(*a):
+        raise RuntimeError("judge down")
+    monkeypatch.setattr(pipeline_mod.judge, "judge", boom)
+    monkeypatch.setattr(pipeline_mod, "GRAPH", FakeGraph(_graph_out()), raising=False)
+    out = pipeline_mod.run_transform("frt", "p")          # 예외 안 새어 나옴
+    assert out["result_name"] == "abc_preset.jpg"
+    assert storage.load("quality", "frt_p.json") is None
+
+
+@pytest.mark.parametrize("empty", [None, {}])
+def test_run_transform_empty_report_leaves_no_file(monkeypatch, empty):
+    _seed_pair()
+    storage.save("quality", "frt_p.json", b'{"stale": true}')
+    monkeypatch.setattr(pipeline_mod.judge, "judge", lambda o, r: empty)
+    monkeypatch.setattr(pipeline_mod, "GRAPH", FakeGraph(_graph_out()), raising=False)
+    pipeline_mod.run_transform("frt", "p")
+    assert storage.load("quality", "frt_p.json") is None
+
+
+def test_run_transform_score_failure_still_saves_report(monkeypatch):
+    _seed_pair()
+    monkeypatch.setattr(pipeline_mod.judge, "judge", lambda o, r: {"analysis": "partial"})
+    monkeypatch.setattr(pipeline_mod, "GRAPH", FakeGraph(_graph_out()), raising=False)
+    pipeline_mod.run_transform("frt", "p")
+    assert json.loads(storage.load("quality", "frt_p.json")) == {"analysis": "partial"}
+
+
+def test_run_transform_inline_judge_missing_result_is_noop(monkeypatch):
+    """그래프가 결과를 안 남겼으면(가짜 그래프) judge_and_save 는 조용히 빠진다."""
+    storage.save("original", "frt.png", ORIG_PNG)
+
+    def poison(*a):
+        raise AssertionError("결과 없으면 judge 금지")
+    monkeypatch.setattr(pipeline_mod.judge, "judge", poison)
+    monkeypatch.setattr(pipeline_mod, "GRAPH", FakeGraph(_graph_out()), raising=False)
+    pipeline_mod.run_transform("frt", "p")
+    assert storage.load("quality", "frt_p.json") is None
 
 
 # ══ 그래프 연결 ═════════════════════════════════════

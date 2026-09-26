@@ -34,8 +34,9 @@ def transform(req: TransformRequest, background: BackgroundTasks):
 
     # 성적표는 응답을 보낸 뒤 채점 (사용자가 judge 를 기다리지 않게) — 프론트가 폴링
     if out.get("judge_pending"):
-        background.add_task(pipeline.judge_later, req.file_id, req.preset,
-                            out.get("trace_id"), out.get("trace_span_id"))
+        background.add_task(pipeline.judge_and_save, req.file_id, req.preset,
+                            trace_id=out.get("trace_id"),
+                            parent_span_id=out.get("trace_span_id"))
 
     quality = None
     if not out.get("judge_pending"):   # 채점 대기 중이면 지금 있는 파일은 옛 것뿐 (삭제 실패 시)

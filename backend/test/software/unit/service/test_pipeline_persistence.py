@@ -148,7 +148,7 @@ def test_run_transform_with_result_writes_results_row(monkeypatch, make_png):
         "checks": [{"what": "얼룩", "preserved": True}], "gate_passed": True,
     })
     monkeypatch.setattr(pipeline_mod, "save_inspect", lambda s: {})
-    monkeypatch.setattr(pipeline_mod, "run_judge", lambda s: {})
+    monkeypatch.setattr(pipeline_mod, "judge_and_save", lambda f, p, **kw: None)
     monkeypatch.setattr(pipeline_mod, "finalize", lambda s: {"bubbles": []})
 
     pipeline_mod.run_transform_with_result("fid-dev", "preset_d", make_png())
