@@ -253,6 +253,8 @@ def test_value_without_setflags_is_cached_as_is(monkeypatch):
 # ══ patch_similarity: 누끼 쌍 패치 단위 국소 유사도 ══════════
 # 실제 DINO 는 절대 안 부른다 — _patch_tokens 를 작은 합성 토큰 격자로, _align 은 항등으로 바꾼다.
 import io  # noqa: E402
+import contextlib
+import sys
 import types  # noqa: E402
 
 from PIL import Image  # noqa: E402
@@ -700,6 +702,9 @@ def _fake_model(monkeypatch, n_tokens, dim=4, seed=0):
         calls.append(("model", inputs))
         return types.SimpleNamespace(last_hidden_state=_Arr(hidden))
     monkeypatch.setattr(embedder_mod, "_load", lambda: (model, processor))
+    # CI 는 torch 를 설치하지 않는다 — _patch_tokens 가 쓰는 no_grad 만 흉내 낸 가짜를 끼운다
+    monkeypatch.setitem(sys.modules, "torch",
+                        types.SimpleNamespace(no_grad=contextlib.nullcontext))
     return hidden, calls
 
 
