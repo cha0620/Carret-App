@@ -66,7 +66,25 @@ function renderBubbles(bubbles) {
   });
 }
 
-function renderGate(passed) {
+// res = transform 응답. 무엇을 보여주는지(원본/합성/생성)에 따라 문구가 달라야 정직하다.
+function renderGate(res) {
+  const show = (text, color) => {
+    gateBadge.hidden = false;
+    gateBadge.textContent = text;
+    gateBadge.style.color = color;
+  };
+  if (res.status === 'blocked') {
+    return show('⛔ 변환 결과가 검사를 통과하지 못해 원본 사진을 그대로 보여드려요', '#c0392b');
+  }
+  if (res.mode === 'composite') {
+    return res.detect_failed
+      ? show('⚠️ 하자 검사를 하지 못해, 원본 물건 사진에 배경만 바꿨어요', '#b9770e')
+      : show('🛡️ 하자·글자를 지키려고 원본 물건 사진에 배경만 바꿨어요', '#2a7f2a');
+  }
+  if (res.detect_failed) {
+    return show('⚠️ 하자 검사를 하지 못했습니다 — 생성 이미지에서 하자가 지워졌을 수 있어요', '#c0392b');
+  }
+  const passed = res.gate_passed;
   if (passed === null || passed === undefined) { gateBadge.hidden = true; return; }
   gateBadge.hidden = false;
   gateBadge.textContent = passed
@@ -84,6 +102,7 @@ function resetZoom() {
 }
 
 function clearResults() {
+  stopQualityPoll();
   overlay.innerHTML = '';
   gateBadge.hidden = true;
   qBox.classList.add('hidden');
@@ -126,8 +145,14 @@ function renderMetaChips(res) {
   const considered = res.considered || [];
   if (considered.length) {
     document.getElementById("meta-considered-wrap").style.display = "inline";
-    document.getElementById("meta-considered").innerHTML =
-      considered.map(c => `<span class="chip chip-considered">${c}</span>`).join("");
+    // VLM 출력이라 사진 속 글자로 조작될 수 있다 — innerHTML 금지 (XSS)
+    const wrap = document.getElementById("meta-considered");
+    wrap.replaceChildren(...considered.map(c => {
+      const chip = document.createElement("span");
+      chip.className = "chip chip-considered";
+      chip.textContent = c;
+      return chip;
+    }));
   } else {
     document.getElementById("meta-considered-wrap").style.display = "none";
   }

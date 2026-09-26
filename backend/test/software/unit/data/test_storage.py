@@ -87,6 +87,9 @@ class FakeS3Backend:
     def exists(self, kind: str, name: str) -> bool:
         return (kind, name) in self.data
 
+    def delete(self, kind: str, name: str) -> None:
+        self.data.pop((kind, name), None)
+
 
 def _force_fake_s3(monkeypatch, data: dict | None = None) -> FakeS3Backend:
     """storage.BACKEND 를 가짜 S3Backend 로 바꿔치기 (실제 AWS 호출 없음)."""
@@ -191,3 +194,87 @@ def test_local_backend_single_lookup_no_double_query(tmp_storage, monkeypatch):
     calls.clear()
     assert storage.load("quality", "ghost.json") is None
     assert len(calls) == 1  # 못 찾아도 폴백 재호출 없이 한 번만
+
+
+# ===== delete() =====
+
+def test_local_delete_removes_file(tmp_storage, monkeypatch):
+    _force_local(monkeypatch)
+    storage.save("quality", "d.json", b"{}")
+    storage.delete("quality", "d.json")
+    assert not (tmp_storage / "quality" / "d.json").exists()
+    assert storage.load("quality", "d.json") is None
+
+
+def test_local_delete_missing_is_noop(tmp_storage, monkeypatch):
+    _force_local(monkeypatch)
+    storage.delete("quality", "never.json")          # 예외 없음
+    storage.delete("quality", "never.json")          # 두 번 불러도
+
+
+def test_local_delete_rejects_path_escape(tmp_storage, monkeypatch):
+    import pytest
+    _force_local(monkeypatch)
+    victim = tmp_storage.parent / "outside.txt"
+    victim.write_bytes(b"keep")
+    with pytest.raises(ValueError):
+        storage.delete("quality", "../../outside.txt")
+    assert victim.read_bytes() == b"keep"
+
+
+def test_delete_with_s3_backend_also_removes_local_copy(tmp_storage, monkeypatch):
+    """S3 에서만 지우면 load 의 로컬 폴백으로 옛 파일이 되살아난다."""
+    fake = _force_fake_s3(monkeypatch, {("quality", "f.json"): b"s3"})
+    (tmp_storage / "quality" / "f.json").write_bytes(b"local")
+
+    storage.delete("quality", "f.json")
+
+    assert ("quality", "f.json") not in fake.data
+    assert not (tmp_storage / "quality" / "f.json").exists()
+    assert storage.load("quality", "f.json") is None
+    assert storage.exists("quality", "f.json") is False
+
+
+def test_delete_with_s3_backend_local_only_copy(tmp_storage, monkeypatch):
+    _force_fake_s3(monkeypatch, {})
+    (tmp_storage / "quality" / "f.json").write_bytes(b"local")
+    storage.delete("quality", "f.json")
+    assert storage.load("quality", "f.json") is None
+
+
+def test_delete_with_s3_backend_missing_everywhere(tmp_storage, monkeypatch):
+    _force_fake_s3(monkeypatch, {})
+    storage.delete("quality", "nowhere.json")        # 예외 없음
+
+
+def test_s3_backend_delete_calls_delete_object_with_prefixed_key():
+    calls = []
+
+    class FakeClient:
+        def delete_object(self, **kw):
+            calls.append(kw)
+
+    b = storage.S3Backend.__new__(storage.S3Backend)   # boto3 클라이언트 생성 우회
+    b.bucket, b.prefix, b.s3 = "bkt", "pre", FakeClient()
+    b.delete("quality", "x.json")
+    assert calls == [{"Bucket": "bkt", "Key": "pre/quality/x.json"}]
+
+
+def test_delete_s3_error_propagates(tmp_storage, monkeypatch):
+    """storage.delete 는 백엔드 오류를 삼키지 않는다 — 삼키는 건 호출부(pipeline._clear_quality)."""
+    import pytest
+    fake = _force_fake_s3(monkeypatch, {})
+
+    def boom(kind, name):
+        raise PermissionError("AccessDenied")
+    fake.delete = boom
+    with pytest.raises(PermissionError):
+        storage.delete("quality", "f.json")
+
+
+def test_local_delete_only_target_file(tmp_storage, monkeypatch):
+    _force_local(monkeypatch)
+    storage.save("quality", "a.json", b"{}")
+    storage.save("quality", "a_inspect.json", b"{}")
+    storage.delete("quality", "a.json")
+    assert storage.load("quality", "a_inspect.json") == b"{}"

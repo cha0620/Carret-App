@@ -387,3 +387,109 @@ def test_detect_drops_anchors_without_what(monkeypatch):
     monkeypatch.setattr(detector, "_call", lambda *a, **k: {"defects": [
         {"what": "", "where": "x"}, {"what": "stain", "where": "sleeve"}]})
     assert [a["what"] for a in detector.detect_defects(b"img")] == ["stain"]
+
+
+
+# ── detect_defects: 빈/깨진 응답 — strict 면 실패, 기본은 [] ──
+MALFORMED = [
+    {},                              # JSON 파싱 실패 → _call 이 {} 반환
+    {"defects": None},
+    {"defects": "none"},
+    {"defects": {"what": "stain"}},
+    {"other": []},
+    [],
+    None,
+    "defects",
+]
+
+
+@pytest.mark.parametrize("resp", MALFORMED)
+def test_detect_malformed_response_raises_when_strict(monkeypatch, resp):
+    from app.services.ai import detector
+    monkeypatch.setattr(detector, "_call", lambda *a, **k: resp)
+    with pytest.raises(ValueError):
+        detector.detect_defects(b"img", strict=True)
+
+
+@pytest.mark.parametrize("resp", MALFORMED)
+def test_detect_malformed_response_returns_empty_by_default(monkeypatch, resp):
+    """eval/dev 호출부(기본 strict=False)는 예전처럼 [] — 배치가 한 건에 멈추지 않게."""
+    from app.services.ai import detector
+    monkeypatch.setattr(detector, "_call", lambda *a, **k: resp)
+    assert detector.detect_defects(b"img") == []
+    assert detector.detect_defects(b"img", "chair", ["stain"], strict=False) == []
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_detect_empty_defects_list_is_no_defects(monkeypatch, strict):
+    """빈 목록은 '하자 없음' — strict 여도 예외가 아니다."""
+    from app.services.ai import detector
+    monkeypatch.setattr(detector, "_call", lambda *a, **k: {"defects": []})
+    assert detector.detect_defects(b"img", strict=strict) == []
+
+
+def test_detect_strict_valid_response_same_as_default(monkeypatch):
+    from app.services.ai import detector
+    resp = {"defects": [{"category": "stain", "what": "stain", "where": "sleeve"}]}
+    monkeypatch.setattr(detector, "_call", lambda *a, **k: resp)
+    assert detector.detect_defects(b"img", strict=True) == detector.detect_defects(b"img")
+    assert detector.detect_defects(b"img", strict=True)[0]["what"] == "stain"
+
+
+def test_detect_strict_is_keyword_only():
+    from app.services.ai import detector
+    with pytest.raises(TypeError):
+        detector.detect_defects(b"img", "chair", [], True)
+
+
+def test_detect_strict_error_message_truncated(monkeypatch):
+    from app.services.ai import detector
+    monkeypatch.setattr(detector, "_call", lambda *a, **k: {"x": "y" * 1000})
+    with pytest.raises(ValueError) as ei:
+        detector.detect_defects(b"img", strict=True)
+    assert len(str(ei.value)) < 300
+
+
+def test_detect_unknown_category_becomes_other(monkeypatch):
+    from app.services.ai import detector
+    monkeypatch.setattr(detector, "_call", lambda *a, **k: {"defects": [
+        {"category": "alien", "what": "dent", "where": "top"}]})
+    assert detector.detect_defects(b"img")[0]["category"] == "other"
+
+
+# ── read_item_text(strict=...) : 가드용 결과 읽기 ──
+@pytest.mark.parametrize("resp", [{}, {"texts": None}, {"texts": "NIKE"},
+                                  {"texts": {"text": "a"}}, {"item_box_2d": [0, 0, 1, 1]}])
+def test_read_item_text_strict_raises_without_texts_list(monkeypatch, resp):
+    from app.services.ai import detector
+    monkeypatch.setattr(detector, "_call", lambda *a, **k: resp)
+    with pytest.raises(ValueError):
+        detector.read_item_text(b"img", "shoe", strict=True)
+
+
+@pytest.mark.parametrize("resp", [{}, {"item_box_2d": None}])
+def test_read_item_text_default_tolerates_missing_texts(monkeypatch, resp):
+    """read_text(원본) 경로는 기본값 — 빈 응답이면 글자 없음으로 진행."""
+    from app.services.ai import detector
+    monkeypatch.setattr(detector, "_call", lambda *a, **k: resp)
+    assert detector.read_item_text(b"img")["texts"] == []
+
+
+def test_read_item_text_strict_empty_list_is_no_text(monkeypatch):
+    from app.services.ai import detector
+    monkeypatch.setattr(detector, "_call", lambda *a, **k: {"texts": []})
+    assert detector.read_item_text(b"img", strict=True)["texts"] == []
+
+
+def test_read_item_text_strict_valid_same_as_default(monkeypatch):
+    from app.services.ai import detector
+    resp = {"texts": [{"text": " NIKE "}, {"text": ""}, "junk"]}
+    monkeypatch.setattr(detector, "_call", lambda *a, **k: resp)
+    assert detector.read_item_text(b"img", strict=True) == detector.read_item_text(b"img")
+    assert [t["text"] for t in detector.read_item_text(b"img", strict=True)["texts"]] == ["NIKE"]
+
+
+def test_read_item_text_strict_is_keyword_only():
+    from app.services.ai import detector
+    with pytest.raises(TypeError):
+        detector.read_item_text(b"img", "shoe", True)

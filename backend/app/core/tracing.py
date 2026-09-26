@@ -46,8 +46,21 @@ def get_langfuse():
     return _client
 
 
+def current_trace_id() -> str | None:
+    """지금 observe() 컨텍스트의 트레이스 id — 요청이 끝난 뒤 백그라운드 작업이
+    같은 트레이스에 이어 붙을 때 넘겨준다 (observe(trace_id=...)). 없으면 None."""
+    lf = get_langfuse()
+    if lf is None:
+        return None
+    try:
+        return lf.get_current_trace_id()
+    except Exception:   # 트레이스 id 는 부가 정보 — 없다고 변환을 실패시키지 않는다
+        return None
+
+
 @contextlib.contextmanager
-def observe(name: str, as_type: str = "span", **kw):
+def observe(name: str, as_type: str = "span", *, trace_id: str | None = None,
+            parent_span_id: str | None = None, **kw):
     """Langfuse 있으면 실제 observation(span/generation/...)을 현재 컨텍스트에
     push하고 그 객체를 넘겨준다(`.update(output=..., ...)`로 결과를 채우면 됨).
     Langfuse 없으면(키 미설정/비활성) 아무 일도 안 하는 noop 컨텍스트 — `None`을
@@ -57,6 +70,10 @@ def observe(name: str, as_type: str = "span", **kw):
     if lf is None:
         yield None
         return
+    if trace_id:
+        # 다른 스레드/요청 뒤에 이어 붙기 — 컨텍스트가 없으니 트레이스를 직접 지정
+        kw["trace_context"] = {"trace_id": trace_id,
+                               **({"parent_span_id": parent_span_id} if parent_span_id else {})}
     with lf.start_as_current_observation(name=name, as_type=as_type, **kw) as obs:
         yield obs
 

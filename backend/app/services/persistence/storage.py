@@ -42,6 +42,9 @@ class LocalBackend:
     def exists(self, kind: str, name: str) -> bool:
         return _safe_path(kind, name).exists()
 
+    def delete(self, kind: str, name: str) -> None:
+        _safe_path(kind, name).unlink(missing_ok=True)
+
 
 class S3Backend:
     def __init__(self):
@@ -73,6 +76,9 @@ class S3Backend:
             return True
         except ClientError:
             return False
+
+    def delete(self, kind: str, name: str) -> None:
+        self.s3.delete_object(Bucket=self.bucket, Key=self._key(kind, name))
 
 
 _LOCAL = LocalBackend()   # 읽기 폴백 전용 — 백엔드 전환 전 저장된 로컬 fixture 접근용
@@ -113,6 +119,14 @@ def exists(kind: str, name: str) -> bool:
     if BACKEND.exists(kind, name):
         return True
     return BACKEND is not _LOCAL and _LOCAL.exists(kind, name)
+
+
+def delete(kind: str, name: str) -> None:
+    """없어도 조용히 끝난다. load 가 로컬로 폴백하므로 로컬 사본도 지운다
+    (안 지우면 S3 에서 지운 파일이 로컬 폴백으로 되살아난다)."""
+    BACKEND.delete(kind, name)
+    if BACKEND is not _LOCAL:
+        _LOCAL.delete(kind, name)
 
 
 def load_original(file_id: str) -> bytes | None:
