@@ -124,6 +124,7 @@ def _expected(out, *, judge_pending=False, trace_id=None, trace_span_id=None):
         "mode": out.get("mode", "generate"),
         "composite_reason": out.get("composite_reason"),
         "detect_failed": out.get("detect_failed", False),
+        "verify_failed": out.get("verify_failed", False),
         "judge_pending": judge_pending,
         "trace_id": trace_id,
         "trace_span_id": trace_span_id,
@@ -344,6 +345,7 @@ def test_run_transform_real_mode_enabled_tracing_updates_obs_and_flushes(monkeyp
         "visual_similarity": 0.87,
         "gen_attempts": 1, "photo_check": {"valid": True, "reason": ""},
         "mode": "generate", "composite_reason": None, "detect_failed": False,
+        "verify_failed": False,
     }}]
     assert fake_lf.flushed is True
 
@@ -404,7 +406,8 @@ def test_run_transform_with_result_disabled_tracing_returns_expected_shape(monke
         "prompt_used": "TEST: provided result (generate skipped)",
         "checks": checks, "bubbles": bubbles_out, "gate_passed": True,
         "item": "chair", "considered": ["scratch"], "visual_similarity": 0.91,
-        "detect_failed": False, "status": "pass",
+        "detect_failed": False, "verify_failed": False, "mode": "generate",
+        "status": "pass",
     }
     assert storage.load("result", "fid4_preset_d.jpg") is not None
 
@@ -567,6 +570,7 @@ def test_dev_graph_real_nodes_detect_failed_gate_false_no_generate(monkeypatch, 
 
 # ── 출력 가드 폴백 정책 (validate_result) ──
 from app.services.quality.guards import GuardResult, run_output_guards as _ORIG_RUN_OUTPUT_GUARDS
+from app.services.ai.detector import verify_and_locate as _ORIG_VERIFY_AND_LOCATE
 
 ORIG_COLOR = (120, 90, 60)   # make_png 기본색
 GEN_COLOR = (250, 250, 250)
@@ -610,7 +614,7 @@ def _patch_graph_deps(monkeypatch, make_png, guard_side_effects):
         calls["judge"] += 1
         return {"analysis": "ok", "fidelity": 5, "realism": 5, "trust": 5}
 
-    def fake_verify(img, anchors, item, considered):
+    def fake_verify(img, anchors, item, considered, **kw):
         calls["verify"] += 1
         return [{"what": a["what"], "preserved": True} for a in anchors]
 
@@ -810,10 +814,24 @@ def test_guard_retry_raising_leaves_no_generated_image(monkeypatch, make_png):
 
 
 def test_guard_retry_does_not_consume_photo_budget(monkeypatch, make_png):
+    """check_photo 는 가드와 동시에 시작하므로 가드가 막은 1번째 생성본에도 불릴 수
+    있다 (결과는 버림, 시작 전이면 취소). 호출 순서가 스레드에 따라 바뀔 수 있어 next(iter) 대신 생성본마다
+    다른 이미지를 만들고 이미지로 판정을 고른다: 1번(가드 차단)=버려질 invalid,
+    2번(seed 재시도)=invalid → 재생성, 3번=valid."""
     monkeypatch.setattr(settings, "max_generate_attempts", 2, raising=False)
     calls = _patch_graph_deps(monkeypatch, make_png, [[_hard_fail()], [], []])
-    checks = iter([{"valid": False, "reason": "cropped"}, {"valid": True, "reason": ""}])
-    monkeypatch.setattr(pipeline_mod.detector, "check_photo", lambda img: next(checks))
+    gens = [make_png(color=(10 + 40 * i, 20, 30)) for i in range(3)]
+    verdicts = {gens[0]: {"valid": False, "reason": "discarded"},
+                gens[1]: {"valid": False, "reason": "cropped"},
+                gens[2]: {"valid": True, "reason": ""}}
+
+    def gen(original, preset, seed=None):
+        calls["gen_seeds"].append(seed)
+        return gens[len(calls["gen_seeds"]) - 1]
+    monkeypatch.setattr(pipeline_mod, "_generate_ai", gen)
+    photo_calls = []
+    monkeypatch.setattr(pipeline_mod.detector, "check_photo",
+                        lambda img: photo_calls.append(img) or verdicts[img])
 
     out = pipeline_mod.GRAPH.invoke({"file_id": "fid-g", "preset_key": "studio_white"})
 
@@ -822,6 +840,11 @@ def test_guard_retry_does_not_consume_photo_budget(monkeypatch, make_png):
     assert seeds[0] is None and isinstance(seeds[1], int) and seeds[2] is None
     assert out["gen_attempts"] == 2
     assert out["status"] == "pass"
+    assert out["photo_check"] == {"valid": True, "reason": ""}
+    # 통과한 2·3번은 반드시 검사. 차단된 1번은 시작 전이면 취소되고, 이미 시작했으면
+    # 호출되지만 결과는 버려진다 — 어느 쪽이든 예산을 쓰지 않는다 (타이밍 의존이라 둘 다 허용).
+    assert gens[1] in photo_calls and gens[2] in photo_calls
+    assert len(photo_calls) in (2, 3) and set(photo_calls) <= set(gens)
 
 
 def test_hard_fail_after_guard_retry_used_goes_to_composite_then_blocks(monkeypatch, make_png):
@@ -976,7 +999,7 @@ def _verify_seq(monkeypatch, seq):
     it = iter(seq)
     calls = []
 
-    def fake_verify(img, anchors, item, considered):
+    def fake_verify(img, anchors, item, considered, **kw):
         calls.append(img)
         return [{"what": "얼룩", "preserved": next(it)}]
     monkeypatch.setattr(pipeline_mod.detector, "verify_and_locate", fake_verify)
@@ -1185,13 +1208,13 @@ def test_verify_blocked_with_targets_no_call(monkeypatch):
 def test_verify_no_targets_skips_vlm_and_gate_none(monkeypatch):
     _no_vlm_verify(monkeypatch)
     s = {"anchors": [], "item_texts": [], "detect_failed": False}
-    assert pipeline_mod.verify(s) == {"checks": [], "gate_passed": None}
+    assert pipeline_mod.verify(s) == {"checks": [], "gate_passed": None, "verify_failed": False}
 
 
 def test_verify_composite_mode_excludes_text_targets(monkeypatch):
     seen = []
     monkeypatch.setattr(pipeline_mod.detector, "verify_and_locate",
-                        lambda img, t, i, c: seen.append(t) or
+                        lambda img, t, i, c, **kw: seen.append(t) or
                         [{"what": x["what"], "preserved": True} for x in t])
     anchor = {"category": "other", "what": "얼룩", "where": "앞면"}
     out = pipeline_mod.verify({"anchors": [anchor], "item_texts": [{"text": "ABC"}],
@@ -1203,16 +1226,97 @@ def test_verify_composite_mode_texts_only_skips_vlm(monkeypatch):
     _no_vlm_verify(monkeypatch)
     out = pipeline_mod.verify({"anchors": [], "item_texts": [{"text": "ABC"}],
                                "mode": "composite", "result_name": "r.jpg"})
-    assert out == {"checks": [], "gate_passed": None}
+    assert out == {"checks": [], "gate_passed": None, "verify_failed": False}
 
 
-def test_verify_vlm_exception_leaves_gate_none(monkeypatch):
-    def boom(*a, **k):
-        raise RuntimeError("vlm down")
-    monkeypatch.setattr(pipeline_mod.detector, "verify_and_locate", boom)
-    out = pipeline_mod.verify({"anchors": [{"category": "other", "what": "a", "where": "b"}],
+# ── verify 호출 실패 ≠ "보존됨" (예전엔 gate None 으로 남아 통과됐다) ──
+_ANCHOR = {"category": "other", "what": "a", "where": "b"}
+
+
+class _Calls(list):
+    def __init__(self):
+        super().__init__()
+        self.kwargs = []
+
+
+def _verify_raises(monkeypatch, seq):
+    """verify_and_locate 가 seq 항목을 차례로: Exception 이면 raise, 아니면 반환.
+    호출 kwargs 는 calls.kwargs 에 남는다."""
+    it = iter(seq)
+    calls = _Calls()
+    kwargs = calls.kwargs
+
+    def fake(img, targets, item, considered, **kw):
+        calls.append(img)
+        kwargs.append(kw)
+        v = next(it)
+        if isinstance(v, Exception):
+            raise v
+        return v
+    monkeypatch.setattr(pipeline_mod.detector, "verify_and_locate", fake)
+    return calls
+
+
+def test_verify_vlm_exception_twice_generate_mode_fails_gate(monkeypatch, no_detect_sleep):
+    calls = _verify_raises(monkeypatch, [RuntimeError("vlm down"), TimeoutError("t/o")])
+    out = pipeline_mod.verify({"anchors": [_ANCHOR], "result_name": "r.jpg"})
+    assert out == {"checks": [], "verify_failed": True, "gate_passed": False}
+    assert len(calls) == pipeline_mod.VERIFY_ATTEMPTS == 2
+    # 시도 사이 1회만 쉰다 (마지막 실패 뒤엔 안 쉼)
+    assert no_detect_sleep == [pipeline_mod.DETECT_RETRY_DELAY_S]
+
+
+@pytest.mark.parametrize("mode", ["generate", "composite_failed"])
+def test_verify_vlm_exception_non_composite_modes_fail_gate(monkeypatch, mode):
+    _verify_raises(monkeypatch, [RuntimeError("x"), RuntimeError("y")])
+    out = pipeline_mod.verify({"anchors": [_ANCHOR], "result_name": "r.jpg", "mode": mode})
+    assert out["verify_failed"] is True and out["gate_passed"] is False
+
+
+def test_verify_vlm_exception_twice_composite_mode_is_unverified(monkeypatch):
+    _verify_raises(monkeypatch, [RuntimeError("x"), RuntimeError("y")])
+    out = pipeline_mod.verify({"anchors": [_ANCHOR], "result_name": "r.jpg",
+                               "mode": "composite"})
+    assert out == {"checks": [], "verify_failed": True, "gate_passed": None}
+
+
+def test_verify_first_fail_then_success(monkeypatch, no_detect_sleep):
+    checks = [{"what": "a", "preserved": True}]
+    calls = _verify_raises(monkeypatch, [RuntimeError("429"), checks])
+    out = pipeline_mod.verify({"anchors": [_ANCHOR], "result_name": "r.jpg"})
+    assert out == {"checks": checks, "verify_failed": False, "gate_passed": True}
+    assert len(calls) == 2
+    assert no_detect_sleep == [pipeline_mod.DETECT_RETRY_DELAY_S]
+
+
+def test_verify_first_success_no_retry_no_sleep(monkeypatch, no_detect_sleep):
+    checks = [{"what": "a", "preserved": False}]
+    calls = _verify_raises(monkeypatch, [checks])
+    out = pipeline_mod.verify({"anchors": [_ANCHOR], "result_name": "r.jpg"})
+    assert out == {"checks": checks, "verify_failed": False, "gate_passed": False}
+    assert len(calls) == 1 and no_detect_sleep == []
+
+
+def test_verify_retry_reuses_loaded_result(monkeypatch):
+    """저장본은 한 번만 읽고 두 시도가 같은 바이트로 검사한다."""
+    storage.save("result", "r.jpg", GEN_PNG)
+    saved = storage.load("result", "r.jpg")
+    loads = []
+    real_load = storage.load
+    monkeypatch.setattr(pipeline_mod.storage, "load",
+                        lambda kind, name: loads.append((kind, name)) or real_load(kind, name))
+    calls = _verify_raises(monkeypatch, [RuntimeError("x"), [{"what": "a", "preserved": True}]])
+    pipeline_mod.verify({"anchors": [_ANCHOR], "result_name": "r.jpg"})
+    assert loads == [("result", "r.jpg")]
+    assert calls == [saved, saved]
+
+
+def test_verify_success_short_answer_fails_gate_via_expected(monkeypatch):
+    """성공이어도 답이 대상 수보다 적으면 all_preserved(expected=) 가 실패 처리."""
+    _verify_raises(monkeypatch, [[{"what": "a", "preserved": True}]])
+    out = pipeline_mod.verify({"anchors": [_ANCHOR, {**_ANCHOR, "what": "b"}],
                                "result_name": "r.jpg"})
-    assert out == {"checks": [], "gate_passed": None}
+    assert out["verify_failed"] is False and out["gate_passed"] is False
 
 
 @pytest.mark.parametrize("state,expected", [
@@ -1225,6 +1329,12 @@ def test_verify_vlm_exception_leaves_gate_none(monkeypatch):
     ({"gate_passed": False, "detect_failed": True, "mode": "composite_failed"}, "done"),
     ({"gate_passed": True, "detect_failed": True}, "done"),
     ({"gate_passed": None}, "done"),
+    # verify 호출 실패: 재생성 없이 바로 배경 교체 (재시도 전이든 후든)
+    ({"gate_passed": False, "verify_failed": True}, "composite"),
+    ({"gate_passed": False, "verify_failed": True, "gate_retried": True}, "composite"),
+    ({"gate_passed": None, "verify_failed": True, "mode": "composite"}, "done"),
+    ({"gate_passed": False, "verify_failed": True, "mode": "composite_failed"}, "done"),
+    ({"gate_passed": False, "verify_failed": False}, "regen"),
 ])
 def test_route_after_verify_detect_failed(state, expected):
     assert pipeline_mod._route_after_verify(state) == expected
@@ -1393,7 +1503,7 @@ def test_graph_text_heavy_goes_to_composite_without_generate(monkeypatch, make_p
     reads = _text_reader(monkeypatch, _texts(12), [])
     seen = []
     monkeypatch.setattr(pipeline_mod.detector, "verify_and_locate",
-                        lambda img, t, i, c: seen.append(t) or
+                        lambda img, t, i, c, **kw: seen.append(t) or
                         [{"what": x["what"], "preserved": True} for x in t])
 
     out = pipeline_mod.run_transform("fid-g", "studio_white")
@@ -1666,7 +1776,7 @@ def test_verify_expected_counts_text_targets(monkeypatch):
     """앵커 1 + 글자 1 인데 verify 가 1개만 답하면 게이트 실패."""
     seen = {}
 
-    def fake_verify(img, targets, item, considered):
+    def fake_verify(img, targets, item, considered, **kw):
         seen["targets"] = targets
         return [{"what": "얼룩", "preserved": True}]
     monkeypatch.setattr(pipeline_mod.detector, "verify_and_locate", fake_verify)
@@ -1682,7 +1792,7 @@ def test_verify_expected_counts_text_targets(monkeypatch):
 def test_verify_text_only_targets_still_gated(monkeypatch):
     calls = []
     monkeypatch.setattr(pipeline_mod.detector, "verify_and_locate",
-                        lambda img, t, i, c: calls.append(t) or
+                        lambda img, t, i, c, **kw: calls.append(t) or
                         [{"what": x["what"], "preserved": True} for x in t])
     out = pipeline_mod.verify({"anchors": [], "item_texts": [{"text": "ABC"}],
                                "result_name": "none.jpg"})
@@ -1697,7 +1807,7 @@ def test_lost_text_triggers_gate_retry_with_note(monkeypatch, make_png):
     rounds = iter([False, True])
     seen_targets = []
 
-    def fake_verify(img, targets, item, considered):
+    def fake_verify(img, targets, item, considered, **kw):
         seen_targets.append(targets)
         ok = next(rounds)
         return [{"what": t["what"], "preserved": ok or t["category"] != "print"}
@@ -2348,3 +2458,443 @@ def test_key_texts_short_text_not_dropped_by_substring_of_print_anchor():
     assert "ON" in got          # 2글자 — 중복 판단 대상 아님
     assert "NIKE" not in got    # 단어로 들어 있음 → 중복
     assert "IKE" in got         # "nike" 의 일부일 뿐 단어 아님
+
+
+# ══ validate_result: check_photo 를 가드와 동시에 (백그라운드) ══
+class _FakeFuture:
+    """_in_background 가 돌려줄 가짜 Future — cancel/result 호출을 기록."""
+    def __init__(self, value=None, exc=None):
+        self.value, self.exc = value, exc
+        self.cancelled = 0
+        self.result_timeouts = []
+
+    def cancel(self):
+        self.cancelled += 1
+        return True
+
+    def result(self, timeout=None):
+        self.result_timeouts.append(timeout)
+        if self.exc is not None:
+            raise self.exc
+        return self.value
+
+
+def _spy_background(monkeypatch, future):
+    submitted = []
+    monkeypatch.setattr(pipeline_mod, "_in_background",
+                        lambda fn, *a: submitted.append((fn, a)) or future)
+    return submitted
+
+
+def test_validate_result_block_still_calls_check_photo_but_ignores_it(monkeypatch):
+    """가드가 막아도 check_photo 는 (동시에 시작했으니) 불린다 — 결과는 버린다."""
+    photo = []
+    monkeypatch.setattr(pipeline_mod.detector, "check_photo",
+                        lambda img: photo.append(img) or {"valid": False, "reason": "cropped"})
+    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [_hard_fail()])
+
+    out = pipeline_mod.validate_result(_validate_state())
+
+    assert out["guard_retry"] is True
+    assert "photo_check" not in out and "status" not in out
+    # 취소는 시작 전일 때만 된다 — 이미 시작했다면 끝까지 돈다. 여기선 시작 여부가
+    # 스레드 타이밍에 달려 있어 "호출됐다면 결과 이미지로" 만 확인한다.
+    assert photo in ([], [GEN_PNG])
+
+
+def test_validate_result_block_submits_check_photo_then_cancels(monkeypatch):
+    fut = _FakeFuture({"valid": False, "reason": "x"})
+    submitted = _spy_background(monkeypatch, fut)
+    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [_hard_fail()])
+
+    out = pipeline_mod.validate_result(_validate_state(guard_seed=1))
+
+    assert submitted == [(pipeline_mod.detector.check_photo, (GEN_PNG,))]
+    assert fut.cancelled == 1 and fut.result_timeouts == []
+    assert out["guard_failed"] is True and "photo_check" not in out
+
+
+def test_validate_result_block_check_photo_really_runs_in_graph_when_started(monkeypatch):
+    """실제 풀: check_photo 가 가드보다 먼저 시작되도록 가드를 잠깐 붙잡으면
+    (취소 불가 상태) 차단된 시도에서도 확실히 호출된다."""
+    import threading
+    started = threading.Event()
+    photo = []
+
+    def check(img):
+        photo.append(img)
+        started.set()
+        return {"valid": False, "reason": "cropped"}
+
+    def guards(*a):
+        assert started.wait(5)
+        return [_hard_fail()]
+    monkeypatch.setattr(pipeline_mod.detector, "check_photo", check)
+    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", guards)
+
+    out = pipeline_mod.validate_result(_validate_state())
+
+    assert photo == [GEN_PNG]
+    assert "photo_check" not in out and out["guard_retry"] is True
+
+
+def test_validate_result_guard_exception_cancels_photo_and_reraises(monkeypatch):
+    fut = _FakeFuture({"valid": True, "reason": ""})
+    _spy_background(monkeypatch, fut)
+
+    def boom(*a):
+        raise RuntimeError("guard crashed")
+    monkeypatch.setattr(pipeline_mod, "_run_guards", boom)
+
+    with pytest.raises(RuntimeError, match="guard crashed"):
+        pipeline_mod.validate_result(_validate_state())
+    assert fut.cancelled == 1
+    assert storage.load("result", "v_p.jpg") is None
+
+
+def test_validate_result_guard_keyboard_interrupt_also_cancels(monkeypatch):
+    """BaseException 도 취소 후 그대로 올린다."""
+    fut = _FakeFuture()
+    _spy_background(monkeypatch, fut)
+
+    def boom(*a):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(pipeline_mod, "_run_guards", boom)
+
+    with pytest.raises(KeyboardInterrupt):
+        pipeline_mod.validate_result(_validate_state())
+    assert fut.cancelled == 1
+
+
+def test_validate_result_pass_waits_with_timeout_and_uses_photo(monkeypatch):
+    fut = _FakeFuture({"valid": False, "reason": "cropped"})
+    _spy_background(monkeypatch, fut)
+    monkeypatch.setattr(settings, "vlm_timeout_s", 7)
+    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [])
+
+    out = pipeline_mod.validate_result(_validate_state())
+
+    assert fut.result_timeouts == [17]
+    assert fut.cancelled == 0
+    assert out["photo_check"] == {"valid": False, "reason": "cropped"}
+    assert out["status"] == "pass"
+
+
+def test_validate_result_saves_before_waiting_for_photo(monkeypatch):
+    """가드 통과 → 저장이 photo.result() 보다 먼저."""
+    order = []
+
+    class F(_FakeFuture):
+        def result(self, timeout=None):
+            order.append(("wait", storage.load("result", "v_p.jpg") is not None))
+            return {"valid": True, "reason": ""}
+    _spy_background(monkeypatch, F())
+    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [])
+
+    pipeline_mod.validate_result(_validate_state())
+
+    assert order == [("wait", True)]
+
+
+@pytest.mark.parametrize("exc", [RuntimeError("vlm down"), TimeoutError()])
+def test_validate_result_photo_failure_or_timeout_is_valid(monkeypatch, exc):
+    _spy_background(monkeypatch, _FakeFuture(exc=exc))
+    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [])
+
+    out = pipeline_mod.validate_result(_validate_state())
+
+    assert out["photo_check"] == {"valid": True, "reason": ""}
+    assert out["status"] == "pass"
+
+
+def test_validate_result_check_photo_exception_in_real_pool_gives_valid(monkeypatch):
+    """check_photo 는 스스로 예외를 삼키지만, 바꿔 끼운 함수가 던져도 Future 에서
+    나온 예외를 validate_result 가 삼켜 valid=True."""
+    def boom(img):
+        raise RuntimeError("vlm down")
+    monkeypatch.setattr(pipeline_mod.detector, "check_photo", boom)
+    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [])
+
+    out = pipeline_mod.validate_result(_validate_state())
+
+    assert out["photo_check"] == {"valid": True, "reason": ""}
+
+
+def test_validate_result_real_check_photo_vlm_failure_gives_valid(monkeypatch):
+    """실제 detector.check_photo + 실패하는 VLM 클라이언트 → 개방형 폴백."""
+    def no_client():
+        raise ConnectionError("no network")
+    monkeypatch.setattr(pipeline_mod.detector, "get_client", no_client)
+    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [])
+
+    out = pipeline_mod.validate_result(_validate_state())
+
+    assert out["photo_check"] == {"valid": True, "reason": ""}
+
+
+def test_validate_result_photo_real_timeout_gives_valid(monkeypatch):
+    """check_photo 가 상한(vlm_timeout_s + 10)보다 오래 걸리면 기다리지 않고 valid=True."""
+    import threading
+    release = threading.Event()
+
+    def slow(img):
+        release.wait(5)
+        return {"valid": False, "reason": "late"}
+    monkeypatch.setattr(pipeline_mod.detector, "check_photo", slow)
+    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [])
+    # 설정 검증(ge=1)을 우회해 상한을 0.05초로 — 실제 대기 없이 타임아웃 경로 확인
+    monkeypatch.setattr(settings, "vlm_timeout_s", -9.95)
+    try:
+        out = pipeline_mod.validate_result(_validate_state())
+    finally:
+        release.set()
+
+    assert out["photo_check"] == {"valid": True, "reason": ""}
+
+
+def test_validate_result_check_photo_bound_at_submit_time(monkeypatch):
+    """제출 시점의 detector.check_photo 가 쓰인다 — 가드 도중 바꿔 끼워도 영향 없음."""
+    monkeypatch.setattr(pipeline_mod.detector, "check_photo",
+                        lambda img: {"valid": False, "reason": "first"})
+
+    def guards(*a):
+        monkeypatch.setattr(pipeline_mod.detector, "check_photo",
+                            lambda img: {"valid": True, "reason": "second"})
+        return []
+    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", guards)
+
+    out = pipeline_mod.validate_result(_validate_state())
+
+    assert out["photo_check"] == {"valid": False, "reason": "first"}
+
+
+def test_validate_result_propagates_contextvars_to_check_photo(monkeypatch):
+    """_in_background 가 현재 컨텍스트를 복사해 넘긴다 — 트레이스가 끊기지 않게."""
+    import contextvars
+    import threading
+    var = contextvars.ContextVar("trace_ctx_test", default="unset")
+    seen = {}
+
+    def check(img):
+        seen["value"] = var.get()
+        seen["thread"] = threading.current_thread().name
+        return {"valid": True, "reason": ""}
+    monkeypatch.setattr(pipeline_mod.detector, "check_photo", check)
+    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [])
+
+    token = var.set("trace-abc")
+    try:
+        pipeline_mod.validate_result(_validate_state())
+    finally:
+        var.reset(token)
+
+    assert seen["value"] == "trace-abc"
+    assert seen["thread"] != threading.current_thread().name
+    assert seen["thread"].startswith("pipeline")
+
+
+def test_in_background_context_is_a_copy_not_shared():
+    """백그라운드에서 바꾼 contextvar 는 호출한 쪽에 새지 않는다."""
+    import contextvars
+    var = contextvars.ContextVar("copy_test", default="outer")
+
+    def mutate():
+        before = var.get()
+        var.set("inner")
+        return before, var.get()
+
+    assert pipeline_mod._in_background(mutate).result(timeout=5) == ("outer", "inner")
+    assert var.get() == "outer"
+
+
+def test_in_background_forwards_args_and_exceptions():
+    assert pipeline_mod._in_background(lambda a, b: a + b, 2, 3).result(timeout=5) == 5
+
+    def boom():
+        raise ValueError("x")
+    with pytest.raises(ValueError):
+        pipeline_mod._in_background(boom).result(timeout=5)
+
+
+# ══ retryable: 다시 해도 똑같을 실패는 재시도하지 않는다 ══
+def _client_error(code):
+    from google.genai import errors
+    return errors.ClientError(code, {"error": {"code": code, "message": "m", "status": "S"}})
+
+
+def test_verify_passes_strict_true(monkeypatch):
+    calls = _verify_raises(monkeypatch, [[{"what": "a", "preserved": True}]])
+    pipeline_mod.verify({"anchors": [_ANCHOR], "result_name": "r.jpg"})
+    assert calls.kwargs == [{"strict": True}]
+
+
+@pytest.mark.parametrize("exc", [_client_error(400), TypeError("sig"), KeyError("k"),
+                                 AttributeError("a")])
+def test_verify_non_retryable_error_single_attempt(monkeypatch, no_detect_sleep, exc):
+    calls = _verify_raises(monkeypatch, [exc, [{"what": "a", "preserved": True}]])
+    out = pipeline_mod.verify({"anchors": [_ANCHOR], "result_name": "r.jpg"})
+    assert out == {"checks": [], "verify_failed": True, "gate_passed": False}
+    assert len(calls) == 1 and no_detect_sleep == []
+
+
+@pytest.mark.parametrize("exc", [_client_error(429), ValueError("no checks"), TimeoutError()])
+def test_verify_retryable_error_retries(monkeypatch, no_detect_sleep, exc):
+    checks = [{"what": "a", "preserved": True}]
+    calls = _verify_raises(monkeypatch, [exc, checks])
+    out = pipeline_mod.verify({"anchors": [_ANCHOR], "result_name": "r.jpg"})
+    assert out == {"checks": checks, "verify_failed": False, "gate_passed": True}
+    assert len(calls) == 2 and no_detect_sleep == [pipeline_mod.DETECT_RETRY_DELAY_S]
+
+
+def test_verify_non_retryable_uses_pipeline_retryable_name(monkeypatch, no_detect_sleep):
+    """pipeline 은 retryable 을 이름으로 가져온다 — 그 이름을 바꾸면 판정이 바뀐다."""
+    monkeypatch.setattr(pipeline_mod, "retryable", lambda e: False)
+    calls = _verify_raises(monkeypatch, [RuntimeError("x"), RuntimeError("y")])
+    out = pipeline_mod.verify({"anchors": [_ANCHOR], "result_name": "r.jpg",
+                               "mode": "composite"})
+    assert out == {"checks": [], "verify_failed": True, "gate_passed": None}
+    assert len(calls) == 1
+
+
+def test_verify_strict_bad_response_via_real_verify_and_locate(monkeypatch, no_detect_sleep):
+    """실제 verify_and_locate(strict=True) + _call 이 {} (JSON 깨짐) → ValueError →
+    재시도 1회 → 그래도 {} 면 verify_failed (예전처럼 '전부 사라짐'이 아니다)."""
+    seen = []
+    monkeypatch.setattr(pipeline_mod.detector, "_call",
+                        lambda img, prompt, name="": seen.append(name) or {})
+    out = pipeline_mod.verify({"anchors": [_ANCHOR], "result_name": "r.jpg"})
+    assert out == {"checks": [], "verify_failed": True, "gate_passed": False}
+    assert seen == ["verify", "verify"]
+
+
+@pytest.mark.parametrize("exc", [_client_error(400), TypeError("sig")])
+def test_detect_non_retryable_error_single_attempt(monkeypatch, no_detect_sleep, exc):
+    calls = _detect_seq(monkeypatch, [exc, []])
+    out = pipeline_mod.detect({"original": b"x"})
+    assert out == {"anchors": [], "detect_failed": True}
+    assert len(calls) == 1 and no_detect_sleep == []
+
+
+def test_detect_429_is_retried(monkeypatch, no_detect_sleep):
+    calls = _detect_seq(monkeypatch, [_client_error(429), []])
+    assert pipeline_mod.detect({"original": b"x"}) == {"anchors": [], "detect_failed": False}
+    assert len(calls) == 2 and no_detect_sleep == [pipeline_mod.DETECT_RETRY_DELAY_S]
+
+
+# ══ 전체 그래프: verify 호출 실패 → 재생성 없이 배경 교체 ══
+def test_graph_verify_always_fails_goes_composite_without_regen(monkeypatch, make_png):
+    calls = _patch_graph_deps(monkeypatch, make_png, [[]])
+    vcalls = _verify_raises(monkeypatch, [RuntimeError("vlm down")] * 4)
+
+    out = pipeline_mod.run_transform("fid-g", "studio_white")
+
+    assert calls["gen_seeds"] == [None]                 # FLUX 1회 — 재생성 없음
+    assert calls["compose"] == 1
+    assert out["mode"] == "composite"
+    assert out["composite_reason"] == "verify_failed"
+    assert out["verify_failed"] is True                 # 합성본 verify 도 실패
+    assert out["gate_passed"] is None                   # 합성본은 원본 물건 픽셀 → 미검증
+    assert out["detect_failed"] is False
+    assert len(vcalls) == 2 * pipeline_mod.VERIFY_ATTEMPTS
+    ins = json.loads(storage.load("quality", "fid-g_studio_white_inspect.json"))
+    assert ins["verify_failed"] is True and ins["composite_reason"] == "verify_failed"
+    assert ins.get("gate_retried") in (None, False)
+
+
+def test_graph_verify_fails_on_generate_then_ok_on_composite(monkeypatch, make_png):
+    """생성본 verify 실패 → 배경 교체 → 합성본 verify 성공: verify_failed 는 최신값(False)."""
+    calls = _patch_graph_deps(monkeypatch, make_png, [[]])
+    _verify_raises(monkeypatch, [RuntimeError("a"), RuntimeError("b"),
+                                 [{"what": "얼룩", "preserved": True}]])
+
+    out = pipeline_mod.run_transform("fid-g", "studio_white")
+
+    assert calls["gen_seeds"] == [None]
+    assert out["mode"] == "composite" and out["composite_reason"] == "verify_failed"
+    assert out["verify_failed"] is False and out["gate_passed"] is True
+
+
+def test_graph_verify_first_raises_then_succeeds_takes_normal_path(monkeypatch, make_png,
+                                                                     no_detect_sleep):
+    calls = _patch_graph_deps(monkeypatch, make_png, [[]])
+    vcalls = _verify_raises(monkeypatch, [TimeoutError("t/o"),
+                                          [{"what": "얼룩", "preserved": True}]])
+
+    out = pipeline_mod.run_transform("fid-g", "studio_white")
+
+    assert calls["gen_seeds"] == [None] and calls["compose"] == 0
+    assert out["mode"] == "generate" and out["composite_reason"] is None
+    assert out["verify_failed"] is False and out["gate_passed"] is True
+    assert len(vcalls) == 2
+    assert pipeline_mod.DETECT_RETRY_DELAY_S in no_detect_sleep
+
+
+def test_graph_verify_bad_json_goes_composite_not_regen(monkeypatch, make_png):
+    """strict verify: _call 이 {} 이면 예전엔 '전부 사라짐' → 재생성이었지만 이제
+    verify_failed → 바로 배경 교체."""
+    calls = _patch_graph_deps(monkeypatch, make_png, [[]])
+    monkeypatch.setattr(pipeline_mod.detector, "verify_and_locate",
+                        _ORIG_VERIFY_AND_LOCATE)
+    monkeypatch.setattr(pipeline_mod.detector, "_call", lambda img, prompt, name="": {})
+
+    out = pipeline_mod.run_transform("fid-g", "studio_white")
+
+    assert calls["gen_seeds"] == [None]
+    assert out["mode"] == "composite" and out["composite_reason"] == "verify_failed"
+    assert out["verify_failed"] is True
+
+
+def test_graph_verify_fail_with_composite_failure_keeps_unverified_generate(monkeypatch, make_png):
+    """verify 실패 → 배경 교체마저 실패 → 생성본을 유지하되 '검증 못 함'으로 드러낸다
+    (gate False + verify_failed True, 재생성·재검사 없음). 오리기 실패 반환에는
+    composite_reason 이 없어 None (gate_failed 경로와 같은 기존 동작)."""
+    calls = _patch_graph_deps(monkeypatch, make_png, [[]])
+    vcalls = _verify_raises(monkeypatch, [RuntimeError("x")] * 8)
+    _compose_fails(monkeypatch, calls)
+
+    out = pipeline_mod.run_transform("fid-g", "studio_white")
+
+    assert calls["gen_seeds"] == [None] and calls["compose"] == 1
+    assert out["mode"] == "composite_failed" and out["status"] == "pass"
+    assert out["gate_passed"] is False and out["verify_failed"] is True
+    assert out["composite_reason"] is None
+    assert len(vcalls) == pipeline_mod.VERIFY_ATTEMPTS
+
+
+@pytest.mark.parametrize("state,expected", [
+    ({"verify_failed": True}, "verify_failed"),
+    ({"verify_failed": True, "detect_failed": True}, "detect_failed"),
+    ({"verify_failed": True, "composite_reason": "guard_failed"}, "guard_failed"),
+    ({}, "gate_failed"),
+    ({"verify_failed": False}, "gate_failed"),
+])
+def test_composite_reason_default_priority(monkeypatch, state, expected):
+    _compose_ok(monkeypatch)
+    out = pipeline_mod.composite(_comp_state(**state))
+    assert out["composite_reason"] == expected
+
+
+def test_run_transform_with_result_includes_verify_failed_and_mode(monkeypatch, make_png):
+    """dev 그래프는 재생성·배경 교체 루프가 없다 — verify 실패가 결과에 그대로 드러난다."""
+    _patch_graph_deps(monkeypatch, make_png, [[]])
+    vcalls = _verify_raises(monkeypatch, [RuntimeError("x")] * 2)
+
+    out = pipeline_mod.run_transform_with_result("fid-g", "studio_white",
+                                                 make_png(color=GEN_COLOR))
+
+    assert out["verify_failed"] is True and out["gate_passed"] is False
+    assert out["mode"] == "generate"
+    assert out["detect_failed"] is False and out["status"] == "pass"
+    assert len(vcalls) == pipeline_mod.VERIFY_ATTEMPTS
+
+
+def test_run_transform_obs_output_includes_verify_failed(monkeypatch):
+    fake_lf = _enable_fake_langfuse(monkeypatch)
+    monkeypatch.setattr(pipeline_mod, "GRAPH", FakeGraph(_graph_out(verify_failed=True)),
+                        raising=False)
+
+    out = pipeline_mod.run_transform("fid2", "preset_b")
+
+    assert out["verify_failed"] is True
+    outputs = [c["output"] for c in fake_lf.obs.update_calls if "output" in c]
+    assert any(o.get("verify_failed") is True for o in outputs)

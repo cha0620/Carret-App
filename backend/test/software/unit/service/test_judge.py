@@ -1,8 +1,8 @@
 """app.services.ai.judge - `_system_prompt` (Langfuse fallback) + `judge()` (VLM 호출
 래퍼) 트레이싱 투명성.
 
-`judge()` 는 `google.genai.Client` 를 새로 만들기 때문에 `judge.genai` 이름을
-가짜 네임스페이스로 바꿔치기해서 실제 네트워크 없이 검증한다(비즈니스 로직
+`judge()` 는 공용 클라이언트 `get_client()` 를 쓰기 때문에 `judge.get_client` 이름을
+가짜 클라이언트 팩토리로 바꿔치기해서 실제 네트워크 없이 검증한다(비즈니스 로직
 변경 없음 확인 목적 - 검증/스코어 클램프 로직은 건드리지 않는다).
 """
 import json
@@ -40,7 +40,7 @@ def test_system_prompt_mentions_korean_analysis_instruction():
     assert "STRICT QC inspector" in text
 
 
-# ── judge(): 가짜 genai 클라이언트 ────────────────
+# ── judge(): 가짜 VLM 클라이언트 ────────────────
 class _Resp:
     def __init__(self, text, usage_metadata=None):
         self.text = text
@@ -58,24 +58,22 @@ class FakeModels:
         return _Resp(self._text, self._usage_metadata)
 
 
-def _make_fake_genai(text, usage_metadata=None):
+def _make_fake_get_client(text, usage_metadata=None):
     models = FakeModels(text, usage_metadata)
 
     class _Client:
-        def __init__(self, **kw):
+        def __init__(self):
             self.models = models
 
-    class _Genai:
-        Client = _Client
-
-    return _Genai(), models
+    client = _Client()
+    return (lambda: client), models
 
 
 def test_judge_disabled_tracing_returns_validated_report_unchanged(monkeypatch):
     import app.services.ai.judge as judge_mod
     raw = {"analysis": "괜찮음", "fidelity": 4, "realism": 6, "trust": 0}
-    fake_genai, models = _make_fake_genai(json.dumps(raw))
-    monkeypatch.setattr(judge_mod, "genai", fake_genai)
+    fake_get_client, models = _make_fake_get_client(json.dumps(raw))
+    monkeypatch.setattr(judge_mod, "get_client", fake_get_client)
 
     report = judge(b"orig", b"result")
 
@@ -117,8 +115,8 @@ def test_judge_enabled_tracing_invokes_obs_update_with_validated_output(monkeypa
     monkeypatch.setattr(tracing, "_client", fake_lf, raising=False)
 
     raw = {"analysis": "굿", "fidelity": 3, "realism": 3, "trust": 3}
-    fake_genai, _ = _make_fake_genai(json.dumps(raw))
-    monkeypatch.setattr(judge_mod, "genai", fake_genai)
+    fake_get_client, _ = _make_fake_get_client(json.dumps(raw))
+    monkeypatch.setattr(judge_mod, "get_client", fake_get_client)
 
     report = judge(b"orig", b"result")
 

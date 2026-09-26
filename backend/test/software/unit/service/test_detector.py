@@ -1,8 +1,9 @@
 """app.services.ai.detector - 순수 함수 + `_call`(VLM 호출 래퍼) 트레이싱 투명성.
 
-`_call`/`match_anchors` 는 `google.genai.Client` 를 새로 만들지만, detector 모듈
-이 `from google import genai` 형태로 임포트하므로 `detector.genai` 이름 자체를
-가짜 네임스페이스로 바꿔치기해서 실제 네트워크 없이 검증한다.
+`_call`/`match_anchors` 는 공용 클라이언트 `app.core.vlm.get_client()` 를 쓰는데,
+detector 모듈이 `from app.core.vlm import get_client` 로 이름을 가져오므로
+`detector.get_client` 자체를 가짜 클라이언트를 돌려주는 함수로 바꿔치기해서
+실제 네트워크 없이 검증한다.
 """
 import json
 
@@ -91,7 +92,7 @@ def test_usage_defaults_falsy_fields_to_zero():
     assert _usage(resp) == {"input": 0, "output": 0, "thoughts": 0, "total": 0}
 
 
-# ── _call(): 가짜 genai 클라이언트 ────────────────
+# ── _call(): 가짜 VLM 클라이언트 ────────────────
 class FakeModels:
     def __init__(self, text, usage_metadata=None):
         self._text = text
@@ -109,25 +110,23 @@ class _Resp2:
         self.usage_metadata = usage_metadata
 
 
-def _make_fake_genai(text, usage_metadata=None):
-    """detector.genai 자리에 넣을 최소 네임스페이스: `.Client(api_key=...)` 가
-    `.models.generate_content(**kw)` 를 갖는 객체를 리턴."""
+def _make_fake_get_client(text, usage_metadata=None):
+    """detector.get_client 자리에 넣을 함수: 호출하면 `.models.generate_content(**kw)`
+    를 갖는 가짜 클라이언트를 리턴."""
     models = FakeModels(text, usage_metadata)
 
     class _Client:
-        def __init__(self, **kw):
+        def __init__(self):
             self.models = models
 
-    class _Genai:
-        Client = _Client
-
-    return _Genai(), models
+    client = _Client()
+    return (lambda: client), models
 
 
 def test_call_disabled_tracing_returns_parsed_json_unchanged(monkeypatch):
     import app.services.ai.detector as detector
-    fake_genai, models = _make_fake_genai(json.dumps({"item": "chair"}))
-    monkeypatch.setattr(detector, "genai", fake_genai)
+    fake_get_client, models = _make_fake_get_client(json.dumps({"item": "chair"}))
+    monkeypatch.setattr(detector, "get_client", fake_get_client)
 
     data = _call(b"imgbytes", "prompt text", "classify")
 
@@ -137,8 +136,8 @@ def test_call_disabled_tracing_returns_parsed_json_unchanged(monkeypatch):
 
 def test_call_json_decode_error_returns_empty_dict(monkeypatch):
     import app.services.ai.detector as detector
-    fake_genai, _ = _make_fake_genai("not valid json{{{")
-    monkeypatch.setattr(detector, "genai", fake_genai)
+    fake_get_client, _ = _make_fake_get_client("not valid json{{{")
+    monkeypatch.setattr(detector, "get_client", fake_get_client)
 
     data = _call(b"imgbytes", "prompt text", "detect")
 
@@ -149,8 +148,8 @@ def test_call_disabled_tracing_does_not_touch_fake_client_beyond_generate_conten
     """트레이싱 비활성이면 obs 는 None 이라 `.update(...)` 를 절대 호출하지
     않는다(호출했다면 AttributeError 로 바로 터졌을 것 - 가드가 없다면)."""
     import app.services.ai.detector as detector
-    fake_genai, _ = _make_fake_genai(json.dumps({"ok": True}))
-    monkeypatch.setattr(detector, "genai", fake_genai)
+    fake_get_client, _ = _make_fake_get_client(json.dumps({"ok": True}))
+    monkeypatch.setattr(detector, "get_client", fake_get_client)
 
     data = _call(b"x", "p", "verify")   # obs=None 경로 - 예외 없이 통과해야 함
     assert data == {"ok": True}
@@ -186,8 +185,8 @@ def test_call_enabled_tracing_invokes_obs_update_with_output_and_usage(monkeypat
     monkeypatch.setattr(tracing, "_client", fake_lf, raising=False)
 
     usage = _Usage(prompt=3, candidates=4, total=7)
-    fake_genai, _ = _make_fake_genai(json.dumps({"item": "lamp"}), usage_metadata=usage)
-    monkeypatch.setattr(detector, "genai", fake_genai)
+    fake_get_client, _ = _make_fake_get_client(json.dumps({"item": "lamp"}), usage_metadata=usage)
+    monkeypatch.setattr(detector, "get_client", fake_get_client)
 
     data = _call(b"imgbytes", "prompt text", "classify")
 
@@ -227,8 +226,8 @@ def test_call_enabled_tracing_json_decode_error_updates_obs_with_empty_output(mo
     monkeypatch.setattr(tracing, "_disabled", False, raising=False)
     monkeypatch.setattr(tracing, "_client", fake_lf, raising=False)
 
-    fake_genai, _ = _make_fake_genai("not json", usage_metadata=None)
-    monkeypatch.setattr(detector, "genai", fake_genai)
+    fake_get_client, _ = _make_fake_get_client("not json", usage_metadata=None)
+    monkeypatch.setattr(detector, "get_client", fake_get_client)
 
     data = _call(b"x", "p", "detect")
 
@@ -239,8 +238,8 @@ def test_call_enabled_tracing_json_decode_error_updates_obs_with_empty_output(mo
 # ── check_photo(): 재생성 게이트 ──────────────────
 def test_check_photo_valid_true(monkeypatch):
     import app.services.ai.detector as detector
-    fake_genai, _ = _make_fake_genai(json.dumps({"valid": True, "reason": ""}))
-    monkeypatch.setattr(detector, "genai", fake_genai)
+    fake_get_client, _ = _make_fake_get_client(json.dumps({"valid": True, "reason": ""}))
+    monkeypatch.setattr(detector, "get_client", fake_get_client)
 
     result = check_photo(b"imgbytes")
 
@@ -249,10 +248,10 @@ def test_check_photo_valid_true(monkeypatch):
 
 def test_check_photo_valid_false_cropped_or_overlay(monkeypatch):
     import app.services.ai.detector as detector
-    fake_genai, _ = _make_fake_genai(
+    fake_get_client, _ = _make_fake_get_client(
         json.dumps({"valid": False, "reason": "caption text covers the product"})
     )
-    monkeypatch.setattr(detector, "genai", fake_genai)
+    monkeypatch.setattr(detector, "get_client", fake_get_client)
 
     result = check_photo(b"imgbytes")
 
@@ -277,8 +276,8 @@ def test_check_photo_malformed_json_falls_through_to_valid_true(monkeypatch):
     """_call 이 JSON 파싱 실패 시 {} 를 반환하는 기존 경로 → check_photo 는
     data.get("valid", True) 로 True 에 안전 착지."""
     import app.services.ai.detector as detector
-    fake_genai, _ = _make_fake_genai("not valid json{{{")
-    monkeypatch.setattr(detector, "genai", fake_genai)
+    fake_get_client, _ = _make_fake_get_client("not valid json{{{")
+    monkeypatch.setattr(detector, "get_client", fake_get_client)
 
     result = check_photo(b"imgbytes")
 
@@ -493,3 +492,34 @@ def test_read_item_text_strict_is_keyword_only():
     from app.services.ai import detector
     with pytest.raises(TypeError):
         detector.read_item_text(b"img", "shoe", True)
+
+
+# ── match_anchors(): 공용 get_client 경로 ────────────────
+def test_match_anchors_uses_shared_client_and_maps_indices(monkeypatch):
+    """비어 있지 않은 입력이면 get_client() 의 클라이언트로 VLM 을 부르고,
+    matches[j] 인덱스로 matched/missed/new 를 나눈다 (범위 밖·비정수는 new)."""
+    import app.services.ai.detector as detector
+    fake_get_client, models = _make_fake_get_client(json.dumps({"matches": [1, -1, 7]}))
+    monkeypatch.setattr(detector, "get_client", fake_get_client)
+    orig = [{"what": "a", "where": "x"}, {"what": "b", "where": "y"}]
+    result = [{"what": "B", "where": "y"}, {"what": "c", "where": "z"},
+              {"what": "d", "where": "w"}]
+
+    m = match_anchors(orig, result)
+
+    assert models.last_kwargs["model"] == detector.settings.VLM_MODEL
+    assert m["matched"] == [(orig[1], result[0])]
+    assert m["new"] == [result[1], result[2]]
+    assert m["missed"] == [orig[0]]
+
+
+def test_match_anchors_bad_json_treats_all_as_new(monkeypatch):
+    import app.services.ai.detector as detector
+    fake_get_client, _ = _make_fake_get_client("{{nope")
+    monkeypatch.setattr(detector, "get_client", fake_get_client)
+    orig = [{"what": "a", "where": "x"}]
+    result = [{"what": "b", "where": "y"}]
+
+    m = match_anchors(orig, result)
+
+    assert m == {"matched": [], "missed": orig, "new": result}

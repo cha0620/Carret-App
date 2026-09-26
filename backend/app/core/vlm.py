@@ -9,6 +9,7 @@ gemini-3.x flash 는 답하기 전에 속으로 생각하는데, 이 생각 토�
 .env 의 VLM_THINKING='{"verify": "default"}' 처럼 호출별로 덮어쓸 수 있다.
 """
 import logging
+from functools import lru_cache
 
 from google.genai import types
 
@@ -42,3 +43,25 @@ def thinking(name: str) -> types.ThinkingConfig | None:
         # 설정 오타 하나로 매 호출이 SDK 검증 오류를 내지 않게 — 모델 기본값으로
         logger.warning(f"VLM_THINKING[{name}]={level!r} 알 수 없는 값 — 모델 기본값 사용")
     return None
+
+
+@lru_cache(maxsize=1)
+def get_client():
+    """Gemini 클라이언트 하나를 프로세스에서 재사용한다 — 호출마다 새로 만들면
+    매번 새 HTTP 연결(TLS 핸드셰이크)을 맺는다 (변환 1회에 VLM 5~6회).
+    타임아웃: 응답이 멈추면 요청 전체가 무한정 매달리지 않게 — 넘기면 예외가 나고
+    각 호출부의 기존 실패 경로(재시도·폴백·검증 불가)를 탄다."""
+    from google import genai
+    return genai.Client(
+        api_key=settings.VLM_KEY,
+        http_options=types.HttpOptions(timeout=int(settings.vlm_timeout_s * 1000)))
+
+
+def retryable(e: Exception) -> bool:
+    """VLM 호출 실패 중 다시 시도할 가치가 있는 것만 — 타임아웃·429·5xx·깨진 응답.
+    요청 자체가 틀린 4xx(400 INVALID_ARGUMENT 등)나 코드 오류(TypeError)는 다시 해도
+    똑같이 실패하고 지연만 늘린다."""
+    from google.genai import errors
+    if isinstance(e, errors.ClientError):
+        return getattr(e, "code", None) == 429
+    return not isinstance(e, (TypeError, AttributeError, KeyError))

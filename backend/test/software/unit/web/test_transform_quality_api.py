@@ -86,10 +86,21 @@ def test_transform_response_new_fields_passthrough(client, fake_pipeline):
     assert body["judge_pending"] is True
 
 
+def test_transform_response_verify_failed_passthrough(client, fake_pipeline):
+    fake_pipeline["out"] = _out(mode="composite", composite_reason="verify_failed",
+                                verify_failed=True, gate_passed=None)
+    body = _post(client).json()
+    assert body["verify_failed"] is True
+    assert body["detect_failed"] is False
+    assert body["composite_reason"] == "verify_failed"
+    assert body["gate_passed"] is None
+
+
 def test_transform_response_new_fields_defaults(client, fake_pipeline):
     body = _post(client).json()
     assert body["composite_reason"] is None
     assert body["detect_failed"] is False
+    assert body["verify_failed"] is False
     assert body["judge_pending"] is False
     assert body["status"] == "pass"
     assert body["mode"] == "generate"

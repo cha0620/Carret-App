@@ -60,11 +60,13 @@ class TransformResponse(BaseModel):
     considered: list[str] = []
     composite_reason: str | None = Field(
         default=None, description="배경 교체 이유: detect_failed | text_heavy | "
-                                  "many_defects | guard_failed | gate_failed")
+                                  "many_defects | guard_failed | gate_failed | verify_failed")
     judge_pending: bool = Field(default=False,
                                 description="성적표를 응답 뒤에 채점 중 — GET /api/quality/{file_id}/{preset} 폴링")
     status: str = Field(default="pass",
                         description='"pass" | "blocked"(생성본·합성 모두 불가 → 원본 그대로)')
+    verify_failed: bool = Field(default=False,
+                                description="결과 보존 검사(verify) 호출 실패 — 보존 여부를 검증하지 못함")
     detect_failed: bool = Field(default=False,
                                 description="원본 하자 검출 실패 — 보존 여부를 검증하지 못함")
     mode: str = Field(default="generate",

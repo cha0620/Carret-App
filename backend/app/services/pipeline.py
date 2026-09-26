@@ -18,11 +18,13 @@
        run_transform_with_result)는 그래프 직후 바로
 """
 
+import contextvars
 import json
 import logging
 import random
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from typing import TypedDict
 
@@ -30,6 +32,7 @@ from langgraph.graph import END, START, StateGraph
 
 from app.core.config import settings
 from app.core.tracing import current_trace_id, flush, observe, score
+from app.core.vlm import retryable
 from app.prompts.presets import (TEXT_LOCK_MAX_CHARS, get_preset, prompt_safe,
                                  text_lock, text_where)
 from app.prompts.rubric import AXES
@@ -50,13 +53,14 @@ class State(TypedDict, total=False):
     considered: list          # ⭐ classify 산출
     anchors: list
     detect_failed: bool        # detect 가 재시도까지 실패 — "하자 없음"과 구분 (검증 불가)
+    verify_failed: bool        # verify 호출이 재시도까지 실패 — "보존됨"과 구분 (검증 불가)
     item_texts: list           # 원본 물건 위 글자 [{text, x1..}] → generate 프롬프트
     item_box: dict | None      # 원본에서 물건 위치 (0-1000) — 배경 교체 모드의 오리기 범위
     gate_retried: bool         # verify 게이트 실패로 재생성을 이미 1회 했나
     gate_note: str             # 그 재생성 때 프롬프트에 붙인 "사라진 하자" 목록
     mode: str                  # "generate" | "composite"(원본 물건 + 배경만 교체) | "composite_failed"
     composite_reason: str | None   # 배경 교체로 간 이유: detect_failed | text_heavy | many_defects
-                                   #   | guard_failed | gate_failed
+                                   #   | guard_failed | gate_failed | verify_failed
     guard_failed: bool         # 출력 가드가 seed 재시도까지 hard fail
     provided_result: bytes     # dev 그래프: generate 대신 쓸 결과 이미지
     composite_error: str | None
@@ -105,7 +109,8 @@ def read_text(s: State) -> dict:
 
 
 DETECT_ATTEMPTS = 2
-DETECT_RETRY_DELAY_S = 1.0   # 429/일시 장애가 바로 또 나지 않게 잠깐 쉰다
+DETECT_RETRY_DELAY_S = 1.0   # 429/일시 장애가 바로 또 나지 않게 잠깐 쉰다 (verify 도 같이 씀)
+VERIFY_ATTEMPTS = 2
 
 
 def detect(s: State) -> dict:
@@ -120,6 +125,8 @@ def detect(s: State) -> dict:
             return {"anchors": anchors, "detect_failed": False}
         except Exception as e:
             print(f"[detect] 실패 ({attempt}/{DETECT_ATTEMPTS}): {e}")
+            if not retryable(e):
+                break
             if attempt < DETECT_ATTEMPTS:
                 time.sleep(DETECT_RETRY_DELAY_S)
     return {"anchors": [], "detect_failed": True}
@@ -240,12 +247,35 @@ def _run_guards(s: State) -> tuple[str, list, float | None]:
     return verdict, [asdict(g) for g in results if not g.passed], dino
 
 
+# FastAPI 스레드풀(기본 40)과 비슷한 크기 — 작으면 동시 요청이 몰릴 때 check_photo 가
+# 큐에서 기다려 병렬화가 오히려 직렬보다 느려진다.
+_POOL = ThreadPoolExecutor(max_workers=32, thread_name_prefix="pipeline")
+
+
+def _in_background(fn, *args):
+    """fn 을 다른 스레드에서 시작하고 Future 를 돌려준다. 현재 컨텍스트(Langfuse/OTEL
+    트레이스)를 복사해 넘긴다 — 안 그러면 그 스레드의 VLM 호출이 이번 변환 트레이스에서
+    떨어져 별도 트레이스로 찍힌다."""
+    ctx = contextvars.copy_context()
+    return _POOL.submit(ctx.run, fn, *args)
+
+
 def validate_result(s: State) -> dict:
     """① 출력 가드 → ② 결과가 '제대로 된 사진'인지 VLM 으로 확인 (구도가
     잘렸거나 자막/텍스트가 상품을 가리면 invalid). 라우팅(_route_after_validate)이
-    이 결과를 보고 generate 로 되돌릴지 결정한다."""
-    verdict, report, dino = _run_guards(s)
+    이 결과를 보고 generate 로 되돌릴지 결정한다.
+
+    ②(check_photo)는 ①의 OCR 읽기와 서로 독립이라 동시에 시작한다 — 생성 1회당 VLM
+    왕복 1회 절약. 대신 가드가 막은 시도에서도 ②가 호출되고 결과는 버려진다
+    (아직 시작 전이면 취소)."""
+    photo = _in_background(detector.check_photo, s["result"])   # 스스로 예외를 삼킨다
+    try:
+        verdict, report, dino = _run_guards(s)
+    except BaseException:
+        photo.cancel()
+        raise
     if verdict == "block":
+        photo.cancel()
         if s.get("guard_seed") is None:
             seed = random.randint(0, 2**32 - 1)
             print(f"[guards] hard fail, seed={seed} 로 1회 재시도: "
@@ -260,9 +290,11 @@ def validate_result(s: State) -> dict:
 
     storage.save("result", s["result_name"], s["result"])
     try:
-        check = detector.check_photo(s["result"])
+        # 상한: 큐 대기 + VLM 타임아웃. 넘기면 구도 검사를 못 한 것 — check_photo 의
+        # 기존 실패 정책(개방형, valid=True)과 같게.
+        check = photo.result(timeout=settings.vlm_timeout_s + 10)
     except Exception as e:
-        print(f"[validate_result] 실패(무시): {e}")
+        print(f"[validate_result] check_photo 대기 실패(무시): {e}")
         check = {"valid": True, "reason": ""}
     return {"photo_check": check, "guard_retry": False, "status": "pass",
             "guard_report": report, "visual_similarity": dino}
@@ -368,16 +400,26 @@ def verify(s: State) -> dict:
     # 합성본은 물건 픽셀이 원본 — 글자 항목까지 걸면 VLM 오판만으로 "보존 안 됨"
     # 경고가 원본 픽셀 사진에 붙는다. detect 앵커만 확인한다.
     targets = _verify_targets(s, include_texts=(mode == "generate"))
-    if targets:
+    if not targets:
+        return {"checks": checks, "gate_passed": gate_passed, "verify_failed": False}
+    saved = storage.load("result", s["result_name"])
+    for attempt in range(1, VERIFY_ATTEMPTS + 1):
         try:
-            saved = storage.load("result", s["result_name"])
             checks = detector.verify_and_locate(
-                saved, targets,
-                s.get("item", "object"), s.get("considered", []))
-            gate_passed = detector.all_preserved(checks, expected=len(targets))
+                saved, targets, s.get("item", "object"), s.get("considered", []),
+                strict=True)
+            return {"checks": checks, "verify_failed": False,
+                    "gate_passed": detector.all_preserved(checks, expected=len(targets))}
         except Exception as e:
-            print(f"[verify] 실패(무시): {e}")
-    return {"checks": checks, "gate_passed": gate_passed}
+            print(f"[verify] 실패 ({attempt}/{VERIFY_ATTEMPTS}): {e}")
+            if not retryable(e):
+                break
+            if attempt < VERIFY_ATTEMPTS:
+                time.sleep(DETECT_RETRY_DELAY_S)
+    # 호출 실패(타임아웃·429·장애)는 "보존됨"이 아니다 — 예전엔 None 으로 남아 통과됐다.
+    # 생성본은 통과로 치지 않고(→ 배경 교체), 합성본은 물건 픽셀이 원본이라 None.
+    return {"checks": [], "verify_failed": True,
+            "gate_passed": None if mode == "composite" else False}
 
 
 def _route_after_verify(s: State) -> str:
@@ -388,6 +430,8 @@ def _route_after_verify(s: State) -> str:
         return "done"
     if s.get("detect_failed"):
         return "composite"   # 재생성해도 확인할 기준이 없다 (앞선 오리기 실패 후 생성한 경우)
+    if s.get("verify_failed"):
+        return "composite"   # 확인 자체를 못 했다 — 재생성해도 또 확인 못 할 가능성이 크다
     if not s.get("gate_retried"):
         return "regen"
     return "composite"
@@ -408,7 +452,8 @@ def composite(s: State) -> dict:
 
     들어오는 길: plan(생성 전 판단) / validate_result(가드 불합격) / verify(게이트 실패)."""
     reason = s.get("composite_reason") or (
-        "detect_failed" if s.get("detect_failed") else "gate_failed")
+        "detect_failed" if s.get("detect_failed")
+        else "verify_failed" if s.get("verify_failed") else "gate_failed")
     try:
         if s.get("composite_error"):
             # 이번 실행에서 이미 실패한 오리기 — 같은 입력으로 다시 부르지 않는다
@@ -459,6 +504,7 @@ def save_inspect(s: State) -> dict:
             "considered": s.get("considered", []),    # ⭐
             "anchors": s["anchors"],
             "detect_failed": s.get("detect_failed", False),
+            "verify_failed": s.get("verify_failed", False),
             "item_texts": s.get("item_texts", []),
             "mode": s.get("mode", "generate"),
             "composite_reason": s.get("composite_reason"),
@@ -678,6 +724,7 @@ def run_transform(file_id: str, preset_key: str, *, defer_judge: bool = False) -
                 "mode": out.get("mode", "generate"),
                 "composite_reason": out.get("composite_reason"),
                 "detect_failed": out.get("detect_failed", False),
+                "verify_failed": out.get("verify_failed", False),
                 "judge_pending": defer_judge and judged,
                 "trace_id": current_trace_id(),
                 "trace_span_id": getattr(obs, "id", None),
@@ -694,6 +741,7 @@ def run_transform(file_id: str, preset_key: str, *, defer_judge: bool = False) -
                     "mode": result["mode"],
                     "composite_reason": result["composite_reason"],
                     "detect_failed": result["detect_failed"],
+                    "verify_failed": result["verify_failed"],
                 })
     finally:
         # 성공/실패(예외) 상관없이 이번 요청의 트레이스는 즉시 내보낸다 —
@@ -740,6 +788,8 @@ def run_transform_with_result(file_id: str, preset_key: str, result_bytes: bytes
                 "considered": s.get("considered", []),
                 "visual_similarity": s.get("visual_similarity"),
                 "detect_failed": s.get("detect_failed", False),
+                "verify_failed": s.get("verify_failed", False),
+                "mode": s.get("mode", "generate"),
                 "status": s.get("status", "pass"),
             }
             if obs is not None:

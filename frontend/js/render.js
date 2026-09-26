@@ -76,12 +76,14 @@ function renderGate(res) {
   if (res.status === 'blocked') {
     return show('⛔ 변환 결과가 검사를 통과하지 못해 원본 사진을 그대로 보여드려요', '#c0392b');
   }
+  // 검사 자체를 못 함(원본 하자 검출 실패 / 결과 보존 검사 호출 실패) — 통과도 실패도 아님
+  const unchecked = res.detect_failed || res.verify_failed;
   if (res.mode === 'composite') {
-    return res.detect_failed
-      ? show('⚠️ 하자 검사를 하지 못해, 원본 물건 사진에 배경만 바꿨어요', '#b9770e')
+    return unchecked
+      ? show('⚠️ 원본 물건 사진에 배경만 바꿨어요 (하자 검사는 하지 못했어요)', '#b9770e')
       : show('🛡️ 하자·글자를 지키려고 원본 물건 사진에 배경만 바꿨어요', '#2a7f2a');
   }
-  if (res.detect_failed) {
+  if (unchecked) {
     return show('⚠️ 하자 검사를 하지 못했습니다 — 생성 이미지에서 하자가 지워졌을 수 있어요', '#c0392b');
   }
   const passed = res.gate_passed;

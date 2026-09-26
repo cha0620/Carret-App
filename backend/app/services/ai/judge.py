@@ -1,12 +1,11 @@
 """VLM 저지 - Gemini 네이티브 SDK 버전."""
 import json
 
-from google import genai
 from google.genai import types
 
 from app.core.config import settings
 from app.core.prompt_registry import get_prompt_text
-from app.core.vlm import thinking
+from app.core.vlm import get_client, thinking
 from app.core.tracing import gemini_usage, observe
 from app.prompts.rubric import AXES, rubric_text
 
@@ -26,7 +25,7 @@ def _system_prompt() -> str:
 
 
 def judge(original: bytes, result: bytes) -> dict:
-    client = genai.Client(api_key=settings.VLM_KEY)   # .env 키 사용
+    client = get_client()   # 프로세스 공용 (연결 재사용 + 타임아웃)
     user_prompt = ("Image1: ORIGINAL, Image2: RESULT. "
                    "Step1: list differences IN THE PRODUCT. "
                    "Step2: scores. JSON only.")
