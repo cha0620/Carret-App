@@ -21,5 +21,7 @@ Anything intentionally printed, embroidered, or attached by the maker.
 - NOT: stains or dirt that merely resemble text/logo
 
 ## other
-Anything visible that fits none of the above
-(watermark, background object, accessory, hangtag string).
+Anything ON THE ITEM that fits none of the above
+(attached accessory, hangtag string).
+- NOT: photo watermarks, captions, UI overlays, background objects,
+  shadows — these belong to the photo, not the item (see Rules)

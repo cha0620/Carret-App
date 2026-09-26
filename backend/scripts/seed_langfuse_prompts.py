@@ -35,7 +35,7 @@ def prompts_to_seed() -> dict:
     seeds = {
         "classify": frag("role_classify"),
         "detect_box": frag("detect_box"),
-        "detect": detect_template(),
+        "detect_v2": detect_template(),   # 옛 "detect" 는 배포된 옛 서버용으로 그대로 둔다
         "verify": verify_template(),
         "item_text": frag("item_text"),
         "check_photo": check_photo_template(),

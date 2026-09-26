@@ -20,7 +20,7 @@ Carret은 대충 찍은 중고 물품 사진을 깔끔한 스튜디오 스타일
 | **문제** | 생성형 편집 모델은 배경만 바꿔 달라고 해도 흠집을 "고쳐" 버린다. 중고 거래에서는 이게 곧 허위 매물이다 |
 | **해결** | 생성 전에는 프롬프트로 복원을 금지하고, 생성 후에는 VLM 체크리스트 + 로컬 벡터 점수로 하자가 남아 있는지 검증한다 |
 | **스택** | FastAPI · LangGraph · fal.ai (FLUX edit) · Gemini (VLM) · DINOv2 · SQLite · S3 · Langfuse · Vanilla JS |
-| **품질** | 유닛 테스트 699개 (외부 API 호출 없음, CI에서 PR마다 실행) + 실제 API를 호출하는 평가 스위트 (main 브랜치/라벨로 실행) |
+| **품질** | 유닛 테스트 1239개 (외부 API 호출 없음, CI에서 PR마다 실행) + 실제 API를 호출하는 평가 스위트 (main 브랜치/라벨로 실행) |
 
 ---
 
@@ -31,14 +31,15 @@ Carret은 대충 찍은 중고 물품 사진을 깔끔한 스튜디오 스타일
 
 ```mermaid
 flowchart TD
-  L["load<br/>원본 + 프리셋"] --> C["classify<br/>물건 식별 + 체크리스트"]
-  C --> T["read_text<br/>물건 위 글자 + 물건 위치<br/>(TEXT_LOCK)"]
-  C --> D["detect<br/>원본 하자 앵커<br/>(2회 시도, 실패 시 detect_failed)"]
-  T --> P{"plan<br/>생성으로 지킬 수 있나?"}
-  D --> P
-  P -->|"detect 실패 /<br/>잔글씨 많은 물건"| X
-  P -->|ok| G["generate · fal.ai FLUX.2<br/>프리셋 + SECONDHAND_LOCK<br/>+ 원본 글자 목록<br/>(+ 반려 사유 / 사라진 하자)"]
-  G --> V{"validate_result<br/>출력 가드 (OCR 글자 비교)<br/>∥ 구도 잘림·자막 검사"}
+  L["load<br/>원본 + 프리셋"] --> C["classify<br/>물건 식별 + 체크리스트<br/>(lite 모델)"]
+  C --> D["detect<br/>하자 앵커 + 글자 수준(text_level)<br/>+ 물건 위치 (2회 시도, 실패 시 detect_failed)"]
+  D --> P{"plan<br/>생성으로 지킬 수 있나?"}
+  P -->|"detect 실패 /<br/>잔글씨 dense"| X
+  P -->|"글자 simple"| T["read_text<br/>물건 위 글자 (TEXT_LOCK)<br/>12줄 이상이면 배경 교체"]
+  T --> G
+  T -->|text_heavy| X
+  P -->|"글자 none"| G["generate · fal.ai FLUX.2<br/>프리셋 + SECONDHAND_LOCK<br/>+ 원본 글자 목록<br/>(+ 반려 사유 / 사라진 하자)"]
+  G --> V{"validate_result<br/>출력 가드 (OCR 글자 비교)<br/>∥ 구도 잘림·자막 검사<br/>→ 누끼 DINO·패치 비교 (soft)"}
   V -->|"가드 실패 1회차<br/>seed 바꿔 재시도"| G
   V -->|"구도 불량<br/>재생성 한도 남음"| G
   V -->|"가드 2회 실패"| X
@@ -50,7 +51,7 @@ flowchart TD
   VR -->|"호출 2회 실패<br/>(verify_failed)"| X
   VR -->|"실패 2회차"| X["composite · 배경 교체 모드<br/>fal BiRefNet 오리기<br/>(실패 시 로컬 rembg)<br/>+ 프리셋 배경 + 그림자"]
   X -->|"성공 → 다시 확인"| S
-  X -->|"오리기 실패<br/>(생성 전이었으면)"| G
+  X -->|"오리기 실패, 생성 전<br/>(글자 아직 안 읽었으면 read_text)"| G
   X -->|"오리기 실패: 생성본 유지<br/>(가드 불합격이면 blocked = 원본)"| I
   I["save_inspect<br/>디버그 JSON (mode, composite_reason)"] --> F["finalize<br/>말풍선"]
   F -.->|"응답 뒤<br/>(백그라운드)"| J["judge_and_save<br/>fidelity · realism · trust"]
@@ -58,19 +59,26 @@ flowchart TD
 
 1. **classify**: VLM이 물건 종류를 알아내고 "이 물건이면 봐야 할 하자"
    체크리스트를 만든다 (예: 신발이면 밑창 마모, 앞코 주름)
-2. **read_text** (`TEXT_LOCK`, 기본 켬): 원본 물건 **위의** 글자를 읽어 generate
-   프롬프트에 대략 위치와 함께 넣는다 (생성 모델이 작은 글씨·한글을 뭉개는 것을 줄임).
-   물건 위치 박스도 함께 받아 배경 교체 모드에서 쓴다
-3. **detect** (read_text 와 병렬): 원본에서 하자를 찾아 *무엇이 / 어디에* 있는지 앵커로
-   남긴다. 2회 모두 실패하면 "하자 없음"이 아니라 `detect_failed`로 표시한다
-4. **plan**: 생성으로는 정직하게 지킬 수 없는 게 보이면(하자 검출 실패, 잔글씨가 많은
-   물건) 생성을 건너뛰고 바로 배경 교체 모드로 간다
+2. **detect**: 원본에서 하자를 찾아 *무엇이 / 어디에* 있는지 앵커로 남기고, 같은 호출에서
+   물건 위 글자 수준(`text_level`: none / simple / dense)과 물건 위치 박스도 받는다.
+   2회 모두 실패하면 "하자 없음"이 아니라 `detect_failed`로 표시한다.
+   사진 위 워터마크·자막·배경 물건은 하자로 보고하지 않는다
+3. **plan**: 생성으로는 정직하게 지킬 수 없는 게 보이면(하자 검출 실패, 잔글씨 `dense`)
+   생성을 건너뛰고 바로 배경 교체 모드로 간다. 글자가 없으면(`none`) 글자 읽기 없이 바로 생성
+4. **read_text** (`TEXT_LOCK`, 기본 켬, `simple`일 때만): 원본 물건 **위의** 글자를 읽어
+   generate 프롬프트에 대략 위치와 함께 넣는다 (생성 모델이 작은 글씨·한글을 뭉개는 것을 줄임).
+   읽어 보니 12줄 이상이면 배경 교체 모드로 간다 (안전망)
 5. **generate**: 프리셋(화이트 스튜디오 / 우든 테이블 / 미니멀 그레이)으로
    배경을 교체한다. 모든 프롬프트에 `SECONDHAND_LOCK`(복원·보정 금지)이
    붙는다
 6. **validate_result**: 먼저 출력 가드 — 결과 물건 위 글자를 다시 읽어 원본과 줄 단위로
    비교한다. hard 실패는 seed 를 바꿔 1회 재시도, 그래도 실패면 배경 교체 모드로.
    구도 검사(check_photo)는 이 OCR 읽기와 **병렬**로 돈다 (가드가 막으면 취소).
+   가드를 통과하면 check_photo를 기다리는 동안 원본·결과에서 **물건만 누끼를 따서** 같은 회색 배경에 놓고 DINOv2로 비교한다
+   (`item_dino`, soft — 물건이 통째로 바뀌거나 형태·색·무늬가 달라진 것을 잡는다).
+   같은 누끼 쌍을 ECC 로 정렬한 뒤 DINO **패치** 단위로도 비교한다 (`item_patch`, soft —
+   물건 안쪽 패치의 하위 1%, 흠집 한 줄처럼 한 군데만 바뀐 것을 보려는 값).
+   `LOCAL_OCR_GUARD=true`면 EasyOCR 로 글자를 한 번 더 읽는다 (`ocr_local`, soft, eval 용).
    결과가 잘리거나 자막이 덮였으면 **반려 사유를 프롬프트에 붙여서** 다시
    생성한다. 같은 프롬프트로 다시 돌리지 않고, 재시도 횟수는 설정으로 상한을 둔다
 7. **score_similarity**: VLM과 별개인 DINOv2 임베딩 유사도 (가드가 계산한 값 재사용)
@@ -191,7 +199,7 @@ study/      날짜별 개발 로그: 버그 원인, 설계 판단, 뒤집은 결
 가드) 세 단계에 모두 걸었습니다. 모델을 믿지 않고 검증하는 구조입니다.
 
 **2. LLM의 판단과 결정론적 지표를 나눴다**
-VLM judge는 프롬프트나 모델 버전에 따라 흔들립니다. 그래서 DINOv2 유사도,
+VLM judge는 프롬프트나 모델 버전에 따라 흔들립니다. 그래서 DINOv2 유사도(전체·누끼 딴 물건),
 OCR 글자 매칭 같은 결정론적 신호를 따로 두었습니다
 (`quality/guards.py`). 가드는 계산이 실패했을 때 자동으로 통과시키지 않고
 (fail-open 금지) 예외를 그대로 올립니다. 검사 단계(detect, verify) 호출이 실패하면
@@ -213,7 +221,7 @@ Langfuse로 트레이싱과 프롬프트 버전을 관리하고, 외부 의존�
 
 **5. 테스트 가능한 구조**
 외부 호출은 `services/ai/`에만 모여 있어서 목(mock)으로 갈아 끼우기 쉽습니다.
-그래서 유닛 테스트 699개가 네트워크 없이 약 12초 안에 끝납니다
+그래서 유닛 테스트 1239개가 네트워크 없이 약 25초 안에 끝납니다
 (`unit/conftest.py`가 실수로 실제 VLM을 부르는 것도 막습니다). dev 리플레이
 (`run_transform_with_result`)는 생성 단계만 건너뛰고 **프로덕션 노드 함수를
 그대로 호출**합니다. 로직을 복사해 두지 않았기 때문에 테스트와 실제 동작이
@@ -244,6 +252,9 @@ uvicorn main:app --reload   # http://localhost:8000 (프론트 포함)
 | `LANGFUSE_PUBLIC_KEY` / `SECRET_KEY` | 없으면 트레이싱과 프롬프트 관리가 noop |
 | `VLM_TIMEOUT_S` | VLM 호출 1회 타임아웃 (기본 60초) |
 | `VLM_THINKING` | 호출별 생각 수준 덮어쓰기, 예: `{"verify": "default", "judge": "low"}` (정수 = 생각 토큰 상한) |
+| `VLM_MEDIA_RESOLUTION` | 호출별 이미지 해상도 덮어쓰기 (`low`/`medium`/`high`/`default`), 예: `{"check_photo": "high"}`. 이미지 토큰은 픽셀 크기가 아니라 이 등급으로 정해진다 |
+| `VLM_MODELS` | 호출별 모델 덮어쓰기 (없으면 `VLM_MODEL`), 예: `{"classify": "gemini-3.5-flash-lite"}` |
+| `LOCAL_OCR_GUARD=true` | EasyOCR 로 글자 보존을 한 번 더 재는 soft 가드 (eval 용, easyocr 별도 설치) |
 
 ### 테스트
 
@@ -295,6 +306,10 @@ make docs    # 레포의 .md 를 브라우저로 보기 (http://localhost:8090, 
 - **바이트와 메타데이터 분리**: 이미지는 storage(local/S3)에, 메타데이터는
   SQLite에 둔다
 - **외부 연동은 전부 선택 사항**: Langfuse, S3가 없어도 앱은 똑같이 동작한다
+- **VLM 비용은 호출마다 다르게**: 이미지 토큰은 픽셀 크기가 아니라 해상도 등급으로 정해진다
+  (gemini-3.x: low 268 / high 1,066). 큰 그림만 보는 호출(품목 분류·구도 확인)은 low + lite 모델,
+  작은 흠집·글씨를 보는 호출(detect·verify·글자 읽기)은 high. 모든 호출에 생각 토큰 상한
+  (`vlm.py` 의 `DEFAULT_THINKING` / `DEFAULT_MEDIA_RESOLUTION` / `DEFAULT_MODELS`)
 
 ---
 
@@ -320,12 +335,27 @@ make docs    # 레포의 .md 를 브라우저로 보기 (http://localhost:8090, 
 | 가장 보수적인 경로(blocked = 원본 반환)가 KeyError로 500 | 분기가 늘면 "이 노드까지 오는 모든 길에서 이 키가 채워지나"를 따진다. `TypedDict(total=False)`는 못 잡는다 |
 | judge가 그래프 노드와 `judge_later` 두 벌 | "왜 이렇게 돼 있지?"는 호출부를 grep 해서 실제로 읽는 곳을 보고 답한다. 동기 채점이 필요한 곳은 없었다 |
 | 병렬화 뒤 테스트가 `.env` 키로 실제 Gemini를 부름. 가짜가 새 인자를 못 받아 엉뚱한 경로로 통과 | 가짜(fake)는 실제 시그니처를 따라가야 한다. 안 그러면 "통과하지만 엉뚱한 걸 검사하는" 테스트가 된다 |
+| 판매처 워터마크를 "보존할 하자"로 잡아 멀쩡한 생성본이 게이트에서 떨어짐 | 모델 탓이 아니었다 — 프롬프트의 카테고리 예시에 "watermark"가 있었다. 오탐은 프롬프트부터 읽는다 |
+| 글자 읽기 호출 1번이 생각 토큰 62,912개($0.57) — 최근 500건 비용의 25% | 상한을 건 호출만 안전하다. 새 VLM 호출을 만들면 생각 설정도 같이 정한다 |
+| VLM 비용을 줄이려고 이미지를 줄여 보내려 함 | `count_tokens`(무료)로 먼저 쟀더니 384px 여도 토큰이 그대로 — 비용은 해상도 등급·생각 토큰이 정한다 |
+| fal CDN 이 500 에러 페이지(HTML)를 돌려줬는데 그걸 이미지로 넘겨 PIL 이 터짐 | 외부 다운로드는 상태 코드부터 확인한다. 5xx 는 1회 재시도, 리다이렉트는 따라간다 |
+| 모델 비교에서 3.8-flash 의 품목 분류가 17/17 실패 | 모델 탓이 아니라 우리 설정(`thinking_level="minimal"`)을 그 모델이 거부. 모델을 바꿀 땐 호출 설정도 같이 바꾼다 |
 
 ---
 
 ## 📝 최근 변경
 
+**2026-09-26 (밤)**
+- **기본 VLM 모델 3.5-flash → 3.8-flash**: 진짜 하자 사진 19장에서 진짜 하자는 3.5 만큼 찾고,
+  3.5 가 잡던 헛하자(물결 테두리·빈티지 마감)는 안 잡음. 단가 절반. 품목 분류·구도 확인은 3.5-flash-lite
+- **VLM 비용**: 호출별 해상도(low/high)·모델·생각 상한. 한 장 약 $0.035~0.045 (실측, FLUX 포함)
+- **`text_level` 분기**: detect 가 글자 수준을 함께 판단 → 글자 없으면 글자 읽기 생략,
+  잔글씨 많으면 바로 배경 교체. 새 응답 형식은 Langfuse `detect_v2` (배포된 옛 서버는 `detect` 그대로)
+- **워터마크 오탐 수정**, 새 soft 가드 `item_patch`(누끼 패치 비교)·`ocr_local`(EasyOCR)
+- **fal 다운로드 버그**: 에러 페이지를 이미지로 넘기던 것 → 상태 확인 + 5xx 재시도
+
 **2026-09-26**
+- **상품 DINO 가드**: 한 번도 안 돌던 좌표 크롭 가드를 지우고, 누끼 딴 물건끼리 비교하는 `item_dino`(soft)
 - **파이프라인 게이트 구멍 해소** (PR #19): detect 실패를 `detect_failed`로, judge 캐시 제거,
   OCR 출력 가드 연결, 생성 전 `plan` 라우팅, 글자 사후검증, dev 경로 = 운영 그래프,
   UI에 blocked·composite 상태 표시, `considered` XSS 수정
@@ -369,7 +399,14 @@ make docs    # 레포의 .md 를 브라우저로 보기 (http://localhost:8090, 
 - [x] 원본 글자를 생성 프롬프트에 넣기 (`TEXT_LOCK`, 기본 켬)
 - [x] detect / verify 호출 실패를 통과로 치지 않기 (`detect_failed`, `verify_failed`)
 - [ ] eval 로 임계값 검증: OCR 가드 오차단률, `text_heavy` 기준(12줄), composite 비율
-- [ ] 앵커 크롭 가드 (`_guard_anchors`, `embedder.crop_sim` 없음) — 살릴지 지울지
+- [x] 좌표 크롭 가드 제거 → 누끼 딴 물건끼리 비교하는 `item_dino` (soft)
+- [ ] `item_dino` 기준값(지금 0.80, 경험값 없음)을 eval 분포로 정하고 hard 로 올릴지 결정
+- [ ] 생성 모델이 지키지 못하는 작은 하자(흠집 등)를 어떻게 다룰지 — 원본 픽셀 되붙이기 등 검토
+  (패치 단위 비교는 `item_patch` soft 로 넣음, 기준값은 eval 로)
+- [x] VLM 비용 제어: 호출별 해상도·모델·생각 상한, 기본 모델 3.8-flash
+- [x] 글자 수준(`text_level`)으로 글자 읽기 생략 / 바로 배경 교체
+- [ ] 배경 교체 결과 품질: 구도 다시 잡기(시중 제품 사진 수준) · 비생성형 업스케일
+- [ ] 채점(judge)을 표본만 돌리거나 배치 모드로 (지금 가장 비싼 VLM 호출)
 - [ ] detect 정밀도: printed 와 surface_damage 구분 (현재 R/P 0.67)
 - [ ] 한글 글자 깨짐 판정: 줄 단위 크롭 비교 또는 한글 특화 OCR (로컬 EasyOCR/PaddleOCR은 부정확·불안정)
 - [ ] verify 게이트를 하자별 id로 매칭 (지금은 개수만 확인)

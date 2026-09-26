@@ -42,25 +42,33 @@ class Settings(BaseSettings):              # ⭐ 대문자 클래스
     composite_first_min_anchors: int = Field(default=0, ge=0)
     # 배경 교체 모드의 물건 오리기: "fal"(BiRefNet, 기본) | "local"(rembg)
     cutout_backend: str = "fal"
+    # 로컬 OCR(EasyOCR) 로 글자 보존을 한 번 더 재는 soft 가드 (ocr_local). CPU 수 초·메모리
+    # 수백 MB 라 기본은 끔 — eval 돌릴 때만 켠다. easyocr 는 requirements 에 없다 (따로 설치).
+    local_ocr_guard: bool = False
 
     # VLM (소문자 통일)
     VLM_KEY: str = ""
-    VLM_MODEL: str = "gemini-3.5-flash"
+    VLM_MODEL: str = "gemini-3.8-flash"   # 2026-09-26 3.5 → 3.8 (헛하자↓·단가 ½, app/core/vlm.py 참고)
     # VLM 호출 1회 타임아웃(초). verify(생각 2048 토큰)도 보통 10~20초 — 여유를 두되
     # 재시도(×2)까지 겹쳐 요청 전체가 수 분으로 늘지 않게. 1 미만은 ms 변환 시 0 = 무제한이 된다.
     vlm_timeout_s: float = Field(default=60, ge=1)
     # 호출 이름별 생각 수준 덮어쓰기 (기본값은 app/core/vlm.py DEFAULT_THINKING)
     vlm_thinking: Annotated[dict[str, str | int], NoDecode] = Field(default_factory=dict)
+    # 호출 이름별 이미지 해상도 덮어쓰기 (기본값은 app/core/vlm.py DEFAULT_MEDIA_RESOLUTION)
+    vlm_media_resolution: Annotated[dict[str, str], NoDecode] = Field(default_factory=dict)
+    # 호출 이름별 모델 덮어쓰기 (없으면 VLM_MODEL). 예: {"classify": "gemini-3.5-flash-lite"}
+    vlm_models: Annotated[dict[str, str], NoDecode] = Field(default_factory=dict)
 
-    @field_validator("vlm_thinking", mode="before")
+    @field_validator("vlm_thinking", "vlm_media_resolution", "vlm_models", mode="before")
     @classmethod
-    def _lenient_thinking(cls, v):
+    def _lenient_thinking(cls, v, info):
         """튜닝용 설정 하나가 틀렸다고 앱 전체가 안 뜨면 안 된다 — 깨진 JSON 은 무시."""
         if isinstance(v, str):
             try:
                 v = json.loads(v) if v.strip() else {}
             except json.JSONDecodeError:
-                logging.getLogger("carret.config").warning("VLM_THINKING JSON 파싱 실패 — 무시")
+                logging.getLogger("carret.config").warning(
+                    f"{info.field_name.upper()} JSON 파싱 실패 — 무시")
                 return {}
         return v if isinstance(v, dict) else {}
 

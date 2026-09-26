@@ -5,7 +5,8 @@ from google.genai import types
 
 from app.core.config import settings
 from app.core.prompt_registry import get_prompt_text
-from app.core.vlm import get_client, thinking
+from app.core.vlm import get_client, image_part, thinking
+from app.core.vlm import model as vlm_model
 from app.core.tracing import gemini_usage, observe
 from app.prompts.rubric import AXES, rubric_text
 
@@ -29,13 +30,13 @@ def judge(original: bytes, result: bytes) -> dict:
     user_prompt = ("Image1: ORIGINAL, Image2: RESULT. "
                    "Step1: list differences IN THE PRODUCT. "
                    "Step2: scores. JSON only.")
-    with observe("judge", as_type="generation", model=settings.VLM_MODEL,
+    with observe("judge", as_type="generation", model=vlm_model("judge"),
                  input=user_prompt) as obs:
         resp = client.models.generate_content(
-            model=settings.VLM_MODEL,
+            model=vlm_model("judge"),
             contents=[
-                types.Part.from_bytes(data=original, mime_type="image/png"),  # 이미지1
-                types.Part.from_bytes(data=result,   mime_type="image/png"),  # 이미지2
+                image_part(original, "image/png", "judge"),  # 이미지1
+                image_part(result, "image/png", "judge"),  # 이미지2
                 user_prompt,
             ],
             config=types.GenerateContentConfig(

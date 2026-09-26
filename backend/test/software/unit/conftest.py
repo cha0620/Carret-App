@@ -31,8 +31,8 @@ def drain_pipeline_background(monkeypatch):
     futures = []
     real = pipeline._in_background
 
-    def tracking(fn, *args):
-        f = real(fn, *args)
+    def tracking(fn, *args, **kw):
+        f = real(fn, *args, **kw)
         futures.append(f)
         return f
     monkeypatch.setattr(pipeline, "_in_background", tracking)

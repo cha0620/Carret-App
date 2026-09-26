@@ -3,13 +3,15 @@
 스테이지:
   0) load       : 원본 로드
   0.5) classify : 물건 식별 + 루브릭(considered) 수립
-  1) read_text ∥ detect : 원본 물건 위 글자 / 하자 의미 앵커 (병렬, detect 실패는 detect_failed)
-  1.5) plan     : 생성해도 못 지킬 게 보이면(detect 실패·잔글씨 多) 바로 배경 교체로
+  1) detect     : 하자 의미 앵커 + 물건 위 글자 수준(text_level) + 물건 위치 (실패는 detect_failed)
+  1.5) plan     : 생성해도 못 지킬 게 보이면(detect 실패·잔글씨 dense) 바로 배경 교체로,
+       글자가 있으면(simple) read_text(원본 글자 읽기) 뒤 생성, 없으면(none) 바로 생성
   2) generate   : 배경 교체 (생성)
   2.3) validate_result : ① 출력 가드(guards.py, OCR 글자 비교 포함) — hard fail 이면
        seed 만 바꿔 1회 재시도, 그래도 fail 이면 배경 교체(composite), 그것도 실패면
        status="blocked"(원본을 내보냄). ② 구도/자막 검사 — invalid면
-       max_generate_attempts 까지 재생성
+       max_generate_attempts 까지 재생성. ③ 판정 통과 뒤 물건 누끼 비교(item_dino, soft)
+       — ②를 기다리는 동안 별도 풀에서 돈다
   2.5) score_similarity : 원본 vs 결과 DINOv2 코사인 유사도 (가드 값 재사용)
   3) verify     : 결과 → 하자·글자 보존 여부 + 좌표. 실패 → 1회 재생성 → composite
   4) finalize   : bubbles + 로깅
@@ -55,11 +57,12 @@ class State(TypedDict, total=False):
     detect_failed: bool        # detect 가 재시도까지 실패 — "하자 없음"과 구분 (검증 불가)
     verify_failed: bool        # verify 호출이 재시도까지 실패 — "보존됨"과 구분 (검증 불가)
     item_texts: list           # 원본 물건 위 글자 [{text, x1..}] → generate 프롬프트
-    item_box: dict | None      # 원본에서 물건 위치 (0-1000) — 배경 교체 모드의 오리기 범위
+    text_level: str | None     # detect 가 본 물건 위 글자 수준: none | simple | dense (실패면 None)
+    item_box: dict | None      # 원본에서 물건 위치 (0-1000) — 오리기 범위 (배경 교체 · item_dino)
     gate_retried: bool         # verify 게이트 실패로 재생성을 이미 1회 했나
     gate_note: str             # 그 재생성 때 프롬프트에 붙인 "사라진 하자" 목록
     mode: str                  # "generate" | "composite"(원본 물건 + 배경만 교체) | "composite_failed"
-    composite_reason: str | None   # 배경 교체로 간 이유: detect_failed | text_heavy | many_defects
+    composite_reason: str | None   # 배경 교체로 간 이유: detect_failed | text_dense | text_heavy | many_defects
                                    #   | guard_failed | gate_failed | verify_failed
     guard_failed: bool         # 출력 가드가 seed 재시도까지 hard fail
     provided_result: bytes     # dev 그래프: generate 대신 쓸 결과 이미지
@@ -72,7 +75,10 @@ class State(TypedDict, total=False):
     guard_retry: bool          # validate_result → generate: 이번 generate 가 가드 재시도
     status: str                # "pass" | "blocked"
     guard_report: list         # 실패한 가드 목록 (hard/soft) - asdict(GuardResult)
-    visual_similarity: float | None   # ⭐ DINOv2 코사인 유사도
+    visual_similarity: float | None   # ⭐ DINOv2 코사인 유사도 (이미지 전체)
+    item_similarity: float | None     # 누끼 딴 물건끼리의 DINOv2 유사도 (item_dino 가드)
+    item_patch_similarity: float | None   # 같은 누끼 쌍의 DINO 패치 하위 1% (item_patch 가드)
+    ocr_local_recall: float | None    # 로컬 OCR 글자 recall (ocr_local 가드, 설정으로 켤 때만)
     checks: list
     gate_passed: bool | None
     bubbles: list
@@ -97,15 +103,27 @@ def classify_node(s: State) -> dict:
 
 def read_text(s: State) -> dict:
     """원본 물건 위 글자 읽기 — generate 프롬프트에 넣어 글자 뭉개짐을 줄인다.
-    관측 단계와 같은 실패 정책: 실패하면 글자 없이 그대로 생성한다."""
+    detect 가 text_level=simple 이라고 본 물건만 온다 (none 은 읽을 게 없고, dense 는 이미
+    배경 교체로 갔다). 관측 단계와 같은 실패 정책: 실패하면 글자 없이 그대로 생성한다.
+    물건 위치(item_box)는 detect 가 준 걸 우선 — 없을 때만 여기 값을 쓴다."""
+    box = s.get("item_box")
     if not settings.text_lock:
-        return {"item_texts": [], "item_box": None}
+        return {"item_texts": [], "item_box": box}
     try:
         out = detector.read_item_text(s["original"], s.get("item", "object"))
     except Exception as e:
         print(f"[read_text] 실패(무시): {e}")
-        return {"item_texts": [], "item_box": None}
-    return {"item_texts": out["texts"], "item_box": out.get("item_box")}
+        return {"item_texts": [], "item_box": box}
+    upd = {"item_texts": out["texts"], "item_box": box or out.get("item_box")}
+    # detect 가 simple 이라고 했어도 막상 읽어 보니 잔글씨가 많으면 — 생성 전 배경 교체 (안전망).
+    # dev 그래프(provided_result)는 배경 교체로 가지 않는다 (inspect 에 엉뚱한 사유가 남지 않게).
+    # 생성 전 배경 교체가 이미 실패하고 온 길(composite_error)이면 다시 보내지 않는다 (무한 왕복 방지).
+    n = settings.composite_first_min_texts
+    if (n and len(out["texts"]) >= n and s.get("provided_result") is None
+            and not s.get("composite_error")):
+        print(f"[read_text] 글자 {len(out['texts'])}줄 → 생성 전 배경 교체 모드로: text_heavy")
+        upd["composite_reason"] = "text_heavy"
+    return upd
 
 
 DETECT_ATTEMPTS = 2
@@ -119,17 +137,18 @@ def detect(s: State) -> dict:
     "검증 불가"로 다루게 한다 (생성 결과를 확인 없이 내보내지 않음)."""
     for attempt in range(1, DETECT_ATTEMPTS + 1):
         try:
-            anchors = detector.detect_defects(
+            out = detector.detect_full(
                 s["original"], s.get("item", "object"), s.get("considered", []),
                 strict=True)
-            return {"anchors": anchors, "detect_failed": False}
+            return {"anchors": out["anchors"], "detect_failed": False,
+                    "text_level": out["text_level"], "item_box": out["item_box"]}
         except Exception as e:
             print(f"[detect] 실패 ({attempt}/{DETECT_ATTEMPTS}): {e}")
             if not retryable(e):
                 break
             if attempt < DETECT_ATTEMPTS:
                 time.sleep(DETECT_RETRY_DELAY_S)
-    return {"anchors": [], "detect_failed": True}
+    return {"anchors": [], "detect_failed": True, "text_level": None}
 
 
 def _result_name(s: State) -> str:
@@ -141,9 +160,9 @@ def _composite_first_reason(s: State) -> str | None:
     쓰지 않고 바로 원본 픽셀을 쓰는 배경 교체로 보낸다."""
     if s.get("detect_failed"):
         return "detect_failed"     # 생성해도 확인할 기준(원본 하자 목록)이 없다
-    n = settings.composite_first_min_texts
-    if n and len(s.get("item_texts") or []) >= n:
-        return "text_heavy"        # 잔글씨 많은 물건 — TEXT_LOCK 이 있어도 뭉개지기 쉽다
+    if s.get("text_level") == "dense":
+        return "text_dense"        # 잔글씨·라벨·눈금 — 생성 모델이 거의 확실히 뭉갠다 (글자 읽기도 생략)
+    # text_heavy(읽어 보니 잔글씨 多)는 read_text 가 정한다 — 여기선 아직 읽기 전이다
     n = settings.composite_first_min_anchors
     if n and len(s.get("anchors") or []) >= n:
         return "many_defects"
@@ -151,7 +170,7 @@ def _composite_first_reason(s: State) -> str | None:
 
 
 def plan(s: State) -> dict:
-    """read_text ∥ detect 합류 지점. result_name 을 여기서 정해 두면 generate 를
+    """detect 다음 갈림길. result_name 을 여기서 정해 두면 generate 를
     건너뛰는 경로(바로 composite)에서도 저장 이름이 있다."""
     out = {"result_name": _result_name(s)}
     if s.get("provided_result") is not None:
@@ -163,9 +182,27 @@ def plan(s: State) -> dict:
     return out
 
 
+def _needs_text(s: State) -> bool:
+    """글자 읽기가 필요한가 — detect 가 simple 이라고 봤을 때만. text_level 이 없으면(예전
+    state·응답) simple 로 본다 = 예전처럼 읽는다. dense 는 배경 교체로 가서 여기 오지 않는다."""
+    return settings.text_lock and (s.get("text_level") or "simple") == "simple"
+
+
 def _route_after_plan(s: State) -> str:
-    """오리기마저 실패하면 composite 가 mode 를 generate 로 되돌려 그때 생성한다."""
+    """배경 교체 | 글자 읽기 후 생성 | 바로 생성 (글자 없음).
+    오리기마저 실패하면 composite 가 mode 를 generate 로 되돌려 그때 생성한다 — dense 로
+    갔다가 돌아온 경우는 _route_after_composite 가 read_text 를 거치게 한다."""
+    if s.get("composite_reason"):
+        return "composite"
+    return "read_text" if _needs_text(s) else "generate"
+
+
+def _route_after_read_text(s: State) -> str:
     return "composite" if s.get("composite_reason") else "generate"
+
+
+def _route_after_plan_dev(s: State) -> str:
+    return "read_text" if _needs_text(s) else "use_provided"
 
 
 def generate(s: State) -> dict:
@@ -204,13 +241,22 @@ def generate(s: State) -> dict:
         "gen_attempts": s.get("gen_attempts", 0) + (0 if guard_retry else 1),
         "guard_retry": False,
         "visual_similarity": None,   # 새 이미지 — 이전 결과 기준 값은 무효
+        "item_similarity": None,
+        "item_patch_similarity": None,
+        "ocr_local_recall": None,
     }
 
 
-def _guard_anchors(anchors: list) -> list:
-    """run_output_guards 는 box 가 있는 앵커만 다룬다 — detect 앵커(what/where)는
-    아직 box 가 없어서 지금은 전부 걸러지고 ocr/dino 가드만 돈다."""
-    return [a for a in anchors if "box" in a]
+def _item_pair(s: State) -> tuple[bytes, bytes] | None:
+    """item_dino 가드 입력 — 원본·결과에서 물건만 오려 같은 배경·크기에 놓은 쌍.
+    원본 오리기는 캐시돼 재생성마다 다시 하지 않는다. 오리기 실패는 None — soft 가드라
+    이미 비용 든 생성을 이것 때문에 막지 않는다."""
+    try:
+        return (compositor.isolate(s["original"], s.get("item_box"), original=True),
+                compositor.isolate(s["result"]))
+    except Exception as e:
+        print(f"[guards] 물건 오리기 실패(item_dino 생략): {e}")
+        return None
 
 
 def _ocr_pair(s: State) -> tuple[list, list, list]:
@@ -239,25 +285,80 @@ def _run_guards(s: State) -> tuple[str, list, float | None]:
     (guards.py 설계: 최소선 gate 가 fail-open 되면 안 됨).
     유사도는 dino_band 가드가 이미 계산한 값 — score_similarity 가 다시 안 돌게 넘긴다."""
     before, after, extra = _ocr_pair(s)
-    results = guards.run_output_guards(
-        s["original"], s["result"], _guard_anchors(s.get("anchors", [])),
-        before, after) + extra
+    results = guards.run_output_guards(s["original"], s["result"], before, after) + extra
     verdict, _ = guards.decide(results)
     dino = next((g.value for g in results if g.name == "dino_band"), None)
     return verdict, [asdict(g) for g in results if not g.passed], dino
 
 
+def _item_signals(s: State) -> tuple:
+    """누끼 쌍 가드 item_dino·item_patch (백그라운드) — DINO 추론(패치는 448 해상도 2회)까지
+    여기서 끝내서 요청 스레드가 기다리기만 하게."""
+    pair = _item_pair(s)
+    return guards.item_guard(pair), guards.item_patch_guard(pair)
+
+
+def _remaining(deadline: float) -> float:
+    return max(0.0, deadline - time.monotonic())
+
+
+def _item_check(fut, deadline: float) -> tuple[list, float | None, float | None]:
+    """item_dino·item_patch → (실패한 가드 기록, item_dino 유사도, 패치 유사도).
+    늦거나 실패하면 ([], None, None) — 늦은 작업은 취소해 작은 풀을 다음 요청에 돌려준다."""
+    try:
+        g, p = fut.result(timeout=_remaining(deadline))
+    except Exception as e:
+        fut.cancel()
+        print(f"[guards] 누끼 비교 대기 실패(item_dino·item_patch 생략): {e!r}")
+        return [], None, None
+    fails = [asdict(x) for x in (g, p) if x is not None and not x.passed]
+    return fails, (g.value if g else None), (p.value if p else None)
+
+
+def _local_ocr_lines(s: State) -> tuple[list[str], list[str]]:
+    """ocr_local 가드 입력 — 원본은 물건 영역(item_box)만, 결과는 전체 (생성본의 물건 위치는
+    원본과 다르고, 프리셋 배경엔 글자가 없다). EasyOCR 조각(단어 단위) 목록이라 ocr_match 의
+    VLM 줄 목록과 단위가 다르다 — 두 값은 절대값이 아니라 같이 움직이는지를 본다."""
+    from app.services.ai import local_ocr
+    return (local_ocr.read_original(s["original"], s.get("item_box")),
+            local_ocr.read_lines(s["result"]))
+
+
+def _local_ocr_check(fut, deadline: float) -> tuple[dict | None, float | None]:
+    """ocr_local 결과 (실패했으면 가드 기록, recall). 꺼져 있거나 늦거나 실패하면 (None, None)."""
+    if fut is None:
+        return None, None
+    try:
+        g = guards.local_ocr_guard(*fut.result(timeout=_remaining(deadline)))
+    except Exception as e:
+        fut.cancel()
+        print(f"[guards] 로컬 OCR 실패(ocr_local 생략): {e!r}")
+        return None, None
+    if g is None:
+        return None, None
+    return (None if g.passed else asdict(g)), g.value
+
+
 # FastAPI 스레드풀(기본 40)과 비슷한 크기 — 작으면 동시 요청이 몰릴 때 check_photo 가
 # 큐에서 기다려 병렬화가 오히려 직렬보다 느려진다.
 _POOL = ThreadPoolExecutor(max_workers=32, thread_name_prefix="pipeline")
+# 누끼(rembg CPU ~5초, fal 호출)는 따로 작은 풀에서 — 느린 오리기가 check_photo 자리를
+# 잡아먹지 않게, 동시 요청이 몰려도 CPU 를 과하게 나눠 쓰지 않게.
+_CUTOUT_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="cutout")
+# 로컬 OCR(EasyOCR)은 워커 1개 — 누끼 자리를 뺏지 않고, Reader 를 여러 스레드가 동시에 쓰지 않게
+# (EasyOCR 은 스레드 안전을 보장하지 않는다).
+_OCR_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ocr")
+# 대기 상한은 작업을 넘긴 시점부터 — check_photo 를 기다리는 동안에도 흐른다 (직렬로 더해지지 않게).
+ITEM_WAIT_S = 30   # item_dino·item_patch — soft 신호라 넘기면 생략 (첫 rembg 로드 포함 여유)
+LOCAL_OCR_WAIT_S = 60   # ocr_local — 첫 EasyOCR 로드(모델 다운로드) 포함 여유
 
 
-def _in_background(fn, *args):
+def _in_background(fn, *args, pool=None):
     """fn 을 다른 스레드에서 시작하고 Future 를 돌려준다. 현재 컨텍스트(Langfuse/OTEL
     트레이스)를 복사해 넘긴다 — 안 그러면 그 스레드의 VLM 호출이 이번 변환 트레이스에서
     떨어져 별도 트레이스로 찍힌다."""
     ctx = contextvars.copy_context()
-    return _POOL.submit(ctx.run, fn, *args)
+    return (pool or _POOL).submit(ctx.run, fn, *args)
 
 
 def validate_result(s: State) -> dict:
@@ -288,7 +389,20 @@ def validate_result(s: State) -> dict:
         return {"guard_retry": False, "guard_failed": True,
                 "composite_reason": "guard_failed", "guard_report": report}
 
-    storage.save("result", s["result_name"], s["result"])
+    # ③ 판정이 통과한 뒤에만 누끼 비교 — 막힌 시도엔 오리기 비용을 안 쓰고, hard 판정이
+    # 누끼를 기다리지도 않는다. check_photo 를 기다리는 동안 같이 돈다.
+    t0 = time.monotonic()
+    item = _in_background(_item_signals, s, pool=_CUTOUT_POOL)
+    # 로컬 OCR — 원본에 글자가 있을 때만 (없으면 비교할 게 없다)
+    ocr = (_in_background(_local_ocr_lines, s, pool=_OCR_POOL)
+           if settings.local_ocr_guard and s.get("item_texts") else None)
+    try:
+        storage.save("result", s["result_name"], s["result"])
+    except BaseException:
+        for f in (photo, item, ocr):
+            if f is not None:
+                f.cancel()
+        raise
     try:
         # 상한: 큐 대기 + VLM 타임아웃. 넘기면 구도 검사를 못 한 것 — check_photo 의
         # 기존 실패 정책(개방형, valid=True)과 같게.
@@ -296,8 +410,13 @@ def validate_result(s: State) -> dict:
     except Exception as e:
         print(f"[validate_result] check_photo 대기 실패(무시): {e}")
         check = {"valid": True, "reason": ""}
+    item_fails, item_sim, patch_sim = _item_check(item, t0 + ITEM_WAIT_S)
+    ocr_fail, ocr_recall = _local_ocr_check(ocr, t0 + LOCAL_OCR_WAIT_S)
+    report = report + item_fails + ([ocr_fail] if ocr_fail else [])
     return {"photo_check": check, "guard_retry": False, "status": "pass",
-            "guard_report": report, "visual_similarity": dino}
+            "guard_report": report, "visual_similarity": dino,
+            "item_similarity": item_sim, "item_patch_similarity": patch_sim,
+            "ocr_local_recall": ocr_recall}
 
 
 def _route_after_validate(s: State) -> str:
@@ -482,7 +601,8 @@ def composite(s: State) -> dict:
             "composite_reason": reason, "photo_check": None,
             # 가드 불합격으로 왔으면 어떤 가드가 걸렸는지는 기록으로 남긴다
             "guard_report": s.get("guard_report", []) if s.get("guard_failed") else [],
-            "status": "pass", "visual_similarity": None,
+            "status": "pass", "visual_similarity": None, "item_similarity": None,
+            "item_patch_similarity": None, "ocr_local_recall": None,
             "prompt_used": "COMPOSITE: original item pixels on preset background"}
 
 
@@ -490,7 +610,13 @@ def _route_after_composite(s: State) -> str:
     if s.get("mode") == "composite":
         return "ok"
     if s.get("mode") == "generate":
-        return "generate"   # 생성 전 합성이 실패 — 정상 생성 경로로
+        # 생성 전 합성이 실패 — 정상 생성 경로로. dense·detect_failed 로 왔다면 글자를 아직 안
+        # 읽었다: 글자 없이 생성하면 TEXT_LOCK·OCR 가드가 통째로 빠져, 글자가 제일 많은 물건이
+        # 보호를 제일 덜 받는다. 글자가 없다고 확인된(none) 경우만 바로 생성.
+        if (settings.text_lock and s.get("text_level") != "none"
+                and "item_texts" not in s):
+            return "read_text"
+        return "generate"
     return "failed"
 
 
@@ -506,6 +632,7 @@ def save_inspect(s: State) -> dict:
             "detect_failed": s.get("detect_failed", False),
             "verify_failed": s.get("verify_failed", False),
             "item_texts": s.get("item_texts", []),
+            "text_level": s.get("text_level"),
             "mode": s.get("mode", "generate"),
             "composite_reason": s.get("composite_reason"),
             "guard_failed": s.get("guard_failed", False),
@@ -514,6 +641,9 @@ def save_inspect(s: State) -> dict:
             "checks": s.get("checks", []),
             "gate_passed": s.get("gate_passed"),
             "visual_similarity": s.get("visual_similarity"),   # ⭐
+            "item_similarity": s.get("item_similarity"),
+            "item_patch_similarity": s.get("item_patch_similarity"),
+            "ocr_local_recall": s.get("ocr_local_recall"),
             "gen_attempts": s.get("gen_attempts"),             # ⭐
             "photo_check": s.get("photo_check"),               # ⭐
             "status": s.get("status", "pass"),
@@ -615,7 +745,7 @@ def use_provided(s: State) -> dict:
 # ── 조립 ─────────────────────────────────────────
 def build(*, dev: bool = False):
     """dev=True: generate 를 use_provided 로 바꾸고 재생성·배경 교체 루프를 뺀 그래프.
-    앞단(read_text ∥ detect)과 뒷단 노드는 운영 그래프와 같은 함수·같은 연결을 쓴다
+    앞단(detect → 글자 읽기 여부)과 뒷단 노드는 운영 그래프와 같은 함수·같은 연결을 쓴다
     — verify 프롬프트 튜닝 결과가 운영과 어긋나지 않게 (judge 는 그래프 밖, 같은 함수)."""
     g = StateGraph(State)
     nodes = [("load", load), ("classify", classify_node),
@@ -631,19 +761,23 @@ def build(*, dev: bool = False):
 
     g.add_edge(START, "load")
     g.add_edge("load", "classify")
-    # read_text 와 detect 는 둘 다 classify 결과만 쓰고 서로 독립 — 병렬로 돌리고
-    # 둘 다 끝나면 plan (VLM 왕복 1회분 지연 절약). 쓰는 state 키도 겹치지 않는다.
-    g.add_edge("classify", "read_text")
+    # detect 가 먼저 — 그 text_level 로 글자 읽기(VLM 1회)를 할지 정한다. 예전엔 둘을 병렬로
+    # 돌렸지만, 글자 없는 물건(대부분)은 읽기가 통째로 빠지는 게 지연 1단계보다 이득이다.
     g.add_edge("classify", "detect")
-    g.add_edge(["read_text", "detect"], "plan")
+    g.add_edge("detect", "plan")
 
     if dev:
-        g.add_edge("plan", "use_provided")
+        g.add_conditional_edges("plan", _route_after_plan_dev,
+                                {"read_text": "read_text", "use_provided": "use_provided"})
+        g.add_edge("read_text", "use_provided")
         g.add_edge("use_provided", "score_similarity")
         g.add_edge("score_similarity", "verify")
         g.add_edge("verify", "save_inspect")
     else:
         g.add_conditional_edges("plan", _route_after_plan,
+                                {"generate": "generate", "composite": "composite",
+                                 "read_text": "read_text"})
+        g.add_conditional_edges("read_text", _route_after_read_text,
                                 {"generate": "generate", "composite": "composite"})
         g.add_edge("generate", "validate_result")
         g.add_conditional_edges("validate_result", _route_after_validate,
@@ -656,7 +790,7 @@ def build(*, dev: bool = False):
         g.add_edge("mark_gate_retry", "generate")
         g.add_conditional_edges("composite", _route_after_composite,
                                 {"ok": "score_similarity", "failed": "save_inspect",
-                                 "generate": "generate"})
+                                 "generate": "generate", "read_text": "read_text"})
     g.add_edge("save_inspect", "finalize")
     g.add_edge("finalize", END)
     return g.compile()
@@ -664,7 +798,7 @@ def build(*, dev: bool = False):
 
 GRAPH = build()
 
-# 최악 경로 = 앞 4단계(load·classify·read_text∥detect·plan) + composite(생성 전, 실패)
+# 최악 경로 = 앞 5단계(load·classify·detect·plan·read_text) + composite(생성 전, 실패)
 # + (generate·validate) × (재생성 한도 + 가드 재시도) × 2(게이트 재생성)
 # + score/verify 3회 + composite + 뒷 2노드 ≈ 35. max_generate_attempts=5 여도 넉넉하게.
 # (LangGraph 기본 25 는 기본 설정에서도 경계라, 비용을 다 쓴 뒤 예외로 끝날 수 있었다)
@@ -717,6 +851,7 @@ def run_transform(file_id: str, preset_key: str, *, defer_judge: bool = False) -
                 "item": out.get("item", "object"),
                 "considered": out.get("considered", []),
                 "visual_similarity": out.get("visual_similarity"),
+                "item_similarity": out.get("item_similarity"),
                 "gen_attempts": out.get("gen_attempts"),
                 "photo_check": out.get("photo_check"),
                 "status": out.get("status", "pass"),
@@ -736,6 +871,7 @@ def run_transform(file_id: str, preset_key: str, *, defer_judge: bool = False) -
                     "bubbles": len(result["bubbles"]),
                     "item": result["item"],
                     "visual_similarity": result["visual_similarity"],
+                    "item_similarity": result.get("item_similarity"),
                     "gen_attempts": result["gen_attempts"],
                     "photo_check": result["photo_check"],
                     "mode": result["mode"],
@@ -760,7 +896,7 @@ def run_transform_with_result(file_id: str, preset_key: str, result_bytes: bytes
     (verify/judge/finalize)만 돌린다 — fal.ai 를 매번 기다리지 않고
     verify/judge 프롬프트를 반복 튜닝하기 위함.
 
-    운영과 같은 노드 함수·같은 앞단 연결(read_text ∥ detect)을 쓰는 dev 그래프
+    운영과 같은 노드 함수·같은 앞단 연결(detect → 글자 읽기 여부)을 쓰는 dev 그래프
     (build(dev=True))로 돌린다 — 손으로 노드를 이어 부르면 운영 그래프가 바뀔 때
     조용히 어긋난다 (로직 복사 금지: 테스트는 프로덕션을 호출하지, 베끼지 않는다).
     """
@@ -787,6 +923,7 @@ def run_transform_with_result(file_id: str, preset_key: str, result_bytes: bytes
                 "item": s.get("item", "object"),
                 "considered": s.get("considered", []),
                 "visual_similarity": s.get("visual_similarity"),
+                "item_similarity": s.get("item_similarity"),
                 "detect_failed": s.get("detect_failed", False),
                 "verify_failed": s.get("verify_failed", False),
                 "mode": s.get("mode", "generate"),
@@ -798,6 +935,7 @@ def run_transform_with_result(file_id: str, preset_key: str, result_bytes: bytes
                     "bubbles": len(result["bubbles"]),
                     "item": result["item"],
                     "visual_similarity": result["visual_similarity"],
+                    "item_similarity": result.get("item_similarity"),
                 })
     finally:
         flush()

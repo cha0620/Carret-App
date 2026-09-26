@@ -19,7 +19,7 @@ APP_DIR = BACKEND / "app"
 SEED_SCRIPT = BACKEND / "scripts" / "seed_langfuse_prompts.py"
 
 EXPECTED_STATIC = {
-    "classify", "detect_box", "detect", "verify", "item_text",
+    "classify", "detect_box", "detect_v2", "verify", "item_text",
     "check_photo", "match", "judge_system", "auto_feedback_system",
 }
 
@@ -105,7 +105,9 @@ def test_seed_has_no_names_unused_at_runtime(seeds):
 
 
 def test_seed_templates_match_shared_template_functions(seeds):
-    assert seeds["detect"] == detect_template()
+    assert seeds["detect_v2"] == detect_template()
+    # 옛 이름 "detect" 는 시드하지 않는다 (배포된 옛 서버가 새 응답 형식을 받지 않게)
+    assert "detect" not in seeds
     assert seeds["verify"] == verify_template()
     assert seeds["check_photo"] == check_photo_template()
     assert seeds["item_text"] == frag("item_text")
@@ -167,7 +169,7 @@ def test_main_unknown_name_is_reported(no_network_seed, monkeypatch, capsys):
     assert "no_such_prompt" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("argv", [[], ["--all"], ["detect", "detect", "verify"]])
+@pytest.mark.parametrize("argv", [[], ["--all"], ["detect_v2", "detect_v2", "verify"]])
 def test_main_valid_args_pass_validation(no_network_seed, monkeypatch, argv):
     # 유효 인자(중복 포함)는 검증을 통과해 Langfuse 생성 단계까지 간다
     with pytest.raises(_NetworkTouched):
@@ -185,7 +187,7 @@ def test_main_valid_args_without_keys_exit_before_network(seed_module, monkeypat
     monkeypatch.setattr(seed_module.settings, "langfuse_public_key", "", raising=False)
     monkeypatch.setattr(seed_module.settings, "langfuse_secret_key", "", raising=False)
     with pytest.raises(SystemExit) as exc:
-        _run_main(seed_module, monkeypatch, ["detect"])
+        _run_main(seed_module, monkeypatch, ["detect_v2"])
     assert exc.value.code == 1
     assert "LANGFUSE_PUBLIC_KEY" in capsys.readouterr().out
 

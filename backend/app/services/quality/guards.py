@@ -14,19 +14,19 @@ severity:
 pass) 시키는 게 오히려 위험하다. 그래서 embedder/metric 호출 예외는 여기서
 삼키지 않고 그대로 올린다 - 호출부가 알아서 처리(재시도/차단)하게 둔다.
 """
-import io
 from dataclasses import dataclass
-
-from PIL import Image
 
 from app.core.tracing import score
 from app.services.ai import embedder
 from app.services.quality import metric
 
-FEATURE_SIM_THRESHOLD = 0.90
-DEFECT_VISIBILITY_THRESHOLD = 0.85
 OCR_MATCH_THRESHOLD = 0.95
 DINO_BAND = (0.75, 0.995)
+# 누끼 딴 물건끼리의 DINO 유사도 하한. 경험값 없음 — soft 로 값만 모으고 eval 로 정한다.
+ITEM_DINO_THRESHOLD = 0.80
+# 누끼 쌍의 DINO 패치 유사도(물건 안쪽 하위 1%) 하한. 합성 테스트(주전자 누끼 1장, 2026-09-26):
+# 조명 변화·이동 0.975~0.988, 흠집 한 줄 추가 0.92 — 실제 생성본 분포는 모른다. soft 로 값만 모은다.
+ITEM_PATCH_THRESHOLD = 0.95
 
 
 @dataclass
@@ -38,61 +38,11 @@ class GuardResult:
     severity: str  # "hard" | "soft"
 
 
-def _crop(image_bytes: bytes, box: dict) -> bytes:
-    """0-1000 정규화 좌표(detector.py 의 _box() 와 동일한 컨벤션) → 이 이미지
-    자체 크기 기준 픽셀 좌표로 변환해 크롭, PNG bytes 로 재인코딩.
-
-    원본/결과 두 이미지에 "같은" 정규화 좌표를 같은 의미 영역으로 가정한다
-    (배경 교체 프리셋은 상품의 프레임 내 위치/구도를 바꾸지 않는다는 전제 —
-    프리셋이 구도까지 바꾸게 되면 이 가정이 깨지는데, 그건 바로 validate_result
-    가드[pipeline.py]가 별도로 잡는 문제라 여기서는 다루지 않는다)."""
-    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    w, h = img.size
-    x1 = int(box["x1"] / 1000 * w)
-    y1 = int(box["y1"] / 1000 * h)
-    x2 = max(x1 + 1, int(box["x2"] / 1000 * w))
-    y2 = max(y1 + 1, int(box["y2"] / 1000 * h))
-    buf = io.BytesIO()
-    img.crop((x1, y1, x2, y2)).save(buf, format="PNG")
-    return buf.getvalue()
-
-
-def defect_visibility(orig: bytes, result: bytes, box: dict) -> float:
-    """결함 앵커가 결과에서도 같은 자리에 그대로 보이는가 - 크롭 간 DINO
-    유사도. embedder.crop_sim 과 계산 방식은 같지만(크롭 후 cosine_similarity)
-    "무엇을 재는가"의 의미와 threshold 가 달라 (feature=보존 확인, defect=하자
-    가시성 확인) 별도 함수로 분리해뒀다 - 의미가 갈라지는 지점을 억지로
-    하나의 함수 뒤에 숨기지 않기 위함."""
-    return embedder.cosine_similarity(_crop(orig, box), _crop(result, box))
-
-
-def run_output_guards(orig: bytes, result: bytes, anchors: list[dict],
+def run_output_guards(orig: bytes, result: bytes,
                        ocr_before: list[str], ocr_after: list[str]) -> list[GuardResult]:
-    """anchors 원소 형태: {"type": "feature"|"defect", "box": {x1,y1,x2,y2}}
-    (0-1000 정규화 좌표, detector.py 의 checks/_box() 컨벤션과 동일).
-
-    feature 앵커는 embedder.crop_sim(orig, result, box) 로 판정한다 - 이 함수는
-    아직 embedder.py 에 없다(스코프 밖: 이 파일에서 새로 구현하지 않는다).
-    feature 앵커가 있는데 embedder.crop_sim 이 없으면 AttributeError 로 바로
-    터진다 - 의도된 동작이며, embedder.py 에 아래 시그니처 추가를 제안한다:
-
-        def crop_sim(orig: bytes, result: bytes, box: dict) -> float:
-            '''0-1000 정규화 box 로 원본/결과를 각각 크롭 후 DINO 코사인 유사도.'''
-    """
+    """hard 판정에 쓰는 가드 전부 (+ 이미지 전체 dino_band). 누끼 비교는 item_guard 로 따로 —
+    판정이 누끼(수 초)를 기다리지 않게."""
     guards: list[GuardResult] = []
-
-    for i, anchor in enumerate(anchors):
-        box = anchor["box"]
-        if anchor.get("type") == "feature":
-            sim = embedder.crop_sim(orig, result, box)
-            guards.append(GuardResult(
-                name=f"feature_preserved[{i}]", passed=sim >= FEATURE_SIM_THRESHOLD,
-                value=sim, threshold=FEATURE_SIM_THRESHOLD, severity="hard"))
-        elif anchor.get("type") == "defect":
-            vis = defect_visibility(orig, result, box)
-            guards.append(GuardResult(
-                name=f"defect_visible[{i}]", passed=vis >= DEFECT_VISIBILITY_THRESHOLD,
-                value=vis, threshold=DEFECT_VISIBILITY_THRESHOLD, severity="hard"))
 
     # 줄 단위·순서 무관 비교 — VLM 이 같은 글자를 다른 순서로 읽어도 깎이지 않고,
     # 줄 하나가 뭉개지면(NIKE→NlKE) 그 줄 점수만큼 recall 이 떨어진다.
@@ -125,6 +75,54 @@ def run_output_guards(orig: bytes, result: bytes, anchors: list[dict],
         score(g.name, g.value, data_type="NUMERIC")   # 키 없으면 noop (tracing.py 컨벤션)
 
     return guards
+
+
+def item_guard(pair: tuple[bytes, bytes] | None) -> GuardResult | None:
+    """item_dino — 원본·결과에서 물건만 오려(compositor.isolate) 비교한 DINO 유사도. soft(관측용).
+
+    물건이 통째로 바뀌거나 형태·색·무늬가 달라진 걸 잡는다. 작은 하자(흠집 하나)는 임베딩을
+    거의 못 움직여 여기서 못 잡는다 — 그건 verify(Wear Gate) 몫.
+    pair 가 없거나(오리기 실패) 계산이 실패하면 None — 이미 비용 든 생성을 이것 때문에 막지 않는다."""
+    if pair is None:
+        return None
+    try:
+        sim = embedder.cosine_similarity(*pair, name="item_dino_similarity")
+    except Exception as e:
+        print(f"[guards] item_dino 계산 실패(soft, 무시): {e}")
+        return None
+    g = GuardResult(name="item_dino", passed=sim >= ITEM_DINO_THRESHOLD,
+                    value=sim, threshold=ITEM_DINO_THRESHOLD, severity="soft")
+    score(g.name, g.value, data_type="NUMERIC")
+    return g
+
+
+def item_patch_guard(pair: tuple[bytes, bytes] | None) -> GuardResult | None:
+    """item_patch — 같은 누끼 쌍을 DINO 패치 단위로 비교한 국소 유사도 (embedder.patch_similarity).
+    soft(관측용). item_dino(CLS 하나)가 못 보는 "한 군데만 바뀜"(흠집·글자 지워짐)을 보려는 값.
+    실패하면 None — item_guard 와 같은 이유."""
+    if pair is None:
+        return None
+    try:
+        sim = embedder.patch_similarity(*pair)
+    except Exception as e:
+        print(f"[guards] item_patch 계산 실패(soft, 무시): {e}")
+        return None
+    g = GuardResult(name="item_patch", passed=sim >= ITEM_PATCH_THRESHOLD,
+                    value=sim, threshold=ITEM_PATCH_THRESHOLD, severity="soft")
+    score(g.name, g.value, data_type="NUMERIC")
+    return g
+
+
+def local_ocr_guard(before: list[str], after: list[str]) -> GuardResult | None:
+    """ocr_local — 로컬 OCR(EasyOCR)로 읽은 원본·결과 글자의 줄 단위 recall. soft(관측용).
+    VLM 두 번 읽기(ocr_match)와 얼마나 어긋나는지 모으려는 값. 원본에서 읽은 게 없으면 None."""
+    if not before:
+        return None
+    recall = metric.text_match(before, after)["recall"]
+    g = GuardResult(name="ocr_local", passed=recall >= OCR_MATCH_THRESHOLD,
+                    value=recall, threshold=OCR_MATCH_THRESHOLD, severity="soft")
+    score(g.name, g.value, data_type="NUMERIC")
+    return g
 
 
 def decide(guards: list[GuardResult]) -> tuple[str, list[GuardResult]]:

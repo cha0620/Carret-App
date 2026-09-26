@@ -208,6 +208,7 @@ function rsFilterSort(items) {
     rating: ratingOf,
     fidelity: it => it.judge?.fidelity,
     dino: it => it.inspect?.visual_similarity,
+    item: it => it.inspect?.item_similarity,
   }[$('rs-sort').value];
   if (key) filtered.sort((a, b) => (key(a) ?? 99) - (key(b) ?? 99));   // 낮은 점수부터 = 문제부터
   return filtered;
@@ -222,6 +223,7 @@ function rsSummary(items) {
   const agent = items.map(it => fbOf(it).agent?.rating).filter(isNum);
   const fid = items.map(it => it.judge?.fidelity).filter(isNum);
   const dino = ins.map(i => i.visual_similarity).filter(isNum);
+  const itemSim = ins.map(i => i.item_similarity).filter(isNum);
   return [
     chip(`총 ${items.length}장`),
     chip(`게이트 통과 ${passed}/${items.length}`, items.length ? passed === items.length : null),
@@ -232,6 +234,7 @@ function rsSummary(items) {
     chip(`에이전트 평균 ★${fmt(avg(agent), 1)}`),
     chip(`평균 fidelity ${fmt(avg(fid), 1)}`),
     chip(`평균 DINO ${fmt(avg(dino), 3)}`),
+    chip(`평균 누끼 DINO ${fmt(avg(itemSim), 3)} (n=${itemSim.length})`),
   ].join('');
 }
 
@@ -249,6 +252,7 @@ function rsCard(it, idx) {
     ins.gate_retried ? chip('게이트 재생성 1회') : '',
     j ? chip(`F/R/T ${j.fidelity}/${j.realism}/${j.trust}`, j.fidelity >= 4) : chip('judge 없음'),
     chip(`DINO ${fmt(ins.visual_similarity, 3)}`),
+    isNum(ins.item_similarity) ? chip(`누끼 DINO ${fmt(ins.item_similarity, 3)}`) : '',
     ins.gen_attempts ? chip(`생성 ${ins.gen_attempts}회`, ins.gen_attempts === 1 ? null : false) : '',
     agent ? chip(`에이전트 ${stars(agent.rating)}`, agent.rating >= 4) : '',
     mine ? chip(`나 ${stars(mine.rating)}`, mine.rating >= 4) : chip('내 피드백 없음'),
