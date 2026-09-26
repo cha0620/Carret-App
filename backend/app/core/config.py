@@ -46,6 +46,9 @@ class Settings(BaseSettings):              # ⭐ 대문자 클래스
     # VLM (소문자 통일)
     VLM_KEY: str = ""
     VLM_MODEL: str = "gemini-3.5-flash"
+    # VLM 호출 1회 타임아웃(초). verify(생각 2048 토큰)도 보통 10~20초 — 여유를 두되
+    # 재시도(×2)까지 겹쳐 요청 전체가 수 분으로 늘지 않게. 1 미만은 ms 변환 시 0 = 무제한이 된다.
+    vlm_timeout_s: float = Field(default=60, ge=1)
     # 호출 이름별 생각 수준 덮어쓰기 (기본값은 app/core/vlm.py DEFAULT_THINKING)
     vlm_thinking: Annotated[dict[str, str | int], NoDecode] = Field(default_factory=dict)
 

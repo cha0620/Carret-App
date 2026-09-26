@@ -6,3 +6,6 @@ e2e:
 
 eval:
 	pytest backend/test -m eval
+
+docs:
+	python3 scripts/md_serve.py --port $${MD_PORT:-8090}

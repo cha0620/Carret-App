@@ -12,15 +12,19 @@
        max_generate_attempts 까지 재생성
   2.5) score_similarity : 원본 vs 결과 DINOv2 코사인 유사도 (가드 값 재사용)
   3) verify     : 결과 → 하자·글자 보존 여부 + 좌표. 실패 → 1회 재생성 → composite
-  4) judge      : 품질 성적표 (매 실행 새로 채점, transform 라우트는 응답 뒤 백그라운드)
-  5) finalize   : bubbles + 로깅
+  4) finalize   : bubbles + 로깅
+  (그래프 밖) judge_and_save : 품질 성적표 — 그래프가 끝난 뒤 한 곳에서만 채점.
+       transform 라우트는 응답 뒤 백그라운드, 그 외(run_transform 기본값 ·
+       run_transform_with_result)는 그래프 직후 바로
 """
 
+import contextvars
 import json
 import logging
 import random
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from typing import TypedDict
 
@@ -28,6 +32,7 @@ from langgraph.graph import END, START, StateGraph
 
 from app.core.config import settings
 from app.core.tracing import current_trace_id, flush, observe, score
+from app.core.vlm import retryable
 from app.prompts.presets import (TEXT_LOCK_MAX_CHARS, get_preset, prompt_safe,
                                  text_lock, text_where)
 from app.prompts.rubric import AXES
@@ -48,15 +53,15 @@ class State(TypedDict, total=False):
     considered: list          # ⭐ classify 산출
     anchors: list
     detect_failed: bool        # detect 가 재시도까지 실패 — "하자 없음"과 구분 (검증 불가)
+    verify_failed: bool        # verify 호출이 재시도까지 실패 — "보존됨"과 구분 (검증 불가)
     item_texts: list           # 원본 물건 위 글자 [{text, x1..}] → generate 프롬프트
     item_box: dict | None      # 원본에서 물건 위치 (0-1000) — 배경 교체 모드의 오리기 범위
     gate_retried: bool         # verify 게이트 실패로 재생성을 이미 1회 했나
     gate_note: str             # 그 재생성 때 프롬프트에 붙인 "사라진 하자" 목록
     mode: str                  # "generate" | "composite"(원본 물건 + 배경만 교체) | "composite_failed"
     composite_reason: str | None   # 배경 교체로 간 이유: detect_failed | text_heavy | many_defects
-                                   #   | guard_failed | gate_failed
+                                   #   | guard_failed | gate_failed | verify_failed
     guard_failed: bool         # 출력 가드가 seed 재시도까지 hard fail
-    defer_judge: bool          # judge 를 응답 뒤 백그라운드로 (transform 라우트)
     provided_result: bytes     # dev 그래프: generate 대신 쓸 결과 이미지
     composite_error: str | None
     result: bytes
@@ -104,7 +109,8 @@ def read_text(s: State) -> dict:
 
 
 DETECT_ATTEMPTS = 2
-DETECT_RETRY_DELAY_S = 1.0   # 429/일시 장애가 바로 또 나지 않게 잠깐 쉰다
+DETECT_RETRY_DELAY_S = 1.0   # 429/일시 장애가 바로 또 나지 않게 잠깐 쉰다 (verify 도 같이 씀)
+VERIFY_ATTEMPTS = 2
 
 
 def detect(s: State) -> dict:
@@ -119,6 +125,8 @@ def detect(s: State) -> dict:
             return {"anchors": anchors, "detect_failed": False}
         except Exception as e:
             print(f"[detect] 실패 ({attempt}/{DETECT_ATTEMPTS}): {e}")
+            if not retryable(e):
+                break
             if attempt < DETECT_ATTEMPTS:
                 time.sleep(DETECT_RETRY_DELAY_S)
     return {"anchors": [], "detect_failed": True}
@@ -239,12 +247,35 @@ def _run_guards(s: State) -> tuple[str, list, float | None]:
     return verdict, [asdict(g) for g in results if not g.passed], dino
 
 
+# FastAPI 스레드풀(기본 40)과 비슷한 크기 — 작으면 동시 요청이 몰릴 때 check_photo 가
+# 큐에서 기다려 병렬화가 오히려 직렬보다 느려진다.
+_POOL = ThreadPoolExecutor(max_workers=32, thread_name_prefix="pipeline")
+
+
+def _in_background(fn, *args):
+    """fn 을 다른 스레드에서 시작하고 Future 를 돌려준다. 현재 컨텍스트(Langfuse/OTEL
+    트레이스)를 복사해 넘긴다 — 안 그러면 그 스레드의 VLM 호출이 이번 변환 트레이스에서
+    떨어져 별도 트레이스로 찍힌다."""
+    ctx = contextvars.copy_context()
+    return _POOL.submit(ctx.run, fn, *args)
+
+
 def validate_result(s: State) -> dict:
     """① 출력 가드 → ② 결과가 '제대로 된 사진'인지 VLM 으로 확인 (구도가
     잘렸거나 자막/텍스트가 상품을 가리면 invalid). 라우팅(_route_after_validate)이
-    이 결과를 보고 generate 로 되돌릴지 결정한다."""
-    verdict, report, dino = _run_guards(s)
+    이 결과를 보고 generate 로 되돌릴지 결정한다.
+
+    ②(check_photo)는 ①의 OCR 읽기와 서로 독립이라 동시에 시작한다 — 생성 1회당 VLM
+    왕복 1회 절약. 대신 가드가 막은 시도에서도 ②가 호출되고 결과는 버려진다
+    (아직 시작 전이면 취소)."""
+    photo = _in_background(detector.check_photo, s["result"])   # 스스로 예외를 삼킨다
+    try:
+        verdict, report, dino = _run_guards(s)
+    except BaseException:
+        photo.cancel()
+        raise
     if verdict == "block":
+        photo.cancel()
         if s.get("guard_seed") is None:
             seed = random.randint(0, 2**32 - 1)
             print(f"[guards] hard fail, seed={seed} 로 1회 재시도: "
@@ -259,9 +290,11 @@ def validate_result(s: State) -> dict:
 
     storage.save("result", s["result_name"], s["result"])
     try:
-        check = detector.check_photo(s["result"])
+        # 상한: 큐 대기 + VLM 타임아웃. 넘기면 구도 검사를 못 한 것 — check_photo 의
+        # 기존 실패 정책(개방형, valid=True)과 같게.
+        check = photo.result(timeout=settings.vlm_timeout_s + 10)
     except Exception as e:
-        print(f"[validate_result] 실패(무시): {e}")
+        print(f"[validate_result] check_photo 대기 실패(무시): {e}")
         check = {"valid": True, "reason": ""}
     return {"photo_check": check, "guard_retry": False, "status": "pass",
             "guard_report": report, "visual_similarity": dino}
@@ -367,16 +400,26 @@ def verify(s: State) -> dict:
     # 합성본은 물건 픽셀이 원본 — 글자 항목까지 걸면 VLM 오판만으로 "보존 안 됨"
     # 경고가 원본 픽셀 사진에 붙는다. detect 앵커만 확인한다.
     targets = _verify_targets(s, include_texts=(mode == "generate"))
-    if targets:
+    if not targets:
+        return {"checks": checks, "gate_passed": gate_passed, "verify_failed": False}
+    saved = storage.load("result", s["result_name"])
+    for attempt in range(1, VERIFY_ATTEMPTS + 1):
         try:
-            saved = storage.load("result", s["result_name"])
             checks = detector.verify_and_locate(
-                saved, targets,
-                s.get("item", "object"), s.get("considered", []))
-            gate_passed = detector.all_preserved(checks, expected=len(targets))
+                saved, targets, s.get("item", "object"), s.get("considered", []),
+                strict=True)
+            return {"checks": checks, "verify_failed": False,
+                    "gate_passed": detector.all_preserved(checks, expected=len(targets))}
         except Exception as e:
-            print(f"[verify] 실패(무시): {e}")
-    return {"checks": checks, "gate_passed": gate_passed}
+            print(f"[verify] 실패 ({attempt}/{VERIFY_ATTEMPTS}): {e}")
+            if not retryable(e):
+                break
+            if attempt < VERIFY_ATTEMPTS:
+                time.sleep(DETECT_RETRY_DELAY_S)
+    # 호출 실패(타임아웃·429·장애)는 "보존됨"이 아니다 — 예전엔 None 으로 남아 통과됐다.
+    # 생성본은 통과로 치지 않고(→ 배경 교체), 합성본은 물건 픽셀이 원본이라 None.
+    return {"checks": [], "verify_failed": True,
+            "gate_passed": None if mode == "composite" else False}
 
 
 def _route_after_verify(s: State) -> str:
@@ -387,6 +430,8 @@ def _route_after_verify(s: State) -> str:
         return "done"
     if s.get("detect_failed"):
         return "composite"   # 재생성해도 확인할 기준이 없다 (앞선 오리기 실패 후 생성한 경우)
+    if s.get("verify_failed"):
+        return "composite"   # 확인 자체를 못 했다 — 재생성해도 또 확인 못 할 가능성이 크다
     if not s.get("gate_retried"):
         return "regen"
     return "composite"
@@ -407,7 +452,8 @@ def composite(s: State) -> dict:
 
     들어오는 길: plan(생성 전 판단) / validate_result(가드 불합격) / verify(게이트 실패)."""
     reason = s.get("composite_reason") or (
-        "detect_failed" if s.get("detect_failed") else "gate_failed")
+        "detect_failed" if s.get("detect_failed")
+        else "verify_failed" if s.get("verify_failed") else "gate_failed")
     try:
         if s.get("composite_error"):
             # 이번 실행에서 이미 실패한 오리기 — 같은 입력으로 다시 부르지 않는다
@@ -458,6 +504,7 @@ def save_inspect(s: State) -> dict:
             "considered": s.get("considered", []),    # ⭐
             "anchors": s["anchors"],
             "detect_failed": s.get("detect_failed", False),
+            "verify_failed": s.get("verify_failed", False),
             "item_texts": s.get("item_texts", []),
             "mode": s.get("mode", "generate"),
             "composite_reason": s.get("composite_reason"),
@@ -486,51 +533,34 @@ def _clear_quality(name: str) -> None:
         print(f"[judge] 옛 성적표 삭제 실패(무시): {e}")
 
 
-def run_judge(s: State) -> dict:
-    """품질 성적표 — 매번 새로 채점하고 Langfuse 트레이스에 축별 점수도 부착."""
-    quality_name = f"{s['file_id']}_{s['preset_key']}.json"
-    # 캐시하지 않는다 — 파일명이 file_id/preset 뿐이라 재변환하면 새 결과에 옛 점수가
-    # 붙는다. 이전 성적표를 먼저 지워서 blocked·judge 실패 때도 옛 점수가 응답에
-    # 섞이지 않게 한다 (transform 라우트가 이 파일을 그대로 읽어 돌려줌).
-    _clear_quality(quality_name)
-    if s.get("status") == "blocked" or s.get("defer_judge"):
-        return {}   # defer: judge_later() 가 응답 뒤에 채점해서 같은 파일에 쓴다
-    try:
-        report = judge.judge(s["original"], s["result"])
-    except Exception as e:
-        print(f"[judge] 실패(무시): {e}")
-        report = None
-    if report:
-        storage.save(
-            "quality", quality_name,
-            json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8"),
-        )
-        try:
-            for axis in AXES:
-                score(axis, report[axis], data_type="NUMERIC")
-        except Exception as e:
-            print(f"[judge] 점수 부착 실패(무시): {e}")
-    return {}
+def judge_and_save(file_id: str, preset_key: str, *, trace_id: str | None = None,
+                   parent_span_id: str | None = None) -> None:
+    """품질 성적표 채점 → 저장 → 축별 점수 부착. 채점 구현은 여기 하나뿐이다.
 
-
-def judge_later(file_id: str, preset_key: str, trace_id: str | None = None,
-                parent_span_id: str | None = None) -> None:
-    """transform 응답을 보낸 뒤 BackgroundTasks 로 도는 채점 — 사용자가 judge
-    (VLM 왕복 1회)를 기다리지 않게. 점수는 같은 트레이스에 이어 붙인다.
-    채점 중에 같은 쌍이 다시 변환되면(결과 이미지가 바뀜) 옛 결과 점수는 버린다."""
+    그래프 밖에서 부른다 — 채점 결과를 기다려야 하는 단계가 그래프에 없고
+    (judge 는 결정에 안 쓰이는 관측 신호), 호출부마다 "언제" 채점할지가 달라서:
+      - transform 라우트: 응답을 보낸 뒤 BackgroundTasks 로 (사용자가 VLM 왕복을 안 기다림).
+        요청 컨텍스트가 끝났으니 trace_id/parent_span_id 로 같은 트레이스에 이어 붙인다.
+      - run_transform 기본값(ingest 등) · run_transform_with_result(dev): 그래프 직후
+        바로 (현재 트레이스에 자동 중첩).
+    원본·결과는 storage 에서 읽는다 — 사용자에게 서빙되는 저장본(정규화 후)을 채점
+    (예전 그래프 노드는 fal 이 준 정규화 전 바이트를 채점 — 과거 점수와 소폭 차이 가능).
+    채점 중에 같은 쌍이 다시 변환되면(결과 이미지가 바뀜) 옛 결과 점수는 버린다.
+    blocked(원본을 내보냄)면 호출부가 부르지 않는다. 실패는 모두 삼킨다 (관측 신호)."""
     name = f"{file_id}_{preset_key}"
     try:
         original = storage.load_original(file_id)
         result = storage.load("result", f"{name}.jpg")
         if original is None or result is None:
             return
-        with observe("judge_async", as_type="span", trace_id=trace_id,
-                     parent_span_id=parent_span_id, input={"file_id": file_id, "preset_key": preset_key}):
+        with observe("judge_and_save", as_type="span", trace_id=trace_id,
+                     parent_span_id=parent_span_id,
+                     input={"file_id": file_id, "preset_key": preset_key}):
             report = judge.judge(original, result)
             if not report:
                 return
             if storage.load("result", f"{name}.jpg") != result:
-                print("[judge_later] 채점 중 결과가 바뀜 → 버림")
+                print("[judge] 채점 중 결과가 바뀜 → 버림")
                 return
             storage.save("quality", f"{name}.json",
                          json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8"))
@@ -538,10 +568,13 @@ def judge_later(file_id: str, preset_key: str, trace_id: str | None = None,
                 # 확인~저장 사이에 재변환이 끼어듦 — 새 결과에 옛 점수가 남지 않게 지운다
                 _clear_quality(f"{name}.json")
                 return
-            for axis in AXES:
-                score(axis, report[axis], data_type="NUMERIC")
+            try:
+                for axis in AXES:
+                    score(axis, report[axis], data_type="NUMERIC")
+            except Exception as e:
+                print(f"[judge] 점수 부착 실패(무시): {e}")
     except Exception as e:
-        print(f"[judge_later] 실패(무시): {e}")
+        print(f"[judge] 실패(무시): {e}")
     finally:
         flush()
 
@@ -583,12 +616,12 @@ def use_provided(s: State) -> dict:
 def build(*, dev: bool = False):
     """dev=True: generate 를 use_provided 로 바꾸고 재생성·배경 교체 루프를 뺀 그래프.
     앞단(read_text ∥ detect)과 뒷단 노드는 운영 그래프와 같은 함수·같은 연결을 쓴다
-    — verify/judge 프롬프트 튜닝 결과가 운영과 어긋나지 않게."""
+    — verify 프롬프트 튜닝 결과가 운영과 어긋나지 않게 (judge 는 그래프 밖, 같은 함수)."""
     g = StateGraph(State)
     nodes = [("load", load), ("classify", classify_node),
              ("read_text", read_text), ("detect", detect), ("plan", plan),
              ("score_similarity", score_similarity), ("verify", verify),
-             ("save_inspect", save_inspect), ("run_judge", run_judge),
+             ("save_inspect", save_inspect),
              ("finalize", finalize)]
     nodes += ([("use_provided", use_provided)] if dev else
               [("generate", generate), ("validate_result", validate_result),
@@ -624,8 +657,7 @@ def build(*, dev: bool = False):
         g.add_conditional_edges("composite", _route_after_composite,
                                 {"ok": "score_similarity", "failed": "save_inspect",
                                  "generate": "generate"})
-    g.add_edge("save_inspect", "run_judge")
-    g.add_edge("run_judge", "finalize")
+    g.add_edge("save_inspect", "finalize")
     g.add_edge("finalize", END)
     return g.compile()
 
@@ -634,15 +666,15 @@ GRAPH = build()
 
 # 최악 경로 = 앞 4단계(load·classify·read_text∥detect·plan) + composite(생성 전, 실패)
 # + (generate·validate) × (재생성 한도 + 가드 재시도) × 2(게이트 재생성)
-# + score/verify 3회 + composite + 뒷 3노드 ≈ 35. max_generate_attempts=5 여도 넉넉하게.
+# + score/verify 3회 + composite + 뒷 2노드 ≈ 35. max_generate_attempts=5 여도 넉넉하게.
 # (LangGraph 기본 25 는 기본 설정에서도 경계라, 비용을 다 쓴 뒤 예외로 끝날 수 있었다)
 RECURSION_LIMIT = 80
 
 
 def run_transform(file_id: str, preset_key: str, *, defer_judge: bool = False) -> dict:
-    """defer_judge=True: 그래프 안에서 judge 를 돌리지 않고 결과에 judge_pending/trace_id
-    를 실어 보낸다 — 호출부(transform 라우트)가 응답 뒤 judge_later() 를 돌린다.
-    기본값(False)은 예전처럼 동기 채점 (eval/dev 는 반환 직후 성적표 파일을 읽는다)."""
+    """defer_judge=True: 채점하지 않고 결과에 judge_pending/trace_id 를 실어 보낸다 —
+    호출부(transform 라우트)가 응답 뒤 judge_and_save() 를 돌린다.
+    기본값(False)은 그래프 직후 여기서 바로 채점 (ingest 등 배치 호출부)."""
     t0 = time.time()
 
     # pass 모드 = 지름길 (그래프 안 탐)
@@ -663,10 +695,18 @@ def run_transform(file_id: str, preset_key: str, *, defer_judge: bool = False) -
         with observe("transform", as_type="span",
                      input={"file_id": file_id, "preset_key": preset_key},
                      metadata={"pipeline_mode": settings.pipeline_mode}) as obs:
-            init: State = {"file_id": file_id, "preset_key": preset_key}
-            if defer_judge:
-                init["defer_judge"] = True
-            out = GRAPH.invoke(init, {"recursion_limit": RECURSION_LIMIT})
+            # 옛 성적표는 시작할 때 지운다 — 파일명이 file_id/preset 뿐이라 남겨 두면
+            # 새 결과에 옛 점수가 붙는다 (blocked·채점 실패 때도)
+            _clear_quality(f"{file_id}_{preset_key}.json")
+            out = GRAPH.invoke({"file_id": file_id, "preset_key": preset_key},
+                               {"recursion_limit": RECURSION_LIMIT})
+            # 그래프 도중(새 결과 저장 전)에 이전 요청의 백그라운드 채점이 옛 결과 점수를
+            # 저장했을 수 있다 — 새 결과가 저장된 뒤 한 번 더 지운다. 이후에 그 채점이
+            # 저장하려 하면 judge_and_save 의 재확인(결과 바뀜)이 스스로 지운다.
+            _clear_quality(f"{file_id}_{preset_key}.json")
+            judged = out.get("status", "pass") != "blocked"   # 원본을 내보내면 채점 안 함
+            if judged and not defer_judge:
+                judge_and_save(file_id, preset_key)
 
             result = {
                 "result_name": out["result_name"],
@@ -684,7 +724,8 @@ def run_transform(file_id: str, preset_key: str, *, defer_judge: bool = False) -
                 "mode": out.get("mode", "generate"),
                 "composite_reason": out.get("composite_reason"),
                 "detect_failed": out.get("detect_failed", False),
-                "judge_pending": defer_judge and out.get("status", "pass") != "blocked",
+                "verify_failed": out.get("verify_failed", False),
+                "judge_pending": defer_judge and judged,
                 "trace_id": current_trace_id(),
                 "trace_span_id": getattr(obs, "id", None),
             }
@@ -700,6 +741,7 @@ def run_transform(file_id: str, preset_key: str, *, defer_judge: bool = False) -
                     "mode": result["mode"],
                     "composite_reason": result["composite_reason"],
                     "detect_failed": result["detect_failed"],
+                    "verify_failed": result["verify_failed"],
                 })
     finally:
         # 성공/실패(예외) 상관없이 이번 요청의 트레이스는 즉시 내보낸다 —
@@ -727,11 +769,14 @@ def run_transform_with_result(file_id: str, preset_key: str, result_bytes: bytes
         with observe("transform_dev", as_type="span",
                      input={"file_id": file_id, "preset_key": preset_key},
                      metadata={"generate_skipped": True}) as obs:
+            _clear_quality(f"{file_id}_{preset_key}.json")
             # 매 호출 빌드 — 모듈의 노드 함수를 호출 시점에 묶는다 (dev 경로라 비용 무시 가능)
             s = build(dev=True).invoke(
                 {"file_id": file_id, "preset_key": preset_key,
                  "provided_result": result_bytes},
                 {"recursion_limit": RECURSION_LIMIT})
+            _clear_quality(f"{file_id}_{preset_key}.json")   # run_transform 과 같은 이유
+            judge_and_save(file_id, preset_key)   # judge 프롬프트 튜닝용 — 바로 채점
 
             result = {
                 "result_name": s["result_name"],
@@ -743,6 +788,8 @@ def run_transform_with_result(file_id: str, preset_key: str, result_bytes: bytes
                 "considered": s.get("considered", []),
                 "visual_similarity": s.get("visual_similarity"),
                 "detect_failed": s.get("detect_failed", False),
+                "verify_failed": s.get("verify_failed", False),
+                "mode": s.get("mode", "generate"),
                 "status": s.get("status", "pass"),
             }
             if obs is not None:

@@ -1,8 +1,8 @@
 """POST /api/transform (응답 뒤 채점) + GET /api/quality/{file_id}/{preset} (폴링).
 
-pipeline.run_transform / judge_later 는 가짜로 바꿔치기 — 라우트가 무엇을 넘기고
+pipeline.run_transform / judge_and_save 는 가짜로 바꿔치기 — 라우트가 무엇을 넘기고
 무엇을 돌려주는지만 본다. TestClient 는 BackgroundTasks 를 응답 직후 같은
-스레드에서 실행하므로 judge_later 호출 여부를 바로 확인할 수 있다.
+스레드에서 실행하므로 judge_and_save 호출 여부를 바로 확인할 수 있다.
 """
 import json
 
@@ -26,18 +26,18 @@ def _out(**kw):
 
 @pytest.fixture()
 def fake_pipeline(monkeypatch):
-    """run_transform/judge_later 호출 기록. rec["out"] 을 바꿔 반환값을 조절."""
+    """run_transform/judge_and_save 호출 기록. rec["out"] 을 바꿔 반환값을 조절."""
     rec = {"run": [], "later": [], "out": _out()}
 
     def run_transform(fid, preset, **kw):
         rec["run"].append((fid, preset, kw))
         return rec["out"]
 
-    def judge_later(*a):
-        rec["later"].append(a)
+    def judge_and_save(*a, **kw):
+        rec["later"].append((a, kw))
 
     monkeypatch.setattr("app.services.pipeline.run_transform", run_transform)
-    monkeypatch.setattr("app.services.pipeline.judge_later", judge_later)
+    monkeypatch.setattr("app.services.pipeline.judge_and_save", judge_and_save)
     return rec
 
 
@@ -55,13 +55,16 @@ def test_transform_judge_pending_schedules_background_judge(client, fake_pipelin
     fake_pipeline["out"] = _out(judge_pending=True, trace_id="tr-1", trace_span_id="sp-1")
     body = _post(client).json()
     assert body["judge_pending"] is True
-    assert fake_pipeline["later"] == [(FID, "studio_white", "tr-1", "sp-1")]
+    # trace_id/parent_span_id 는 키워드 전용 — 위치 인자로 넘기면 TypeError
+    assert fake_pipeline["later"] == [
+        ((FID, "studio_white"), {"trace_id": "tr-1", "parent_span_id": "sp-1"})]
 
 
 def test_transform_judge_pending_without_trace_ids(client, fake_pipeline):
     fake_pipeline["out"] = _out(judge_pending=True)
     _post(client)
-    assert fake_pipeline["later"] == [(FID, "studio_white", None, None)]
+    assert fake_pipeline["later"] == [
+        ((FID, "studio_white"), {"trace_id": None, "parent_span_id": None})]
 
 
 @pytest.mark.parametrize("extra", [{"judge_pending": False}, {}])
@@ -83,10 +86,21 @@ def test_transform_response_new_fields_passthrough(client, fake_pipeline):
     assert body["judge_pending"] is True
 
 
+def test_transform_response_verify_failed_passthrough(client, fake_pipeline):
+    fake_pipeline["out"] = _out(mode="composite", composite_reason="verify_failed",
+                                verify_failed=True, gate_passed=None)
+    body = _post(client).json()
+    assert body["verify_failed"] is True
+    assert body["detect_failed"] is False
+    assert body["composite_reason"] == "verify_failed"
+    assert body["gate_passed"] is None
+
+
 def test_transform_response_new_fields_defaults(client, fake_pipeline):
     body = _post(client).json()
     assert body["composite_reason"] is None
     assert body["detect_failed"] is False
+    assert body["verify_failed"] is False
     assert body["judge_pending"] is False
     assert body["status"] == "pass"
     assert body["mode"] == "generate"
@@ -121,9 +135,31 @@ def test_transform_pipeline_error_is_500_and_no_judge(client, monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("fal down")
     monkeypatch.setattr("app.services.pipeline.run_transform", boom)
-    monkeypatch.setattr("app.services.pipeline.judge_later", lambda *a: later.append(a))
+    monkeypatch.setattr("app.services.pipeline.judge_and_save",
+                        lambda *a, **k: later.append((a, k)))
     r = _post(client)
     assert r.status_code == 500 and later == []
+
+
+def test_transform_background_task_calls_real_judge_and_save_signature(client, monkeypatch):
+    """라우트가 넘기는 인자가 실제 judge_and_save 시그니처(키워드 전용)와 맞는지 —
+    가짜가 *a/**kw 로 다 받아 주면 위치/키워드 불일치를 못 잡는다."""
+    import inspect
+
+    import app.services.pipeline as pipeline_mod
+    real_sig = inspect.signature(pipeline_mod.judge_and_save)
+    bound = []
+
+    def checked(*a, **kw):
+        bound.append(real_sig.bind(*a, **kw))    # 안 맞으면 TypeError
+    monkeypatch.setattr("app.services.pipeline.run_transform",
+                        lambda f, p, **kw: _out(judge_pending=True, trace_id="t",
+                                                trace_span_id="s"))
+    monkeypatch.setattr("app.services.pipeline.judge_and_save", checked)
+    assert _post(client).status_code == 200
+    [b] = bound
+    assert b.arguments == {"file_id": FID, "preset_key": "studio_white",
+                           "trace_id": "t", "parent_span_id": "s"}
 
 
 def test_transform_real_pipeline_404_when_original_missing(client, tmp_storage):

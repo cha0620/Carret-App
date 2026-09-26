@@ -7,12 +7,11 @@
 """
 import json
 
-from google import genai
 from google.genai import types
 
 from app.core.config import settings
 from app.core.prompt_registry import get_prompt_text
-from app.core.vlm import thinking
+from app.core.vlm import get_client, thinking
 from app.core.tracing import gemini_usage, observe
 
 _SYSTEM_TEMPLATE = """You are the SELLER on a secondhand marketplace, looking at your \
@@ -30,7 +29,7 @@ def _system_prompt() -> str:
 
 
 def generate_feedback(original: bytes, result: bytes) -> dict:
-    client = genai.Client(api_key=settings.VLM_KEY)   # .env 키 사용
+    client = get_client()   # 프로세스 공용 (연결 재사용 + 타임아웃)
     user_prompt = ("Image1: BEFORE (original), Image2: AFTER (result). "
                    "You are the seller who just got this AFTER photo back. "
                    "Rate 1-5 and leave one short comment. JSON only.")

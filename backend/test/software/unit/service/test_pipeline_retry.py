@@ -118,7 +118,7 @@ def test_graph_retries_generate_once_when_check_photo_invalid_then_valid(monkeyp
     monkeypatch.setattr(pipeline_mod.detector, "classify",
                          lambda img: {"item": "chair", "considered": []})
     monkeypatch.setattr(pipeline_mod.detector, "detect_defects",
-                         lambda img, item, considered: [])
+                         lambda img, item, considered, **kw: [])   # strict=True 받음
 
     gen_calls = {"n": 0}
 
@@ -163,7 +163,7 @@ def test_graph_stops_retrying_after_max_attempts_when_always_invalid(monkeypatch
     monkeypatch.setattr(pipeline_mod.detector, "classify",
                          lambda img: {"item": "chair", "considered": []})
     monkeypatch.setattr(pipeline_mod.detector, "detect_defects",
-                         lambda img, item, considered: [])
+                         lambda img, item, considered, **kw: [])   # strict=True 받음
 
     gen_calls = {"n": 0}
 

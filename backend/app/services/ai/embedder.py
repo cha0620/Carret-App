@@ -6,8 +6,10 @@ VLM judge(fidelity/realism/trust)는 "판단"이라 프롬프트/모델 버전�
 
 모델은 모듈 전역에 lazy 싱글톤으로 캐시한다 (첫 호출에서만 로드, ~수백ms~수초).
 """
+import hashlib
 import io
 import threading
+from collections import OrderedDict
 
 import numpy as np
 from PIL import Image
@@ -46,11 +48,34 @@ def embed(image_bytes: bytes) -> np.ndarray:
     return vec / np.linalg.norm(vec)
 
 
+_ORIG_CACHE: OrderedDict = OrderedDict()
+_ORIG_CACHE_MAX = 16
+
+
+def _embed_original(image_bytes: bytes) -> np.ndarray:
+    """원본 임베딩 캐시 — 한 변환 안에서 결과만 바뀌고(재생성·합성) 원본은 같아서
+    매번 다시 임베딩할 필요가 없다. 키에 embed 함수 자체도 넣는다 (테스트가 embed 를
+    바꿔치기했을 때 다른 가짜의 값이 섞이지 않게). 결과 쪽은 매번 달라 캐시하지 않는다."""
+    key = (hashlib.sha1(image_bytes).digest(), embed)
+    with _lock:
+        if key in _ORIG_CACHE:
+            _ORIG_CACHE.move_to_end(key)
+            return _ORIG_CACHE[key]
+    vec = embed(image_bytes)
+    if hasattr(vec, "setflags"):
+        vec.setflags(write=False)   # 공유 캐시 — 호출부가 제자리 연산으로 오염시키지 못하게
+    with _lock:
+        _ORIG_CACHE[key] = vec
+        while len(_ORIG_CACHE) > _ORIG_CACHE_MAX:
+            _ORIG_CACHE.popitem(last=False)
+    return vec
+
+
 def cosine_similarity(orig: bytes, result: bytes) -> float:
     """원본 vs 결과 DINOv2 임베딩 코사인 유사도 (구조/의미 보존 정도, 대체로 0~1)."""
     with observe("dino_similarity", as_type="embedding",
                   model=_MODEL_NAME) as obs:
-        sim = float(np.dot(embed(orig), embed(result)))
+        sim = float(np.dot(_embed_original(orig), embed(result)))
         if obs is not None:
             obs.update(output={"cosine_similarity": sim})
         return sim

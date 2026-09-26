@@ -13,20 +13,19 @@
 """
 import json
 
-from google import genai
 from google.genai import types
 
 from app.core.config import settings
 from app.core.tracing import gemini_usage as _usage
 from app.core.tracing import observe
-from app.core.vlm import thinking
+from app.core.vlm import get_client, thinking
 from app import prompts as P
 
 
 # ── 공통 ─────────────────────────────────────────
 def _call(image_bytes: bytes, prompt: str, name: str = "vlm_call") -> dict:
     """공통 VLM 호출 (temp 0 + JSON 모드)."""
-    client = genai.Client(api_key=settings.VLM_KEY)
+    client = get_client()
     with observe(name, as_type="generation", model=settings.VLM_MODEL,
                  input=prompt) as obs:
         resp = client.models.generate_content(
@@ -113,10 +112,14 @@ def detect_defects(image_bytes: bytes, item: str = "object",
 
 
 def verify_and_locate(image_bytes, anchors,
-                      item="object", considered=None) -> list:
-    """결과 → 보존 여부 + 결과 좌표."""
+                      item="object", considered=None, *, strict: bool = False) -> list:
+    """결과 → 보존 여부 + 결과 좌표.
+    strict=True (파이프라인 게이트): 깨진 응답({})을 "전부 사라짐"(→ 재생성)이 아니라
+    호출 실패로 올린다 — 호출부가 "검증 불가"로 다루게."""
     considered = considered or []
     data = _call(image_bytes, P.verify_prompt(anchors, item, considered), "verify")
+    if strict and not (isinstance(data, dict) and isinstance(data.get("checks"), list)):
+        raise ValueError(f"verify: 응답에 checks 목록 없음: {str(data)[:200]}")
     raw = data.get("checks", []) if isinstance(data, dict) else []
     return [_clean_check(c) for c in raw if isinstance(c, dict) and _valid_check(c)]
 
@@ -220,7 +223,7 @@ def match_anchors(orig: list, result: list) -> dict:
         return {"matched": [], "missed": orig, "new": result}
 
     prompt = P.match_prompt(orig, result)
-    client = genai.Client(api_key=settings.VLM_KEY)
+    client = get_client()
     with observe("match", as_type="generation", model=settings.VLM_MODEL,
                  input=prompt) as obs:
         resp = client.models.generate_content(

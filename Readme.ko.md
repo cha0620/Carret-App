@@ -20,7 +20,7 @@ Carret은 대충 찍은 중고 물품 사진을 깔끔한 스튜디오 스타일
 | **문제** | 생성형 편집 모델은 배경만 바꿔 달라고 해도 흠집을 "고쳐" 버린다. 중고 거래에서는 이게 곧 허위 매물이다 |
 | **해결** | 생성 전에는 프롬프트로 복원을 금지하고, 생성 후에는 VLM 체크리스트 + 로컬 벡터 점수로 하자가 남아 있는지 검증한다 |
 | **스택** | FastAPI · LangGraph · fal.ai (FLUX edit) · Gemini (VLM) · DINOv2 · SQLite · S3 · Langfuse · Vanilla JS |
-| **품질** | 유닛 테스트 245개 (외부 API 호출 없음, CI에서 PR마다 실행) + 실제 API를 호출하는 평가 스위트 (main 브랜치/라벨로 실행) |
+| **품질** | 유닛 테스트 699개 (외부 API 호출 없음, CI에서 PR마다 실행) + 실제 API를 호출하는 평가 스위트 (main 브랜치/라벨로 실행) |
 
 ---
 
@@ -33,22 +33,27 @@ Carret은 대충 찍은 중고 물품 사진을 깔끔한 스튜디오 스타일
 flowchart TD
   L["load<br/>원본 + 프리셋"] --> C["classify<br/>물건 식별 + 체크리스트"]
   C --> T["read_text<br/>물건 위 글자 + 물건 위치<br/>(TEXT_LOCK)"]
-  T --> D["detect<br/>원본 하자 앵커"]
-  D --> G["generate · fal.ai FLUX.2<br/>프리셋 + SECONDHAND_LOCK<br/>+ 원본 글자 목록<br/>(+ 반려 사유 / 사라진 하자)"]
-  G --> V{"validate_result<br/>① 출력 가드<br/>② 구도 잘림·자막 검사"}
+  C --> D["detect<br/>원본 하자 앵커<br/>(2회 시도, 실패 시 detect_failed)"]
+  T --> P{"plan<br/>생성으로 지킬 수 있나?"}
+  D --> P
+  P -->|"detect 실패 /<br/>잔글씨 많은 물건"| X
+  P -->|ok| G["generate · fal.ai FLUX.2<br/>프리셋 + SECONDHAND_LOCK<br/>+ 원본 글자 목록<br/>(+ 반려 사유 / 사라진 하자)"]
+  G --> V{"validate_result<br/>출력 가드 (OCR 글자 비교)<br/>∥ 구도 잘림·자막 검사"}
   V -->|"가드 실패 1회차<br/>seed 바꿔 재시도"| G
   V -->|"구도 불량<br/>재생성 한도 남음"| G
-  V -->|"가드 2회 실패<br/>blocked = 원본 반환"| S
-  V -->|ok| S["score_similarity<br/>DINOv2 코사인"]
-  S --> VR{"verify (Wear Gate)<br/>하자·로고 보존 + box_2d 좌표<br/>답 수 &lt; 앵커 수면 실패"}
+  V -->|"가드 2회 실패"| X
+  V -->|ok| S["score_similarity<br/>DINOv2 코사인 (가드 값 재사용)"]
+  S --> VR{"verify (Wear Gate)<br/>하자·주요 글자 보존 + box_2d 좌표<br/>답 수 &lt; 요청 수면 실패"}
   VR -->|"통과<br/>(또는 합성본)"| I
   VR -->|"실패 1회차"| R["mark_gate_retry<br/>사라진 하자를 프롬프트에"]
   R --> G
+  VR -->|"호출 2회 실패<br/>(verify_failed)"| X
   VR -->|"실패 2회차"| X["composite · 배경 교체 모드<br/>fal BiRefNet 오리기<br/>(실패 시 로컬 rembg)<br/>+ 프리셋 배경 + 그림자"]
   X -->|"성공 → 다시 확인"| S
-  X -->|"오리기 실패<br/>생성본 유지"| I
-  I["save_inspect<br/>디버그 JSON (mode 등)"] --> J["run_judge<br/>fidelity · realism · trust"]
-  J --> F["finalize<br/>말풍선"]
+  X -->|"오리기 실패<br/>(생성 전이었으면)"| G
+  X -->|"오리기 실패: 생성본 유지<br/>(가드 불합격이면 blocked = 원본)"| I
+  I["save_inspect<br/>디버그 JSON (mode, composite_reason)"] --> F["finalize<br/>말풍선"]
+  F -.->|"응답 뒤<br/>(백그라운드)"| J["judge_and_save<br/>fidelity · realism · trust"]
 ```
 
 1. **classify**: VLM이 물건 종류를 알아내고 "이 물건이면 봐야 할 하자"
@@ -56,26 +61,35 @@ flowchart TD
 2. **read_text** (`TEXT_LOCK`, 기본 켬): 원본 물건 **위의** 글자를 읽어 generate
    프롬프트에 대략 위치와 함께 넣는다 (생성 모델이 작은 글씨·한글을 뭉개는 것을 줄임).
    물건 위치 박스도 함께 받아 배경 교체 모드에서 쓴다
-3. **detect**: 원본에서 하자를 찾아 *무엇이 / 어디에* 있는지 앵커로 남긴다
-4. **generate**: 프리셋(화이트 스튜디오 / 우든 테이블 / 미니멀 그레이)으로
+3. **detect** (read_text 와 병렬): 원본에서 하자를 찾아 *무엇이 / 어디에* 있는지 앵커로
+   남긴다. 2회 모두 실패하면 "하자 없음"이 아니라 `detect_failed`로 표시한다
+4. **plan**: 생성으로는 정직하게 지킬 수 없는 게 보이면(하자 검출 실패, 잔글씨가 많은
+   물건) 생성을 건너뛰고 바로 배경 교체 모드로 간다
+5. **generate**: 프리셋(화이트 스튜디오 / 우든 테이블 / 미니멀 그레이)으로
    배경을 교체한다. 모든 프롬프트에 `SECONDHAND_LOCK`(복원·보정 금지)이
    붙는다
-5. **validate_result**: 결과가 잘리거나 자막이 덮였으면 **반려 사유를
-   프롬프트에 붙여서** 다시 생성한다. 같은 프롬프트로 다시 돌리지 않고,
-   재시도 횟수는 설정으로 상한을 둔다
-6. **score_similarity**: VLM과 별개로 DINOv2 임베딩 유사도를 로컬에서 계산한다
-7. **verify (Wear Gate)**: "문제를 찾아라"라고 묻지 않고 "이 하자들이
-   아직 보이는지 확인해라"라고 묻는 체크리스트 방식으로, 하자 보존 여부와
+6. **validate_result**: 먼저 출력 가드 — 결과 물건 위 글자를 다시 읽어 원본과 줄 단위로
+   비교한다. hard 실패는 seed 를 바꿔 1회 재시도, 그래도 실패면 배경 교체 모드로.
+   구도 검사(check_photo)는 이 OCR 읽기와 **병렬**로 돈다 (가드가 막으면 취소).
+   결과가 잘리거나 자막이 덮였으면 **반려 사유를 프롬프트에 붙여서** 다시
+   생성한다. 같은 프롬프트로 다시 돌리지 않고, 재시도 횟수는 설정으로 상한을 둔다
+7. **score_similarity**: VLM과 별개인 DINOv2 임베딩 유사도 (가드가 계산한 값 재사용)
+8. **verify (Wear Gate)**: "문제를 찾아라"라고 묻지 않고 "이 하자들이
+   아직 보이는지 확인해라"라고 묻는 체크리스트 방식으로 (물건 위 주요 글자 —
+   큰 줄 최대 8개 — 도 체크리스트에 들어간다), 하자 보존 여부와
    결과 이미지 속 좌표를 받아 온다. 좌표는 Gemini가 학습된 형식인
    `box_2d [ymin, xmin, ymax, xmax]`로 받고, VLM이 확인을 요청한 하자보다
-   적게 답하면(빈 응답 포함) 게이트를 실패로 본다
-8. **게이트 실패 폴백**: verify 게이트가 실패하면 사라진 하자 목록을 프롬프트에 붙여
+   적게 답하면(빈 응답 포함) 게이트를 실패로 본다. verify **호출 자체**가 2회 모두
+   실패하면 "통과"가 아니라 `verify_failed`로 표시하고 바로 배경 교체 모드로 간다
+9. **게이트 실패 폴백**: verify 게이트가 실패하면 사라진 하자 목록을 프롬프트에 붙여
    1회 재생성하고, 그래도 실패하면 **배경 교체 모드**로 넘어간다. 원본 물건을 오려
    (fal BiRefNet, 실패하면 로컬 rembg) 프리셋 배경 위에 합성하므로 물건 픽셀은 원본
-   그대로다. 결과에는 `mode: composite`가 기록된다
-9. **judge**: fidelity / realism / trust 성적표를 만들고, 결과는 캐시와
-   Langfuse Score에 남긴다
-10. UI는 결과 위에 하자 말풍선을 띄우고 판매자에게 별점과 코멘트를 받는다
+   그대로다. 결과에는 `mode: composite`와 `composite_reason`이 기록된다
+10. **judge** (그래프 밖, `judge_and_save` 한 곳): fidelity / realism / trust 성적표를
+   만들어 같은 트레이스에 Langfuse Score로 붙인다. API 는 응답을 보낸 뒤 백그라운드로
+   채점하고 UI 는 `GET /api/quality/{file_id}/{preset}`을 폴링해 받아온다.
+   eval·dev 는 그래프 직후 바로 채점한다
+11. UI는 결과 위에 하자 말풍선을 띄우고 판매자에게 별점과 코멘트를 받는다
 
 ---
 
@@ -113,7 +127,7 @@ backend/
     │   ├── config.py           # pydantic Settings (.env)
     │   ├── db.py               # SQLite 스키마 + 마이그레이션
     │   ├── tracing.py          # Langfuse v4 OTEL (키가 없으면 noop)
-    │   ├── vlm.py              # VLM 호출별 생각(thinking) 수준 (비용 제어)
+    │   ├── vlm.py              # Gemini 공용 클라이언트(타임아웃) · 재시도 판정 · 호출별 thinking
     │   └── prompt_registry.py  # Langfuse 프롬프트, 실패하면 로컬 fragment로 fallback
     └── schemas/                # pydantic 요청/응답 (file_id 정규식 = 경로 순회 방어)
 
@@ -178,10 +192,11 @@ study/      날짜별 개발 로그: 버그 원인, 설계 판단, 뒤집은 결
 
 **2. LLM의 판단과 결정론적 지표를 나눴다**
 VLM judge는 프롬프트나 모델 버전에 따라 흔들립니다. 그래서 DINOv2 유사도,
-OCR 매칭, 크롭 단위 하자 가시성 같은 결정론적 신호를 따로 두었습니다
+OCR 글자 매칭 같은 결정론적 신호를 따로 두었습니다
 (`quality/guards.py`). 가드는 계산이 실패했을 때 자동으로 통과시키지 않고
-(fail-open 금지) 예외를 그대로 올립니다. 반대로 관측용 단계(detect, judge)는
-실패해도 이미 비용을 쓴 생성 결과를 버리지 않습니다. 실패 정책을 단계마다
+(fail-open 금지) 예외를 그대로 올립니다. 검사 단계(detect, verify) 호출이 실패하면
+"통과"가 아니라 `detect_failed` / `verify_failed`로 드러내고 배경 교체 모드로 갑니다.
+반대로 관측용 단계(judge)는 실패해도 이미 비용을 쓴 생성 결과를 버리지 않습니다. 실패 정책을 단계마다
 의도적으로 다르게 가져갔습니다.
 
 **3. 평가를 먼저 설계했다**
@@ -198,7 +213,8 @@ Langfuse로 트레이싱과 프롬프트 버전을 관리하고, 외부 의존�
 
 **5. 테스트 가능한 구조**
 외부 호출은 `services/ai/`에만 모여 있어서 목(mock)으로 갈아 끼우기 쉽습니다.
-그래서 유닛 테스트 193개가 네트워크 없이 약 6초 안에 끝납니다. dev 리플레이
+그래서 유닛 테스트 699개가 네트워크 없이 약 12초 안에 끝납니다
+(`unit/conftest.py`가 실수로 실제 VLM을 부르는 것도 막습니다). dev 리플레이
 (`run_transform_with_result`)는 생성 단계만 건너뛰고 **프로덕션 노드 함수를
 그대로 호출**합니다. 로직을 복사해 두지 않았기 때문에 테스트와 실제 동작이
 어긋나지 않습니다.
@@ -226,6 +242,7 @@ uvicorn main:app --reload   # http://localhost:8000 (프론트 포함)
 | `MAX_GENERATE_ATTEMPTS` | 재생성 상한 (기본 2, 1~5) |
 | `DEV_TOOLS=false` | `/dev/*` 라우트 비활성화 (배포 시) |
 | `LANGFUSE_PUBLIC_KEY` / `SECRET_KEY` | 없으면 트레이싱과 프롬프트 관리가 noop |
+| `VLM_TIMEOUT_S` | VLM 호출 1회 타임아웃 (기본 60초) |
 | `VLM_THINKING` | 호출별 생각 수준 덮어쓰기, 예: `{"verify": "default", "judge": "low"}` (정수 = 생각 토큰 상한) |
 
 ### 테스트
@@ -235,6 +252,7 @@ cd backend && pytest test/software/unit -q   # 무료 유닛 테스트 (CI와 �
 make test    # eval / e2e 제외 전체
 make eval    # 실제 VLM·fal.ai 호출 (비용 발생)
 make e2e     # 브라우저 테스트
+make docs    # 레포의 .md 를 브라우저로 보기 (http://localhost:8090, mermaid 렌더링)
 ```
 
 | 폴더 | 범위 |
@@ -267,6 +285,10 @@ make e2e     # 브라우저 테스트
   (hard/soft), 미적 판단은 judge가 맡는다
 - **단계마다 다른 실패 정책**: 관측 단계는 실패해도 넘어가고, 가드는
   실패하면 막는다
+- **"확인 못 함"은 통과가 아니다**: detect·verify 호출이 실패하면 `detect_failed` /
+  `verify_failed`로 드러내고 배경 교체 모드로 간다. 재시도는 다시 해서 나아질
+  오류(타임아웃·429·5xx·깨진 응답)에만 한다
+- **같은 일은 한 곳에서**: 채점은 `judge_and_save` 하나, "언제"만 호출부가 정한다
 - **로직을 복사하지 않는다**: dev 도구와 테스트도 프로덕션 노드 함수를 그대로
   호출한다
 - **경로의 기준은 하나**: 디스크 구조는 `storage.BASE`만 안다
@@ -294,10 +316,25 @@ make e2e     # 브라우저 테스트
 | verify가 가끔 생각 토큰을 ~63,000개 써서 호출 1번에 ~$0.57 | 생각 토큰은 응답에 안 보이지만 출력 단가로 청구된다. 호출별로 상한을 두고, Langfuse 비용에도 합산한다 |
 | verify가 빈 응답을 주면 게이트가 통과였음 | 게이트는 "확인 못 함"을 통과로 치면 안 된다 (fail-closed) |
 | main CI가 `langfuse` 미설치로 09-15부터 실패 중이었음 | CI 의존성 목록은 새 import가 생길 때마다 같이 챙겨야 한다 |
+| detect 호출이 실패해도 "하자 없음"(`[]`)으로 읽혀 게이트를 건너뜀. verify 호출 예외도 `gate_passed=None` → 통과 | "진짜 없음"과 "못 물어봄"은 다른 값이어야 한다. 한 곳에서 찾으면 같은 종류의 구멍을 다른 곳에서도 찾는다 |
+| 가장 보수적인 경로(blocked = 원본 반환)가 KeyError로 500 | 분기가 늘면 "이 노드까지 오는 모든 길에서 이 키가 채워지나"를 따진다. `TypedDict(total=False)`는 못 잡는다 |
+| judge가 그래프 노드와 `judge_later` 두 벌 | "왜 이렇게 돼 있지?"는 호출부를 grep 해서 실제로 읽는 곳을 보고 답한다. 동기 채점이 필요한 곳은 없었다 |
+| 병렬화 뒤 테스트가 `.env` 키로 실제 Gemini를 부름. 가짜가 새 인자를 못 받아 엉뚱한 경로로 통과 | 가짜(fake)는 실제 시그니처를 따라가야 한다. 안 그러면 "통과하지만 엉뚱한 걸 검사하는" 테스트가 된다 |
 
 ---
 
 ## 📝 최근 변경
+
+**2026-09-26**
+- **파이프라인 게이트 구멍 해소** (PR #19): detect 실패를 `detect_failed`로, judge 캐시 제거,
+  OCR 출력 가드 연결, 생성 전 `plan` 라우팅, 글자 사후검증, dev 경로 = 운영 그래프,
+  UI에 blocked·composite 상태 표시, `considered` XSS 수정
+- **judge 한 벌로** (`judge_and_save`): 그래프 노드와 백그라운드 경로의 중복 제거
+- **대기 시간**: OCR 읽기 ∥ check_photo (생성 1회당 VLM 직렬 1회 ↓), Gemini 클라이언트 공용,
+  타임아웃 60초, 원본 DINO 임베딩 캐시
+- **verify 호출 실패 구멍**: 예외가 통과로 라우팅되던 것 → `verify_failed` → 배경 교체,
+  UI 배지 "검사하지 못했습니다"
+- **md 도구**: `make docs` 뷰어, `.markdownlint.json` (프롬프트 fragment 는 린트 제외)
 
 **2026-09-24**
 - 테스트 랩에 **결과 한눈에 보기** (`GET /dev/results`) 추가, inbox 원본 10장 추가 실행
@@ -325,11 +362,15 @@ make e2e     # 브라우저 테스트
 - [x] Langfuse 트레이싱 · 프롬프트 관리 · Score
 - [x] 결과 검증 기반 재생성 (`validate_result`)
 - [x] 서비스 레이어 재구성 (`ai/` · `quality/` · `persistence/`)
-- [x] 출력 가드(`guards.py`)를 `validate_result`에 연결 (현재는 DINO 대역 가드만 실제로 동작, OCR 입력과 앵커 크롭 가드는 미연결)
+- [x] 출력 가드(`guards.py`)를 `validate_result`에 연결
 - [x] 말풍선 좌표 전치 수정 (`box_2d`) + verify 게이트 강화
 - [x] VLM 생각 토큰 제어 (호출별 thinking 설정)
-- [ ] OCR 가드 입력 연결 + 앵커 크롭 가드(`embedder.crop_sim`)
-- [ ] 원본 글자를 생성 프롬프트에 넣기 — 첫 실험(각 1회)에서 한글·작은 글씨 보존이 크게 개선, 반복 검증 필요
+- [x] OCR 가드 입력 연결 (`ocr_match` recall ≥ 0.95 = hard)
+- [x] 원본 글자를 생성 프롬프트에 넣기 (`TEXT_LOCK`, 기본 켬)
+- [x] detect / verify 호출 실패를 통과로 치지 않기 (`detect_failed`, `verify_failed`)
+- [ ] eval 로 임계값 검증: OCR 가드 오차단률, `text_heavy` 기준(12줄), composite 비율
+- [ ] 앵커 크롭 가드 (`_guard_anchors`, `embedder.crop_sim` 없음) — 살릴지 지울지
+- [ ] detect 정밀도: printed 와 surface_damage 구분 (현재 R/P 0.67)
 - [ ] 한글 글자 깨짐 판정: 줄 단위 크롭 비교 또는 한글 특화 OCR (로컬 EasyOCR/PaddleOCR은 부정확·불안정)
 - [ ] verify 게이트를 하자별 id로 매칭 (지금은 개수만 확인)
 - [ ] 정량 스코어카드 (CSV) + 모델 A/B
