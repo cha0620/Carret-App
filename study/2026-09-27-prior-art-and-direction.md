@@ -203,3 +203,42 @@ gate 는 통과했는데 judge fidelity 가 낮은 4건을 원본과 나란히 �
 [civitai]: https://civitai.com/articles/5393/product-photography-relight-v3-with-internal-frequency-separation-for-preserving-details
 [openart]: https://openart.ai/workflows/risunobushi/video-relighting-detail-and-color-transfer-non-animatediff/YxuxT1PkjeWCmnpSpwPs
 [runcomfy-video]: https://www.runcomfy.com/comfyui-workflows/comfyui-product-relighting-video-workflow
+
+---
+
+## 8. 고주파 섞기 실험 → 효과 없음 · 원인은 입력 화질
+
+### 8-1. 섞기 (§6-4 첫 실험)
+
+스크립트: scratchpad `hf_blend.py` / `hf_blend_sift.py` (로컬 rembg + ECC / SIFT, 비용 0). 결과 페이지(비공개 artifact): 고주파 섞기 복원 결과.
+
+| 건 | 정렬 | 결과 |
+|---|---|---|
+| 주전자 | ECC 0.80, 특징점 44 | 정렬은 됐지만 돌아온 건 하자가 아니라 **원본 방 안의 반사** |
+| Kitty | 특징점 75 | 몸통만 맞음. 유리 주전자·손잡이 이중 상 |
+| Braun | 특징점 9 | 정렬 불가, 전체 겹침 |
+| 의자 | 특징점 6 | 정렬 불가 (구도 변경) |
+
+처음에 주전자를 "성공"으로 적었다가 사용자가 "전혀 효과가 없다"고 지적 — 맞다. 원본 고주파에는 하자와 촬영 환경 반사가 섞여 있어 구분할 수 없고,
+FLUX 가 모양을 바꾸면 맞출 수도 없다. **FLUX 결과에 나중에 섞는 방식은 버린다.** IC-Light V2(모양 유지 재조명, fal $0.1/MP)도 반사 문제는 같아 보류.
+
+### 8-2. 방향: 생성은 그대로, 검사 강화 (사용자: "2번이 맞지")
+
+정렬 신호(물건 누끼끼리 SIFT 인라이어)를 "딴 물건이 됐나" 검사로 쓸 수 있는지 28건 전체로 확인 (로컬 누끼, 비용 0):
+
+- 인라이어 ≤ 13 인 8건: judge fidelity 2·3·5·3·5·3·5·5 → **절반은 멀쩡한 결과** (오차단)
+- 인라이어 ≥ 60 인 12건: fidelity 5 가 11건 (나머지 1건은 합성 결과)
+- 가운데(18~57)는 섞여 있다 → 지금 데이터로는 기준값을 못 정한다
+
+### 8-3. 원인: 테스트 입력이 너무 작다 (사용자 지적)
+
+> 데이터셋은 너무 화질이 안 좋아서 그런 것 같은데, 기본적으로 인풋은 사진을 찍으니까 구도는 엉망이어도 화질은 좋을 거 아니야
+
+맞다. 로컬 결과 28건 중 **27건이 SOP 데이터셋 원본 약 400px**(160~500px), 결과는 1024×1024.
+FLUX 가 2.5~6배를 키우면서 없는 디테일을 **지어낼 수밖에 없다** — 매끈해진 재질(주전자), 지어낸 긁힘(Braun), 다시 그린 버튼 글자가 이것으로 설명된다.
+특징점도 작은 이미지에서는 적게 잡혀 신호가 흔들린다. 실제 사용자는 폰으로 찍으니 구도는 엉망이어도 해상도는 높다.
+**지금 데이터셋으로 내린 판단(FLUX 가 물건을 바꾼다, 정렬 신호가 약하다)은 실제 입력에서 다시 재야 한다.**
+
+- [ ] 폰으로 찍은 고해상도 테스트 셋 (구도는 엉망, 하자 있는 것 포함) — §6-4 하자 사진 20장과 합친다
+- [ ] 그 셋으로 파이프라인 다시 돌려 gate·judge·정렬 신호 비교 (유료, 장당 FLUX + VLM)
+- [ ] 정렬 신호를 soft 가드로 넣어 값부터 모으기 (item_dino 와 같은 방식)
