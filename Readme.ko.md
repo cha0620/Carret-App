@@ -31,38 +31,22 @@ Carret은 대충 찍은 중고 물품 사진을 깔끔한 스튜디오 스타일
 
 ```mermaid
 flowchart TD
-  L["load<br/>원본 + 프리셋"] --> A["analyze · VLM 1회<br/>물건 · 로고/글자 마크 · 물건 위치<br/>사진 종류 · 하자 수준 · 워터마크 · 글자 수준<br/>(2회 시도, 실패 시 detect_failed)"]
-  A --> P{"plan<br/>사진 종류로 먼저 나눈다"}
-
-  P -->|"inside_view<br/>엔진룸 · 뜯은 노트북"| O["keep_original<br/>원본 그대로"]
-  P -->|"document<br/>책 · 음반 · 보증서"| X
-  P -->|"분석 실패 ·<br/>product 인데 글자 dense · 하자 heavy"| X
-  P -->|"product · 글자 simple"| T["read_text<br/>물건 위 글자 → TEXT_LOCK"]
-  P -->|"product · 글자 none"| G
-  T -->|"12줄 이상"| X
-  T --> G
-
-  subgraph GEN["생성 경로"]
-    G["generate · FLUX.2<br/>프리셋 + SECONDHAND_LOCK<br/>+ 원본 글자 (+ 반려 사유 · 바뀐 마크)"] --> V{"validate_result<br/>구도 잘림 · 자막 검사<br/>+ DINO · 누끼 · 패치 (관측만)"}
-    V -->|"구도 불량 · 한도 남음"| G
-    R["mark_gate_retry<br/>바뀐 마크를 프롬프트에"] --> G
-  end
-
-  V -->|ok| S["score_similarity<br/>DINOv2"]
-  S --> VR{"verify<br/>로고 · 주요 글자 보존?<br/>(생성본만 — 배경 교체본은 바로 통과)"}
-  VR -->|"실패 1회차"| R
-  VR -->|"실패 2회차 · 호출 실패 · 분석 실패"| X["composite · 배경 교체<br/>원본 물건 오리기 + 프리셋 배경<br/>document 는 표지를 정면으로 펴기<br/>(하자 heavy 문서는 펴지 않음)"]
-  VR -->|"통과 · 배경 교체본"| I
-  X -->|성공| S
-  X -->|"오리기 실패 · 생성 전<br/>document · 하자 heavy → 원본 그대로"| I
-  X -->|"오리기 실패 · 생성 전<br/>글자 아직 안 읽음"| T
-  X -->|"오리기 실패 · 생성 전<br/>그 밖"| G
-  X -->|"오리기 실패 · 생성 뒤<br/>생성본 유지"| I
-  O --> I
-
-  I["save_inspect<br/>경로 · 이유 · 분석 값"] --> F["finalize<br/>말풍선"]
-  F -.->|"그래프 뒤: DB 기록 ·<br/>응답 뒤 채점 (원본 그대로면 안 함)"| J["judge_and_save<br/>fidelity · realism · trust"]
+  A["analyze<br/>사진 종류 · 하자 · 글자"] --> P{"사진 종류"}
+  P -->|"inside_view<br/>엔진룸 · 내부"| O["원본 그대로"]
+  P -->|"document<br/>책 · 보증서"| X["배경 교체<br/>원본 물건 픽셀<br/>(문서는 표지 펴기)"]
+  P -->|product| C{"생성해도 되나?"}
+  C -->|"하자 heavy · 잔글씨<br/>분석 실패"| X
+  C -->|예| G["생성 · FLUX.2"]
+  G --> V{"검증<br/>구도 · 로고·글자 보존"}
+  V -->|"실패 1회 → 재생성"| G
+  V -->|"실패 2회"| X
+  V -->|통과| R(["결과"])
+  X --> R
+  O --> R
+  R -.->|응답 뒤| J["채점 · judge"]
 ```
+
+세부 분기(글자 읽기, 오리기 실패 처리, 재생성 한도)는 아래 단계 설명에 있다.
 
 1. **analyze** (VLM 1회, 2026-09-27 에 classify + detect 를 합침): 원본에서 물건 종류,
    **물건의 정체를 이루는 마크**(로고·인쇄 글자·그래픽 — 하자는 목록으로 뽑지 않는다), 물건 위치,
