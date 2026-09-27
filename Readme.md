@@ -405,6 +405,8 @@ make docs    # browse the repo's .md files (http://localhost:8090, renders merma
   Heavily worn documents are not flattened
 - **No verify on background swaps** (the item pixels are the original's; one VLM call saved), and
   the DB `results` table now records the route (mode, reason, photo type, wear)
+- **Eval tooling** (`backend/eval/`): ground-truth labels → run → side-by-side human review →
+  classification accuracy, preservation pass rate, rater agreement and AUC of the automatic scores
 
 **2026-09-26 (night)**
 - **Default VLM 3.5-flash → 3.8-flash**: on 19 photos with real defects it found the real defects as
