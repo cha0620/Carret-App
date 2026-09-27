@@ -21,7 +21,7 @@ python .claude/skills/eval-report/inspect_stats.py --preset studio_white
 ## 2. Langfuse (MCP `langfuse` 가 연결돼 있을 때)
 
 - 노드별 소요 시간(span 이름 = 노드 이름), `detect_failed` / `verify_failed` / `composite_reason` 빈도,
-  `item_dino` · `dino_band` · `ocr_match` Score 분포를 조회한다.
+  `item_dino` · `dino_band` · `item_patch` Score 분포 (`ocr_match` 는 09-27 에 가드와 함께 없앰 — 옛 트레이스에만 있다)를 조회한다.
 - 연결 안 돼 있으면 건너뛰고 그렇다고 적는다.
 
 ## 3. 유료 (사용자 확인 필수 — VLM·fal.ai 비용)

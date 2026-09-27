@@ -74,7 +74,7 @@ def dev_originals():
 
 @router.post("/detect")
 def dev_detect(req: DevDetectReq):
-    """스테이지 1만 — 파이프라인과 "같은 함수"."""
+    """옛 하자 앵커 검출 (eval·비교용). 파이프라인 첫 단계는 09-27 부터 detector.analyze 다."""
     return {"anchors": detector.detect_defects(_original_bytes(req.file_id))}
 
 

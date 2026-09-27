@@ -136,9 +136,7 @@ runBtn.onclick = async () => {
       // 피드백 조회 실패는 변환 결과 표시를 막지 않음
     }
 
-    statusEl.textContent = data.status === 'blocked'
-      ? '변환 결과를 내보내지 않았어요 (아래 안내 참고)'
-      : data.judge_pending ? '완료! 🎉 (성적표 채점 중…)' : '완료! 🎉';
+    statusEl.textContent = data.judge_pending ? '완료! 🎉 (성적표 채점 중…)' : '완료! 🎉';
   } catch (e) {
     stopQualityPoll();
     statusEl.textContent = '변환 실패: ' + e.message;

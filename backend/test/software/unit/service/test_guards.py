@@ -1,4 +1,7 @@
-"""app.services.quality.guards - 결정론적 출력 가드(hard/soft) + decide() 게이트.
+"""app.services.quality.guards - 결정론적 출력 가드 (전부 soft, 관측용).
+
+VLM OCR hard 가드(ocr_match·no_added_text)·run_output_guards·decide 는 09-27 에 삭제 —
+이미지 전체 DINO 는 dino_band_guard 하나로 남았다.
 
 embedder.cosine_similarity 는 실제 DINO 모델을 로드하므로 전부
 monkeypatch - 가드의 로직(임계값 비교, block/pass 판정)만 검증한다.
@@ -20,171 +23,12 @@ def disable_langfuse(monkeypatch):
 
 def _patch_cosine(monkeypatch, *values):
     """embedder.cosine_similarity 호출을 순서대로 values 로 치환
-    (run_output_guards 안에선 dino_band 전체 비교 한 번뿐)."""
+    (dino_band_guard 는 이미지 전체 비교 한 번뿐)."""
     it = iter(values)
     monkeypatch.setattr(embedder, "cosine_similarity", lambda o, r, **kw: next(it))
 
 
-# ── 1. hard 1건 실패 → block ────────────────────────
-def test_hard_fail_blocks(monkeypatch, make_png):
-    _patch_cosine(monkeypatch, 0.9)           # dino_band (soft) 는 정상
-    orig, result = make_png(), make_png()
-
-    guards_out = guards.run_output_guards(orig, result, ["NIKE"], ["ADIDAS"])
-    status, failed = guards.decide(guards_out)
-
-    assert status == "block"
-    assert [g.name for g in failed] == ["ocr_match"]
-
-
-# ── 2. soft만 실패 → pass ───────────────────────────
-def test_soft_only_fail_passes(monkeypatch, make_png):
-    _patch_cosine(monkeypatch, 0.5)           # dino_band 밖 (soft 실패)
-    orig, result = make_png(), make_png()
-
-    guards_out = guards.run_output_guards(orig, result, ["a"], ["a"])
-    status, out = guards.decide(guards_out)
-
-    assert status == "pass"
-    dino = next(g for g in guards_out if g.name == "dino_band")
-    assert dino.passed is False and dino.severity == "soft"
-
-
-# ── 3. product 없음 → ocr/dino 만으로 pass ─────────────────────
-def test_empty_anchors_passes_when_ocr_and_dino_ok(monkeypatch, make_png):
-    _patch_cosine(monkeypatch, 0.9)
-    orig, result = make_png(), make_png()
-
-    guards_out = guards.run_output_guards(orig, result, ["scratch"], ["scratch"])
-    status, out = guards.decide(guards_out)
-
-    assert status == "pass"
-    # 좌표 가드는 제거됐다 — product 도 없으면 ocr/added/dino 세 개뿐
-    assert [g.name for g in guards_out] == ["ocr_match", "no_added_text", "dino_band"]
-
-
-# ── 4. added_text 발생 → soft (관측만, 차단 아님) ─────
-def test_added_text_alone_is_soft_and_passes(monkeypatch, make_png):
-    _patch_cosine(monkeypatch, 0.9)
-    orig, result = make_png(), make_png()
-
-    guards_out = guards.run_output_guards(
-        orig, result, ["brand"], ["brand", "SALE 50%"])
-    status, failed = guards.decide(guards_out)
-
-    assert status == "pass"
-    added = next(g for g in guards_out if g.name == "no_added_text")
-    assert added.passed is False and added.severity == "soft" and added.value == 1.0
-    ocr = next(g for g in guards_out if g.name == "ocr_match")
-    assert ocr.passed is True
-
-
-def test_added_text_uses_text_match_added_not_set_difference(monkeypatch, make_png):
-    """정확 일치 집합 차가 아니라 text_match 의 added — 대소문자·공백만 다른 줄은 새 글자가 아님."""
-    _patch_cosine(monkeypatch, 0.9)
-    orig, result = make_png(), make_png()
-    guards_out = guards.run_output_guards(
-        orig, result, ["Brand  Name"], ["brand name"])
-    added = next(g for g in guards_out if g.name == "no_added_text")
-    assert added.passed is True and added.value == 0.0
-
-
-def test_added_text_value_counts_text_match_added(monkeypatch, make_png):
-    import app.services.quality.metric as metric_mod
-    monkeypatch.setattr(metric_mod, "text_match",
-                        lambda b, a: {"recall": 1.0, "changed": [], "added": ["x", "y"]})
-    _patch_cosine(monkeypatch, 0.9)
-    orig, result = make_png(), make_png()
-    guards_out = guards.run_output_guards(orig, result, ["a"], ["a"])
-    added = next(g for g in guards_out if g.name == "no_added_text")
-    assert added.value == 2.0 and added.passed is False
-
-
-def test_ocr_order_independent(monkeypatch, make_png):
-    _patch_cosine(monkeypatch, 0.9)
-    orig, result = make_png(), make_png()
-    guards_out = guards.run_output_guards(
-        orig, result, ["NIKE", "AIR", "29"], ["29", "AIR", "NIKE"])
-    status, _ = guards.decide(guards_out)
-    assert status == "pass"
-    assert next(g for g in guards_out if g.name == "ocr_match").value == 1.0
-
-
-def test_ocr_garbled_line_blocks(monkeypatch, make_png):
-    _patch_cosine(monkeypatch, 0.9)
-    orig, result = make_png(), make_png()
-    guards_out = guards.run_output_guards(orig, result, ["NIKE"], ["NlKE"])
-    status, failed = guards.decide(guards_out)
-    assert status == "block"
-    assert [g.name for g in failed] == ["ocr_match"]
-
-
-def test_ocr_all_text_lost_blocks(monkeypatch, make_png):
-    _patch_cosine(monkeypatch, 0.9)
-    orig, result = make_png(), make_png()
-    guards_out = guards.run_output_guards(orig, result, ["NIKE"], [])
-    ocr = next(g for g in guards_out if g.name == "ocr_match")
-    assert ocr.value == 0.0 and ocr.passed is False
-
-
-# ── 5. 경계값 정확 동작 ───────────────────────────────
-@pytest.mark.parametrize("recall,passed", [(0.95, True), (0.949, False), (1.0, True)])
-def test_ocr_match_threshold_boundary_0_95(monkeypatch, make_png, recall, passed):
-    """ocr_match 는 text_match 의 recall 로 판정 (text_recall 아님)."""
-    import app.services.quality.metric as metric_mod
-    seen = []
-    monkeypatch.setattr(metric_mod, "text_match",
-                        lambda b, a: seen.append((b, a)) or
-                        {"recall": recall, "changed": [], "added": []})
-
-    def poison(*a):
-        raise AssertionError("text_recall 은 더 이상 쓰지 않는다")
-    monkeypatch.setattr(metric_mod, "text_recall", poison)
-    _patch_cosine(monkeypatch, 0.9)
-    orig, result = make_png(), make_png()
-
-    guards_out = guards.run_output_guards(orig, result, ["a", "b"], ["b", "a"])
-    ocr = next(g for g in guards_out if g.name == "ocr_match")
-
-    assert seen == [(["a", "b"], ["b", "a"])]   # 줄 목록 그대로 (이어붙이지 않음)
-    assert ocr.passed is passed and ocr.value == recall and ocr.severity == "hard"
-
-
-# ── 6. tracing 꺼짐 부작용 0 ─────────────────────────
-def test_tracing_disabled_no_side_effects(monkeypatch, make_png):
-    assert tracing.get_langfuse() is None   # autouse fixture 로 이미 꺼짐 확인
-    _patch_cosine(monkeypatch, 0.9)
-    orig, result = make_png(), make_png()
-
-    guards_out = guards.run_output_guards(orig, result, ["a"], ["a"])  # 예외 없이 통과
-    status, _ = guards.decide(guards_out)
-
-    assert status == "pass"
-
-
-# ── 8. 정상 전부 → pass ─────────────────────────────
-def test_all_normal_passes(monkeypatch, make_png):
-    _patch_cosine(monkeypatch, 0.9)
-    orig, result = make_png(), make_png()
-
-    guards_out = guards.run_output_guards(orig, result, ["brand"], ["brand"])
-    status, out = guards.decide(guards_out)
-
-    assert status == "pass"
-    assert [g.name for g in out] == ["ocr_match", "no_added_text", "dino_band"]
-    assert all(g.passed for g in out)
-
-
 # ── 보너스: 데이터 구조/스코프 계약 ───────────────────
-def test_decide_returns_only_hard_fails_not_all_guards():
-    g_hard_fail = guards.GuardResult("x", False, 0.1, 0.9, "hard")
-    g_soft_fail = guards.GuardResult("y", False, 0.1, 0.9, "soft")
-    g_pass = guards.GuardResult("z", True, 1.0, 0.9, "hard")
-
-    status, out = guards.decide([g_hard_fail, g_soft_fail, g_pass])
-
-    assert status == "block"
-    assert out == [g_hard_fail]
 
 
 def test_removed_coordinate_guard_api_is_gone():
@@ -194,50 +38,7 @@ def test_removed_coordinate_guard_api_is_gone():
         assert not hasattr(guards, name), name
 
 
-# ── dino_band: 계산 실패는 삼키고 가드만 빠진다 (soft) ──
-def test_dino_failure_omits_dino_band_without_raising(monkeypatch, make_png):
-    def boom(o, r):
-        raise RuntimeError("OOM")
-    monkeypatch.setattr(embedder, "cosine_similarity", boom)
-    orig, result = make_png(), make_png()
-
-    guards_out = guards.run_output_guards(orig, result, ["a"], ["a"])
-
-    assert [g.name for g in guards_out] == ["ocr_match", "no_added_text"]
-    assert guards.decide(guards_out)[0] == "pass"
-
-
-def test_dino_failure_does_not_swallow_hard_ocr_guard_errors(monkeypatch, make_png):
-    """hard 가드(ocr_match)의 계산 예외는 그대로 전파 (fail-open 금지) — soft 만 삼킨다."""
-    import app.services.quality.metric as metric_mod
-
-    def boom(*a):
-        raise RuntimeError("metric broke")
-    monkeypatch.setattr(metric_mod, "text_match", boom)
-    _patch_cosine(monkeypatch, 0.9)
-    orig, result = make_png(), make_png()
-    with pytest.raises(RuntimeError):
-        guards.run_output_guards(orig, result, ["a"], ["a"])
-
-
-@pytest.mark.parametrize("value,passed", [(0.75, True), (0.7499, False)])
-def test_dino_band_lower_bound(monkeypatch, make_png, value, passed):
-    lo, hi = guards.DINO_BAND
-    _patch_cosine(monkeypatch, lo if passed else lo - 0.0001)
-    orig, result = make_png(), make_png()
-    guards_out = guards.run_output_guards(orig, result, [], [])
-    dino = next(g for g in guards_out if g.name == "dino_band")
-    assert dino.passed is passed and dino.severity == "soft"
-
-
 # ── item_dino: 누끼 물건끼리 DINO (soft, 판정과 분리) ─────
-def test_run_output_guards_has_no_product_param_and_no_item_dino(monkeypatch, make_png):
-    import inspect
-    assert list(inspect.signature(guards.run_output_guards).parameters) == [
-        "orig", "result", "ocr_before", "ocr_after"]
-    _patch_cosine(monkeypatch, 0.9)
-    out = guards.run_output_guards(make_png(), make_png(), [], [])
-    assert not any(g.name in ("item_dino", "product_dino") for g in out)
 
 
 def test_item_dino_threshold_constant():
@@ -283,12 +84,11 @@ def test_item_guard_exception_is_swallowed_returns_none(monkeypatch, exc):
     assert guards.item_guard((b"o", b"r")) is None
 
 
-def test_item_guard_failure_is_soft_decide_still_passes(monkeypatch):
+def test_item_guard_failure_is_soft(monkeypatch):
     _cos_spy(monkeypatch, 0.1)
     g = guards.item_guard((b"o", b"r"))
     assert g.passed is False and g.severity == "soft"
-    status, out = guards.decide([g])
-    assert status == "pass" and out == [g]
+    # soft — 판정(막기)은 없다
 
 
 def test_item_guard_is_scored_to_tracing(monkeypatch):
@@ -306,13 +106,6 @@ def test_item_guard_not_scored_when_omitted(monkeypatch, pair, exc):
     _cos_spy(monkeypatch, exc=exc)
     assert guards.item_guard(pair) is None
     assert seen == []
-
-
-def test_dino_band_uses_default_span_name(monkeypatch, make_png):
-    """이미지 전체 비교는 name 인자 없이(기본 "dino_similarity") — 누끼 span 과 구분."""
-    calls = _cos_spy(monkeypatch)
-    guards.run_output_guards(make_png(), make_png(), [], [])
-    assert len(calls) == 1 and calls[0][2] == {}
 
 
 # ── embedder.cosine_similarity(name=...) → observe span 이름 ──
@@ -383,11 +176,10 @@ def test_item_patch_guard_real_embedder_bad_bytes_returns_none():
     assert guards.item_patch_guard((b"not-an-image", b"x")) is None
 
 
-def test_item_patch_guard_failure_is_soft_decide_still_passes(monkeypatch):
+def test_item_patch_guard_failure_is_soft(monkeypatch):
     _patch_spy(monkeypatch, 0.1)
     g = guards.item_patch_guard((b"o", b"r"))
     assert g.passed is False and g.severity == "soft"
-    assert guards.decide([g]) == ("pass", [g])
 
 
 def test_item_patch_guard_is_scored_to_tracing(monkeypatch):
@@ -432,7 +224,6 @@ def test_local_ocr_guard_same_text_passes():
 def test_local_ocr_guard_all_lost_fails_soft():
     g = guards.local_ocr_guard(["NIKE"], [])
     assert g.passed is False and g.value == 0.0 and g.severity == "soft"
-    assert guards.decide([g])[0] == "pass"
 
 
 def test_local_ocr_guard_uses_text_match_recall(monkeypatch):
@@ -467,3 +258,100 @@ def test_local_ocr_guard_metric_exception_propagates(monkeypatch):
     monkeypatch.setattr(guards.metric, "text_match", boom)
     with pytest.raises(ValueError):
         guards.local_ocr_guard(["A"], ["A"])
+
+
+# ── 삭제된 API: VLM OCR hard 가드·판정 ──
+@pytest.mark.parametrize("name", ["run_output_guards", "decide", "_ocr_guards"])
+def test_removed_ocr_guard_api_is_gone(name):
+    assert not hasattr(guards, name), name
+
+
+def test_no_hard_guard_left_in_module_constants():
+    # 로컬 OCR recall 기준은 관측용으로 남는다
+    assert guards.OCR_MATCH_THRESHOLD == 0.95
+    assert guards.DINO_BAND == (0.75, 0.995)
+
+
+# ── dino_band_guard: 이미지 전체 DINO (soft), 계산 실패는 None ──
+def test_dino_band_guard_signature():
+    import inspect
+    assert list(inspect.signature(guards.dino_band_guard).parameters) == ["orig", "result"]
+
+
+@pytest.mark.parametrize("value,passed", [
+    (0.75, True), (0.7499, False), (0.995, True), (0.9951, False),
+    (0.88, True), (1.0, False), (0.0, False), (-0.3, False)])
+def test_dino_band_guard_band_boundaries(monkeypatch, value, passed):
+    _patch_cosine(monkeypatch, value)
+    g = guards.dino_band_guard(b"o", b"r")
+    lo, _ = guards.DINO_BAND
+    assert g == guards.GuardResult(name="dino_band", passed=passed, value=value,
+                                   threshold=lo, severity="soft")
+
+
+def test_dino_band_guard_compares_orig_and_result_with_default_span_name(monkeypatch):
+    # 이미지 전체 비교는 name 인자 없이(기본 "dino_similarity") — 누끼 span 과 구분
+    calls = _cos_spy(monkeypatch)
+    guards.dino_band_guard(b"ORIG", b"RESULT")
+    assert calls == [(b"ORIG", b"RESULT", {})]
+
+
+@pytest.mark.parametrize("exc", [RuntimeError("OOM"), ValueError("bad"), TimeoutError(),
+                                 MemoryError()])
+def test_dino_band_guard_exception_returns_none(monkeypatch, exc, capsys):
+    _cos_spy(monkeypatch, exc=exc)
+    assert guards.dino_band_guard(b"o", b"r") is None
+    assert "dino_band 계산 실패" in capsys.readouterr().out
+
+
+def test_dino_band_guard_base_exception_is_not_swallowed(monkeypatch):
+    # Exception 만 삼킨다 — KeyboardInterrupt 같은 BaseException 은 그대로
+    _cos_spy(monkeypatch, exc=KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        guards.dino_band_guard(b"o", b"r")
+
+
+def test_dino_band_guard_is_scored(monkeypatch):
+    seen = []
+    monkeypatch.setattr(guards, "score", lambda name, value, **kw: seen.append((name, value, kw)))
+    _patch_cosine(monkeypatch, 0.81)
+    guards.dino_band_guard(b"o", b"r")
+    assert seen == [("dino_band", 0.81, {"data_type": "NUMERIC"})]
+
+
+def test_dino_band_guard_not_scored_on_failure(monkeypatch):
+    seen = []
+    monkeypatch.setattr(guards, "score", lambda *a, **kw: seen.append(a))
+    _cos_spy(monkeypatch, exc=RuntimeError("x"))
+    assert guards.dino_band_guard(b"o", b"r") is None
+    assert seen == []
+
+
+def test_dino_band_guard_tracing_disabled_no_side_effects(monkeypatch):
+    assert tracing.get_langfuse() is None   # autouse fixture 로 이미 꺼짐
+    _patch_cosine(monkeypatch, 0.9)
+    assert guards.dino_band_guard(b"o", b"r").passed is True
+
+
+def test_dino_band_guard_does_not_touch_text_metric(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("dino_band 는 글자를 비교하지 않는다")
+    monkeypatch.setattr(guards.metric, "text_match", boom)
+    _patch_cosine(monkeypatch, 0.9)
+    assert guards.dino_band_guard(b"o", b"r") is not None
+
+
+@pytest.mark.parametrize("fn,args", [
+    ("dino_band_guard", (b"o", b"r")), ("item_guard", ((b"o", b"r"),)),
+    ("item_patch_guard", ((b"o", b"r"),)), ("local_ocr_guard", (["NIKE"], []))])
+def test_every_guard_is_soft(monkeypatch, fn, args):
+    _cos_spy(monkeypatch, 0.1)
+    _patch_spy(monkeypatch, 0.1)
+    g = getattr(guards, fn)(*args)
+    assert g.severity == "soft" and g.passed is False
+
+
+def test_metric_punctuation_variants_match():
+    # 읽기 흔들림("H.M"/"H-M", 쪼개 읽기)은 같은 글자로 본다 (로컬 OCR 가드가 쓰는 metric)
+    m = guards.metric.text_match(["H.M", "00 3060", "OFFICIAL"], ["h-m", "00", "3060", "official"])
+    assert m["recall"] >= guards.OCR_MATCH_THRESHOLD and m["added"] == []

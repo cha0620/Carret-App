@@ -622,3 +622,279 @@ def test_fal_alpha_real_response_200_reads_mask(monkeypatch):
     _fal_alpha_http(monkeypatch, _http_resp(200, buf.getvalue()))
     a = compositor._fal_alpha(Image.new("RGB", (4, 3)))
     assert a.shape == (3, 4) and int(a[0, 0]) == 200
+
+
+# ══ find_cover / compose_flat: 책·음반 표지 펴기 ══════════════
+import cv2
+
+# 원근으로 기운 표지 — 위가 좁은 사다리꼴 (좌상·우상·우하·좌하)
+TILTED = np.array([[130, 60], [290, 80], [320, 330], [90, 310]], np.int32)
+
+
+def _poly_alpha(pts, h=400, w=400):
+    a = np.zeros((h, w), np.uint8)
+    cv2.fillPoly(a, [np.asarray(pts, np.int32)], 255)
+    return a
+
+
+def _cover_img(pts=TILTED, h=400, w=400, bg=(120, 120, 120), fill=(20, 40, 220)):
+    """회색 바닥 위 기운 표지 — 표지 안쪽은 단색."""
+    arr = np.full((h, w, 3), bg, np.uint8)
+    cv2.fillPoly(arr, [np.asarray(pts, np.int32)], fill)
+    buf = io.BytesIO()
+    Image.fromarray(arr).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _patch_alpha(monkeypatch, alpha):
+    seen = []
+    monkeypatch.setattr(compositor, "original_alpha",
+                        lambda b, img: seen.append(img.size) or alpha)
+    return seen
+
+
+def _signed_area(q):
+    x, y = q[:, 0], q[:, 1]
+    return float(np.dot(x, np.roll(y, -1)) - np.dot(np.roll(x, -1), y))
+
+
+def test_order_corners_any_start_and_direction():
+    """둘레 순서 입력 — 시작점이 어디든, 방향이 반대든 좌상·우상·우하·좌하."""
+    pts = np.array([[10, 10], [100, 12], [95, 80], [5, 90]], np.float32)
+    for k in range(4):
+        for cand in (np.roll(pts, k, axis=0), np.roll(pts, k, axis=0)[::-1]):
+            out = compositor._order_corners(cand.copy())
+            assert out.dtype == np.float32 and out.shape == (4, 2)
+            assert np.array_equal(out, pts)
+
+
+def test_order_corners_diamond_gives_four_distinct_points():
+    """45도 돌아간 정사각형 — 예전 합·차 방식은 같은 점을 두 번 골랐다."""
+    q = np.array([[200, 50], [350, 200], [200, 350], [50, 200]], np.float32)
+    for cand in (q, q[::-1], np.roll(q, 1, axis=0)):
+        out = compositor._order_corners(cand.copy())
+        assert len({tuple(p) for p in out}) == 4
+        assert _signed_area(out) > 0                  # 화면 좌표에서 시계 방향(좌상→우상→우하)
+        assert out.sum(1)[0] == out.sum(1).min()      # x+y 최소점부터
+
+
+def test_find_cover_tilted_quad_returns_ordered_corners():
+    q = compositor.find_cover(_poly_alpha(TILTED))
+    assert q is not None and q.shape == (4, 2)
+    assert np.abs(q - TILTED).max() <= 3          # 좌상·우상·우하·좌하 순서로 대략 맞게
+
+
+def test_find_cover_axis_aligned_rect():
+    q = compositor.find_cover(_alpha())             # 100x60 사각형 (50,20)-(150,80)
+    assert q is not None
+    assert np.abs(q - np.array([[50, 20], [149, 20], [149, 79], [50, 79]])).max() <= 2
+
+
+@pytest.mark.parametrize("axes", [(120, 120), (150, 80)])
+def test_find_cover_circle_or_ellipse_is_none(axes):
+    a = np.zeros((400, 400), np.uint8)
+    cv2.ellipse(a, (200, 200), axes, 0, 0, 360, 255, -1)
+    assert compositor.find_cover(a) is None
+
+
+DIAMOND = np.array([[200, 50], [350, 200], [200, 350], [50, 200]], np.int32)
+
+
+def test_find_cover_45_degree_square_four_distinct_corners():
+    q = compositor.find_cover(_poly_alpha(DIAMOND))
+    assert q is not None and len({tuple(np.round(p)) for p in q}) == 4
+    assert _signed_area(q) > 0
+    for p in DIAMOND:                                 # 네 꼭짓점 모두 근처에 하나씩
+        assert np.linalg.norm(q - p, axis=1).min() <= 3
+
+
+def test_find_cover_two_books_is_none():
+    """떨어진 물건 둘(여러 권) — 한 권만 펴면 나머지가 사라지므로 None."""
+    a = np.zeros((400, 600), np.uint8)
+    a[50:350, 30:260] = 255
+    a[80:330, 330:560] = 255
+    assert compositor.find_cover(a) is None
+
+
+def test_find_cover_tiny_speck_besides_cover_still_found():
+    """clean_alpha 가 남기지 않는 작은 조각(5% 미만)은 여러 권으로 보지 않는다."""
+    a = np.zeros((400, 600), np.uint8)
+    a[50:350, 30:260] = 255
+    a[10:14, 500:504] = 255
+    assert compositor.find_cover(a) is not None
+
+
+def test_find_cover_short_side_below_min_is_none():
+    s = compositor.FLAT_MIN_SIDE
+    a = np.zeros((400, 400), np.uint8)
+    a[100:100 + s - 4, 50:350] = 255                 # 가는 띠
+    assert compositor.find_cover(a) is None
+    a[:] = 0
+    a[100:100 + s + 4, 50:350] = 255                 # 기준보다 조금 두꺼우면 찾는다
+    assert compositor.find_cover(a) is not None
+
+
+def test_unwarp_axis_aligned_rect_is_crop():
+    arr = np.zeros((100, 200, 3), np.uint8)
+    arr[20:80, 50:150] = (10, 200, 30)
+    q = np.array([[50, 20], [149, 20], [149, 79], [50, 79]], np.float32)
+    out = compositor._unwarp(Image.fromarray(arr), q)
+    assert out.size == (99, 59)                      # 마주 보는 변 중 긴 쪽 길이 (int)
+    o = np.asarray(out).astype(int)
+    assert np.abs(o - (10, 200, 30)).max() <= 2      # 표지 안쪽만 — 바닥이 섞이지 않는다
+
+
+def test_unwarp_tilted_uses_longer_opposite_sides():
+    q = TILTED.astype(np.float32)
+    out = compositor._unwarp(Image.new("RGB", (400, 400)), q)
+    w = int(max(np.linalg.norm(q[1] - q[0]), np.linalg.norm(q[2] - q[3])))
+    h = int(max(np.linalg.norm(q[3] - q[0]), np.linalg.norm(q[2] - q[1])))
+    assert out.size == (w, h)
+
+
+def test_find_cover_empty_alpha_is_none():
+    assert compositor.find_cover(np.zeros((100, 200), np.uint8)) is None
+
+
+def test_find_cover_low_alpha_only_is_none():
+    """128 미만(반투명 잔여물)만 있으면 물건이 없는 것."""
+    assert compositor.find_cover(np.full((100, 200), 100, np.uint8)) is None
+
+
+def test_find_cover_small_protrusion_still_found():
+    """비닐이 살짝 삐져나온 표지 — fill 이 FLAT_FILL 안이면 네 모서리를 찾는다."""
+    a = _poly_alpha(TILTED)
+    cv2.fillPoly(a, [np.array([[200, 70], [215, 55], [230, 72]], np.int32)], 255)   # 위쪽 작은 돌기
+    q = compositor.find_cover(a)
+    assert q is not None
+    assert np.abs(q - TILTED).max() <= 8
+
+
+def test_find_cover_large_protrusion_is_none():
+    """펼친 책·비닐 크게 삐져나옴 — 네 모서리 면적과 오리기 면적이 크게 다르면 None."""
+    a = np.zeros((400, 400), np.uint8)
+    a[100:300, 100:300] = 255
+    cv2.fillPoly(a, [np.array([[100, 100], [200, 20], [300, 100]], np.int32)], 255)  # 지붕
+    assert compositor.find_cover(a) is None
+
+
+def test_find_cover_ignores_blob_outside_item_box():
+    """박스 밖 큰 조각(표지보다 큼)은 clean_alpha 로 지워져 표지를 찾는다."""
+    a = np.zeros((400, 800), np.uint8)
+    a[100:300, 50:250] = 255                        # 표지 (200x200)
+    cv2.circle(a, (600, 200), 150, 255, -1)          # 박스 밖 더 큰 원
+    assert compositor.find_cover(a) is None          # 박스 없으면 큰 원이 이긴다 → 사각형 아님
+    q = compositor.find_cover(a, {"x1": 0, "y1": 0, "x2": 400, "y2": 1000})
+    assert q is not None
+    assert np.abs(q - np.array([[50, 100], [249, 100], [249, 299], [50, 299]])).max() <= 2
+
+
+def test_compose_flat_rectifies_tilted_cover(monkeypatch):
+    seen = _patch_alpha(monkeypatch, _poly_alpha(TILTED))
+    bg = (240, 230, 220)
+    raw = compositor.compose_flat(_cover_img(), bg)
+    assert raw[:3] == b"\xff\xd8\xff"               # JPEG
+    out = Image.open(io.BytesIO(raw))
+    assert out.format == "JPEG" and out.size == (compositor.CANVAS, compositor.CANVAS)
+    assert seen == [(400, 400)]
+    arr = np.asarray(out.convert("RGB")).astype(int)
+    assert np.abs(arr[5, 5] - bg).max() <= 3        # 모서리 = 배경색
+    assert np.abs(arr[-5, 5] - bg).max() <= 3
+    blue = (arr[:, :, 2] > 150) & (arr[:, :, 0] < 90) & (arr[:, :, 1] < 110)
+    ys, xs = np.where(blue)
+    x1, x2, y1, y2 = xs.min(), xs.max(), ys.min(), ys.max()
+    # 원근이 펴져 축에 평행한 직사각형 — bbox 를 거의 꽉 채운다
+    assert blue[y1:y2 + 1, x1:x2 + 1].mean() > 0.97
+    # 가운데 (좌우·상하 여백이 같다)
+    c = compositor.CANVAS
+    assert abs(x1 - (c - 1 - x2)) <= 4 and abs(y1 - (c - 1 - y2)) <= 4
+    # 크기 = 모서리 길이 × min(여백 안, MAX_UPSCALE)
+    t = TILTED.astype(float)
+    w = int(max(np.linalg.norm(t[1] - t[0]), np.linalg.norm(t[2] - t[3])))
+    h = int(max(np.linalg.norm(t[3] - t[0]), np.linalg.norm(t[2] - t[1])))
+    scale = min(c * (1 - 2 * compositor.MARGIN) / max(w, h), compositor.MAX_UPSCALE)
+    assert abs((x2 - x1 + 1) - w * scale) <= 4 and abs((y2 - y1 + 1) - h * scale) <= 4
+    # 세로가 더 긴 표지 → 결과도 세로가 길다
+    assert (y2 - y1) > (x2 - x1)
+
+
+def test_compose_flat_shadow_is_darker_than_bg_bottom_right(monkeypatch):
+    _patch_alpha(monkeypatch, _poly_alpha(TILTED))
+    bg = (240, 240, 240)
+    arr = np.asarray(Image.open(io.BytesIO(compositor.compose_flat(_cover_img(), bg))).convert("RGB"))
+    blue = (arr[:, :, 2] > 150) & (arr[:, :, 0] < 90)
+    ys, xs = np.where(blue)
+    below = arr[ys.max() + 4, (xs.min() + xs.max()) // 2]   # 표지 바로 아래 = 그림자
+    assert below.mean() < 235
+
+
+def test_compose_flat_falls_back_to_compose_with_alpha(monkeypatch):
+    a = np.zeros((400, 400), np.uint8)
+    cv2.circle(a, (200, 200), 120, 255, -1)          # 원 → 네 모서리 없음
+    _patch_alpha(monkeypatch, a)
+    calls = []
+    monkeypatch.setattr(compositor, "compose",
+                        lambda b, bg, box=None, alpha=None: calls.append((b, bg, box, alpha)) or b"FALLBACK")
+    img = _cover_img()
+    box = {"x1": 0, "y1": 0, "x2": 1000, "y2": 1000}
+    assert compositor.compose_flat(img, (1, 2, 3), box) == b"FALLBACK"
+    assert len(calls) == 1
+    b, bg, got_box, got_alpha = calls[0]
+    assert b == img and bg == (1, 2, 3) and got_box == box
+    assert got_alpha is a                            # 다시 오리지 않게 알파를 넘긴다
+
+
+@pytest.mark.parametrize("target", ["_unwarp", "find_cover"])
+def test_compose_flat_exception_while_flattening_falls_back_to_compose(monkeypatch, target):
+    a = _poly_alpha(TILTED)
+    _patch_alpha(monkeypatch, a)
+
+    def boom(*args, **kw):
+        raise RuntimeError("cv2 exploded")
+    monkeypatch.setattr(compositor, target, boom)
+    calls = []
+    monkeypatch.setattr(compositor, "compose",
+                        lambda b, bg, box=None, alpha=None: calls.append(alpha) or b"FALLBACK")
+    assert compositor.compose_flat(_cover_img(), (9, 9, 9)) == b"FALLBACK"
+    assert len(calls) == 1 and calls[0] is a
+
+
+def test_compose_flat_diamond_cover_is_flattened(monkeypatch):
+    """45도 표지도 제대로 펴져 파란 정사각형이 나온다 (예전엔 퇴화 변환으로 빈 그림)."""
+    _patch_alpha(monkeypatch, _poly_alpha(DIAMOND))
+    raw = compositor.compose_flat(_cover_img(DIAMOND), (255, 255, 255))
+    arr = np.asarray(Image.open(io.BytesIO(raw)).convert("RGB")).astype(int)
+    blue = (arr[:, :, 2] > 150) & (arr[:, :, 0] < 90)
+    ys, xs = np.where(blue)
+    x1, x2, y1, y2 = xs.min(), xs.max(), ys.min(), ys.max()
+    assert blue[y1:y2 + 1, x1:x2 + 1].mean() > 0.97
+    assert abs((x2 - x1) - (y2 - y1)) <= 4           # 정사각형
+
+
+def test_compose_flat_two_books_falls_back_to_compose(monkeypatch):
+    a = np.zeros((400, 600), np.uint8)
+    a[50:350, 30:260] = 255
+    a[80:330, 330:560] = 255
+    _patch_alpha(monkeypatch, a)
+    calls = []
+    monkeypatch.setattr(compositor, "compose",
+                        lambda b, bg, box=None, alpha=None: calls.append(alpha) or b"FALLBACK")
+    assert compositor.compose_flat(_cover_img(h=400, w=600), (1, 1, 1)) == b"FALLBACK"
+    assert calls[0] is a
+
+
+def test_compose_flat_empty_alpha_falls_back_and_raises(monkeypatch):
+    """네 모서리도, 물건도 없으면 compose 의 ValueError 가 그대로 올라간다 (pipeline 이 처리)."""
+    _patch_alpha(monkeypatch, np.zeros((400, 400), np.uint8))
+    with pytest.raises(ValueError):
+        compositor.compose_flat(_cover_img(), (255, 255, 255))
+
+
+def test_compose_flat_does_not_upscale_beyond_cap(monkeypatch):
+    small = np.array([[20, 20], [60, 20], [60, 70], [20, 70]], np.int32)
+    _patch_alpha(monkeypatch, _poly_alpha(small, 100, 100))
+    raw = compositor.compose_flat(_cover_img(small, 100, 100), (255, 255, 255))
+    arr = np.asarray(Image.open(io.BytesIO(raw)).convert("RGB")).astype(int)
+    blue = (arr[:, :, 2] > 150) & (arr[:, :, 0] < 90)
+    ys, _ = np.where(blue)
+    assert ys.max() - ys.min() + 1 <= 50 * compositor.MAX_UPSCALE + 3

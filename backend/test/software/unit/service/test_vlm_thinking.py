@@ -52,14 +52,15 @@ def test_broken_env_json_does_not_crash_settings(monkeypatch):
 def test_default_thinking_table_exact():
     assert vlm.DEFAULT_THINKING == {
         "verify": 2048, "item_text": 2048,
-        "detect": 4096, "judge": 4096, "check_photo": 4096, "match": 4096,
+        "detect": 4096, "analyze": 4096, "judge": 4096, "check_photo": 4096, "match": 4096,
         "classify": "minimal", "auto_feedback": "low",
     }
 
 
 @pytest.mark.parametrize("name,budget", [
     ("verify", 2048), ("item_text", 2048),
-    ("detect", 4096), ("judge", 4096), ("check_photo", 4096), ("match", 4096),
+    ("detect", 4096), ("analyze", 4096), ("judge", 4096), ("check_photo", 4096),
+    ("match", 4096),
 ])
 def test_default_budgets_are_caps(monkeypatch, name, budget):
     monkeypatch.setattr(settings, "vlm_thinking", {})
