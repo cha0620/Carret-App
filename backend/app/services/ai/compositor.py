@@ -23,7 +23,7 @@ from collections import OrderedDict
 import numpy as np
 from PIL import Image, ImageFilter
 
-from app.core.config import settings
+from app.core.config import reveal, settings
 
 logger = logging.getLogger("carret.compositor")
 FAL_CUTOUT = "fal-ai/birefnet/v2"
@@ -59,7 +59,7 @@ def _fal_alpha(img: Image.Image) -> np.ndarray:
     import fal_client
     import httpx
     from app.services.ai.generator import _upload
-    os.environ.setdefault("FAL_KEY", settings.fal_key)
+    os.environ.setdefault("FAL_KEY", reveal(settings.fal_key))
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     r = fal_client.subscribe(FAL_CUTOUT, arguments={

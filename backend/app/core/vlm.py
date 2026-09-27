@@ -13,7 +13,7 @@ from functools import lru_cache
 
 from google.genai import types
 
-from app.core.config import settings
+from app.core.config import reveal, settings
 
 logger = logging.getLogger("carret.vlm")
 LEVELS = {"minimal", "low", "medium", "high"}
@@ -116,7 +116,7 @@ def get_client():
     각 호출부의 기존 실패 경로(재시도·폴백·검증 불가)를 탄다."""
     from google import genai
     return genai.Client(
-        api_key=settings.VLM_KEY,
+        api_key=reveal(settings.VLM_KEY),
         http_options=types.HttpOptions(timeout=int(settings.vlm_timeout_s * 1000)))
 
 

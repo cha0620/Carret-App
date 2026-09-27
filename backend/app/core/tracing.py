@@ -16,7 +16,7 @@ v2 API(`lf.trace()`/`trace.span()`/`trace.generation()`)는 설치된 v4 SDK에
 import contextlib
 import threading
 
-from app.core.config import settings
+from app.core.config import reveal, settings
 
 _client = None
 _disabled = False
@@ -34,13 +34,13 @@ def get_langfuse():
             if _disabled:
                 return None
             if _client is None:
-                if not (settings.langfuse_public_key and settings.langfuse_secret_key):
+                if not (reveal(settings.langfuse_public_key) and reveal(settings.langfuse_secret_key)):
                     _disabled = True
                     return None
                 from langfuse import Langfuse
                 _client = Langfuse(
-                    public_key=settings.langfuse_public_key,
-                    secret_key=settings.langfuse_secret_key,
+                    public_key=reveal(settings.langfuse_public_key),
+                    secret_key=reveal(settings.langfuse_secret_key),
                     host=settings.langfuse_host,
                 )
     return _client
