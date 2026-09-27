@@ -32,38 +32,22 @@ The transform pipeline is a [LangGraph](https://github.com/langchain-ai/langgrap
 
 ```mermaid
 flowchart TD
-  L["load<br/>original + preset"] --> A["analyze · 1 VLM call<br/>item · logo/text marks · item box<br/>photo type · wear level · watermark · text level<br/>(2 tries, else detect_failed)"]
-  A --> P{"plan<br/>split by photo type first"}
-
-  P -->|"inside_view<br/>engine bay · opened-up laptop"| O["keep_original<br/>original as-is"]
-  P -->|"document<br/>book · album · warranty card"| X
-  P -->|"analysis failed ·<br/>product with dense text · heavy wear"| X
-  P -->|"product · simple text"| T["read_text<br/>text on the item → TEXT_LOCK"]
-  P -->|"product · no text"| G
-  T -->|"12+ lines"| X
-  T --> G
-
-  subgraph GEN["generation path"]
-    G["generate · FLUX.2<br/>preset + SECONDHAND_LOCK<br/>+ original text (+ rejection reason · changed marks)"] --> V{"validate_result<br/>crop · caption check<br/>+ DINO · cutout · patch (observe only)"}
-    V -->|"bad framing · retries left"| G
-    R["mark_gate_retry<br/>changed marks into the prompt"] --> G
-  end
-
-  V -->|ok| S["score_similarity<br/>DINOv2"]
-  S --> VR{"verify<br/>logos · key text kept?<br/>(generated only — swaps pass straight through)"}
-  VR -->|"fail, 1st"| R
-  VR -->|"fail, 2nd · call failed · analysis failed"| X["composite · background swap<br/>original item cutout + preset background<br/>documents: cover flattened<br/>(not for heavily worn documents)"]
-  VR -->|"pass · background swap"| I
-  X -->|success| S
-  X -->|"cutout failed before generating<br/>document · heavy wear → original as-is"| I
-  X -->|"cutout failed before generating<br/>text not read yet"| T
-  X -->|"cutout failed before generating<br/>otherwise"| G
-  X -->|"cutout failed after generating<br/>keep generated"| I
-  O --> I
-
-  I["save_inspect<br/>route · reason · analysis"] --> F["finalize<br/>bubbles"]
-  F -.->|"after the graph: DB record ·<br/>scored after the response (not for originals)"| J["judge_and_save<br/>fidelity · realism · trust"]
+  A["analyze<br/>photo type · wear · text"] --> P{"photo type"}
+  P -->|"inside_view<br/>engine bay · inside"| O["original as-is"]
+  P -->|"document<br/>book · warranty card"| X["background swap<br/>original item pixels<br/>(documents: cover flattened)"]
+  P -->|product| C{"safe to generate?"}
+  C -->|"heavy wear · dense text<br/>analysis failed"| X
+  C -->|yes| G["generate · FLUX.2"]
+  G --> V{"verify<br/>framing · logos/text kept"}
+  V -->|"fail once → regenerate"| G
+  V -->|"fail twice"| X
+  V -->|pass| R(["result"])
+  X --> R
+  O --> R
+  R -.->|after the response| J["score · judge"]
 ```
+
+Finer branches (reading text, cutout failures, retry limits) are in the step list below.
 
 1. **analyze** (one VLM call; classify + detect were merged on 2026-09-27): from the original it
    returns the item, the **marks that make up the item's identity** (logos, printed text, graphics;
