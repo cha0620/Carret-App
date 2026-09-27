@@ -1,6 +1,6 @@
 """검출 프롬프트 층 - fragment 조립식 + Langfuse 프롬프트 관리.
 
-각 프롬프트는 Langfuse에 이름(classify/detect_box/detect/verify/item_text/
+각 프롬프트는 Langfuse에 이름(analyze/classify/detect_box/detect/verify/item_text/
 check_photo/match)으로
 등록되어 있으면 그 내용(운영자가 콘솔에서 수정 가능)을 쓰고, 없거나 조회에
 실패하면 아래 fragment 조합을 그대로 fallback 으로 쓴다 — 동작은 항상 동일하게
@@ -44,6 +44,18 @@ def detect_template() -> str:
     ])
 
 
+def analyze_template() -> str:
+    """파이프라인 첫 단계(분석): 물건·아이덴티티 마크·사진 유형·하자 수준·워터마크·글자 수준을 한 번에.
+    하자는 목록(앵커)으로 뽑지 않고 수준만 본다 — 목록으로 뽑아 "지켜라"고 하면 생성 모델이
+    하자를 지어내고(2026-09-27 Braun·승용차), 목록에 없는 전반적 사용감은 어차피 못 지킨다."""
+    return "\n\n".join([
+        frag("role_analyze"),
+        frag("rules_analyze"),
+        frag("text_level_analyze"),
+        frag("schema_analyze"),
+    ])
+
+
 def verify_template() -> str:
     return "\n\n".join([
         frag("role_verify"),
@@ -63,8 +75,27 @@ def detect_prompt(item: str, considered: list) -> str:
     return get_prompt_text("detect_v2", fallback=detect_template(), item=item, hints=hints)
 
 
-def verify_prompt(anchors: list, item: str, considered: list) -> str:
+def verify_marks_template() -> str:
+    """파이프라인 verify (09-27~): 하자 없이 아이덴티티 마크·글자만 확인. 옛 verify 템플릿은
+    "defects and marks" 를 전제해 VLM 이 목록에 없는 하자 항목을 보태 preserved:false 로 답하면
+    게이트가 떨어졌다. 체크리스트(considered: stain, tear…)도 넘기지 않는다."""
+    return "\n\n".join([
+        frag("role_verify_marks"),
+        frag("rules_verify"),
+        frag("schema_verify"),
+    ])
+
+
+def analyze_prompt() -> str:
+    return get_prompt_text("analyze", fallback=analyze_template())
+
+
+def verify_prompt(anchors: list, item: str, considered: list, *, marks: bool = False) -> str:
+    """marks=True: 파이프라인용 "verify_v2"(마크만). False: 옛 "verify"(하자+마크, eval·dev 리플레이)."""
     lines = "\n".join(f"- {a['what']} ({a['where']})" for a in anchors)
+    if marks:
+        return get_prompt_text("verify_v2", fallback=verify_marks_template(),
+                               item=item, lines=lines)
     checklist = ", ".join(considered) if considered else "(open-ended)"
     return get_prompt_text(
         "verify", fallback=verify_template(),

@@ -10,7 +10,8 @@ from pathlib import Path
 import pytest
 
 import app.core.tracing as tracing
-from app.prompts import (check_photo_template, detect_template, frag,
+from app.prompts import (analyze_template, check_photo_template, detect_template, frag,
+                         verify_marks_template,
                          verify_template)
 from app.prompts.presets import PRESETS, SECONDHAND_LOCK
 
@@ -19,7 +20,7 @@ APP_DIR = BACKEND / "app"
 SEED_SCRIPT = BACKEND / "scripts" / "seed_langfuse_prompts.py"
 
 EXPECTED_STATIC = {
-    "classify", "detect_box", "detect_v2", "verify", "item_text",
+    "analyze", "classify", "verify_v2", "detect_box", "detect_v2", "verify", "item_text",
     "check_photo", "match", "judge_system", "auto_feedback_system",
 }
 
@@ -105,6 +106,8 @@ def test_seed_has_no_names_unused_at_runtime(seeds):
 
 
 def test_seed_templates_match_shared_template_functions(seeds):
+    assert seeds["analyze"] == analyze_template()
+    assert seeds["verify_v2"] == verify_marks_template()
     assert seeds["detect_v2"] == detect_template()
     # 옛 이름 "detect" 는 시드하지 않는다 (배포된 옛 서버가 새 응답 형식을 받지 않게)
     assert "detect" not in seeds

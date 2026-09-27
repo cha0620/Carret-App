@@ -186,6 +186,103 @@ def isolate(image_bytes: bytes, item_box: dict | None = None, original: bool = F
     return buf.getvalue()
 
 
+FLAT_FILL = (0.93, 1.07)   # 오리기 면적 / 네 모서리 면적 — 벗어나면 사각형이 아니다 (펼친 책·비닐 크게 삐져나옴)
+
+
+FLAT_MIN_SIDE = 32         # px — 이보다 짧은 변이 있으면 표지로 보지 않는다 (퇴화 사각형)
+
+
+def _order_corners(q: np.ndarray) -> np.ndarray:
+    """둘레 순서의 네 점 → 좌상·우상·우하·좌하. 둘레 순서를 그대로 쓰고 시작점(x+y 최소)과
+    방향만 맞춘다 — 점마다 x+y·y-x 로 따로 고르면 45도 근처에서 같은 점을 두 번 고른다."""
+    x, y = q[:, 0], q[:, 1]
+    if float(np.dot(x, np.roll(y, -1)) - np.dot(np.roll(x, -1), y)) < 0:
+        q = q[::-1]   # 화면 좌표(y 아래)에서 좌상→우상→우하 방향이 되게
+    return np.roll(q, -int(q.sum(1).argmin()), axis=0).astype(np.float32)
+
+
+def find_cover(alpha: np.ndarray, item_box: dict | None = None) -> np.ndarray | None:
+    """오리기 알파에서 표지(사각형)의 네 모서리 — 볼록 껍질을 네 점이 될 때까지 단순화.
+    오리기 모양이 사각형과 많이 다르거나, 떨어진 물건이 둘 이상이면(여러 권 — 한 권만 펴면
+    나머지가 사라진다) None (호출부가 일반 배경 교체로)."""
+    import cv2
+    binary = (clean_alpha(alpha, item_box) >= 128).astype(np.uint8)
+    cnts, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return None
+    cnts = sorted(cnts, key=cv2.contourArea, reverse=True)
+    if len(cnts) > 1 and cv2.contourArea(cnts[1]) >= cv2.contourArea(cnts[0]) * 0.05:
+        return None
+    c = cnts[0]
+    hull = cv2.convexHull(c)
+    peri = cv2.arcLength(hull, True)
+    for eps in np.linspace(0.01, 0.1, 19):
+        ap = cv2.approxPolyDP(hull, eps * peri, True)
+        if len(ap) == 4:
+            break
+    else:
+        return None
+    q = _order_corners(ap.reshape(4, 2).astype(np.float32))
+    if not cv2.isContourConvex(q.reshape(-1, 1, 2)):
+        return None
+    if min(np.linalg.norm(q - np.roll(q, -1, axis=0), axis=1)) < FLAT_MIN_SIDE:
+        return None
+    area = cv2.contourArea(q)
+    if area <= 0 or not FLAT_FILL[0] <= cv2.contourArea(c) / area <= FLAT_FILL[1]:
+        return None
+    return q
+
+
+def _unwarp(img: Image.Image, q: np.ndarray) -> Image.Image:
+    """좌상·우상·우하·좌하 네 점 → 정면으로 편 표지. 변 길이는 마주 보는 두 변 중 긴 쪽."""
+    import cv2
+    tl, tr, br, bl = q
+    w = int(max(np.linalg.norm(tr - tl), np.linalg.norm(br - bl)))
+    h = int(max(np.linalg.norm(bl - tl), np.linalg.norm(br - tr)))
+    dst = np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], np.float32)
+    m = cv2.getPerspectiveTransform(q, dst)
+    return Image.fromarray(cv2.warpPerspective(np.asarray(img), m, (w, h), flags=cv2.INTER_CUBIC,
+                                               borderMode=cv2.BORDER_REPLICATE))
+
+
+def compose_flat(image_bytes: bytes, bg_color: tuple, item_box: dict | None = None) -> bytes:
+    """책·음반처럼 납작한 인쇄물 — 표지 네 모서리를 찾아 정면으로 펴고(원근 보정) 배경 위에
+    살짝 띄운 그림자와 함께 놓는다 (쇼핑몰 표지 컷처럼). 표지 픽셀은 원근 보정·크기 조정 외에는
+    손대지 않는다. 가로세로 비는 모서리 길이 그대로 — 한 장으로 실제 비를 추정하는 방법(Zhang–He)은
+    잘리거나 줄인 사진에서 주점 가정이 깨져 오히려 틀렸다 (09-27 책 2권).
+    네 모서리를 못 찾거나 펴다가 실패하면 일반 배경 교체(compose)로 — 원본 그대로가 아니라."""
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    alpha = original_alpha(image_bytes, img)
+    try:
+        q = find_cover(alpha, item_box)
+        cover = None if q is None else _unwarp(img, q)
+    except Exception as e:
+        logger.warning(f"표지 펴기 실패: {e}")
+        cover = None
+    if cover is None:
+        logger.info("표지를 펴지 못함 → 일반 배경 교체")
+        return compose(image_bytes, bg_color, item_box, alpha=alpha)
+    w, h = cover.size
+
+    room = CANVAS * (1 - 2 * MARGIN)
+    scale = min(room / w, room / h, MAX_UPSCALE)
+    size = (max(1, round(w * scale)), max(1, round(h * scale)))
+    cover = cover.resize(size, Image.LANCZOS)
+    x, y = (CANVAS - size[0]) // 2, (CANVAS - size[1]) // 2
+    canvas = Image.new("RGB", (CANVAS, CANVAS), tuple(bg_color))
+    # 오른쪽 아래로 살짝 떨어지는 그림자 — 종이가 바닥에서 떠 보이는 표지 컷
+    off = max(6, size[0] // 60)
+    shadow = Image.new("L", (CANVAS, CANVAS), 0)
+    shadow.paste(110, (x + off, y + off, x + size[0] + off, y + size[1] + off))
+    shadow = shadow.filter(ImageFilter.GaussianBlur(off * 1.5))
+    dark = Image.new("RGB", (CANVAS, CANVAS), tuple(int(c * 0.6) for c in bg_color))
+    canvas = Image.composite(dark, canvas, shadow)
+    canvas.paste(cover, (x, y))
+    buf = io.BytesIO()
+    canvas.save(buf, format="JPEG", quality=95)
+    return buf.getvalue()
+
+
 def compose(image_bytes: bytes, bg_color: tuple, item_box: dict | None = None,
             alpha: np.ndarray | None = None) -> bytes:
     """원본 → 물건만 오려 CANVAS 정사각 배경 가운데에 놓고 바닥 그림자를 깐 JPEG.

@@ -59,7 +59,9 @@ def transform(req: TransformRequest, background: BackgroundTasks):
         detect_failed=out.get("detect_failed", False),
         verify_failed=out.get("verify_failed", False),
         composite_reason=out.get("composite_reason"),
-        status=out.get("status", "pass"),
+        photo_type=out.get("photo_type"),
+        wear_level=out.get("wear_level"),
+        watermark=out.get("watermark"),
         judge_pending=out.get("judge_pending", False),
         
     )

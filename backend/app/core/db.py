@@ -24,6 +24,10 @@ CREATE TABLE IF NOT EXISTS results (
     gate_passed INTEGER,
     bubbles TEXT,
     elapsed_s REAL,
+    mode TEXT,
+    composite_reason TEXT,
+    photo_type TEXT,
+    wear_level TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(file_id, preset_key)
 );
@@ -52,15 +56,34 @@ def get_conn():
     return conn
 
 
+RESULT_ROUTE_COLS = ("mode", "composite_reason", "photo_type", "wear_level")
+
+
+def _add_column(c, table: str, coldef: str) -> None:
+    """ALTER TABLE ADD COLUMN — 다른 워커가 방금 먼저 추가했으면(PRAGMA 로 "없음"을 본 뒤 경합)
+    duplicate column 오류를 무시한다. table·coldef 는 코드 상수만 온다."""
+    try:
+        c.execute(f"ALTER TABLE {table} ADD COLUMN {coldef}")
+    except sqlite3.OperationalError as e:
+        if "duplicate column" not in str(e).lower():
+            raise
+
+
 def _migrate(c):
     """기존에 만들어진 DB 파일에 새 컬럼을 뒤늦게 추가 (CREATE TABLE IF NOT EXISTS는
     이미 있는 테이블의 컬럼을 바꾸지 않으므로)."""
     cols = {row["name"] for row in c.execute("PRAGMA table_info(feedbacks)")}
     if "source" not in cols:
-        c.execute("ALTER TABLE feedbacks ADD COLUMN source TEXT NOT NULL DEFAULT 'user'")
+        _add_column(c, "feedbacks", "source TEXT NOT NULL DEFAULT 'user'")
     if "tags" not in cols:
-        c.execute("ALTER TABLE feedbacks ADD COLUMN tags TEXT")
+        _add_column(c, "feedbacks", "tags TEXT")
     _migrate_feedback_unique(c)
+    # 09-27: 어느 경로로 나갔는지 (생성 / 배경 교체 / 원본 그대로) 와 그 이유 — inspect JSON 을
+    # 열지 않고 SQL 로 집계하려고
+    rcols = {row["name"] for row in c.execute("PRAGMA table_info(results)")}
+    for col in RESULT_ROUTE_COLS:
+        if col not in rcols:
+            _add_column(c, "results", f"{col} TEXT")
 
 
 def _feedback_key_has_source(c) -> bool:

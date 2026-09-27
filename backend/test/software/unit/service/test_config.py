@@ -84,3 +84,23 @@ def test_reveal_accepts_plain_str_and_none():
     assert reveal("plain") == "plain"
     assert reveal(None) == ""
     assert reveal(SecretStr("")) == ""
+
+
+# ── 09-27 앞단 변경 ──
+def test_ocr_guard_setting_removed():
+    """VLM OCR 가드는 09-27 에 삭제 — 설정도 없다 (로컬 OCR 가드는 남는다)."""
+    assert "ocr_guard" not in Settings.model_fields
+    assert "local_ocr_guard" in Settings.model_fields
+
+
+def test_ocr_guard_old_env_ignored(monkeypatch):
+    """.env 에 옛 OCR_GUARD 가 남아 있어도 부팅은 되고 값은 무시된다."""
+    monkeypatch.setenv("OCR_GUARD", "true")
+    assert not hasattr(Settings(), "ocr_guard")
+
+
+def test_composite_first_min_anchors_removed_and_old_env_ignored(monkeypatch):
+    """삭제된 설정 — .env 에 옛 키가 남아 있어도 부팅은 되고 값은 무시된다."""
+    assert "composite_first_min_anchors" not in Settings.model_fields
+    monkeypatch.setenv("COMPOSITE_FIRST_MIN_ANCHORS", "3")
+    assert not hasattr(Settings(), "composite_first_min_anchors")

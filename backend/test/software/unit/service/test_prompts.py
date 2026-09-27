@@ -123,3 +123,118 @@ def test_match_prompt_matches_fragment_template_shape():
     assert "matches" in text
     assert "{{orig}}" not in text
     assert "{{result}}" not in text
+
+
+# ── analyze (파이프라인 첫 단계) ──
+def test_analyze_template_fragment_order():
+    t = P.analyze_template()
+    parts = [P.frag(n) for n in ("role_analyze", "rules_analyze", "text_level_analyze",
+                                 "schema_analyze")]
+    idx = [t.index(p) for p in parts]
+    assert idx == sorted(idx)
+    assert t == "\n\n".join(parts)
+
+
+def test_analyze_template_asks_for_every_field_parsed_by_detector():
+    t = P.analyze_template()
+    for word in ("item", "considered", "item_box_2d", "photo_type", "wear_level", "watermark",
+                 "text_level", "marks", '"document"', '"inside_view"', '"product"',
+                 '"heavy"', '"light"', '"on_item"', '"background"', '"dense"', '"simple"'):
+        assert word in t, word
+
+
+def test_analyze_template_photo_type_values_match_detector():
+    """스키마의 photo_type 값 = detector.PHOTO_TYPES (한쪽만 바뀌면 전부 product 로 떨어진다)."""
+    from app.services.ai import detector
+    t = P.analyze_template()
+    for v in detector.PHOTO_TYPES:
+        assert f'"{v}"' in t, v
+
+
+@pytest.mark.parametrize("old", ['"scene"', '"single_item"', '"partial_view"',
+                                 '"multiple_items"', "text_is_product"])
+def test_analyze_template_has_no_old_classification_fields(old):
+    assert old not in P.analyze_template()
+
+
+def test_analyze_template_has_no_unfilled_placeholders():
+    """analyze_prompt 는 변수를 넘기지 않는다 — {{...}} 가 남으면 모델에 그대로 간다."""
+    assert "{{" not in P.analyze_template()
+
+
+def test_analyze_prompt_disabled_langfuse_is_template():
+    assert P.analyze_prompt() == P.analyze_template()
+
+
+def test_analyze_prompt_requests_analyze_name_without_variables(monkeypatch):
+    seen = []
+
+    def fake(name, fallback, **kw):
+        seen.append((name, fallback, kw))
+        return "X"
+    monkeypatch.setattr(P, "get_prompt_text", fake)
+    assert P.analyze_prompt() == "X"
+    assert seen == [("analyze", P.analyze_template(), {})]
+
+
+# ── verify_v2 (마크 전용, 파이프라인) ──
+def test_verify_marks_template_fragment_order():
+    parts = [P.frag(n) for n in ("role_verify_marks", "rules_verify", "schema_verify")]
+    assert P.verify_marks_template() == "\n\n".join(parts)
+
+
+def test_verify_marks_template_placeholders_only_item_and_lines():
+    import re
+    t = P.verify_marks_template()
+    assert set(re.findall(r"\{\{(\w+)\}\}", t)) == {"item", "lines"}
+    assert "{{checklist}}" not in t
+
+
+def test_verify_prompt_marks_compiles_item_and_lines():
+    anchors = [{"what": "BRAUN", "where": "front"}, {"what": "Series 9", "where": "side"}]
+    text = P.verify_prompt(anchors, "shaver", ["stain", "tear"], marks=True)
+    assert "shaver" in text and "- BRAUN (front)" in text and "- Series 9 (side)" in text
+    assert "{{" not in text
+    assert "stain" not in text                  # 하자 체크리스트는 넣지 않는다
+
+
+def test_verify_prompt_marks_requests_verify_v2(monkeypatch):
+    seen = []
+    monkeypatch.setattr(P, "get_prompt_text",
+                        lambda name, fallback, **kw: seen.append((name, fallback, kw)) or "X")
+    assert P.verify_prompt([{"what": "a", "where": "b"}], "cup", ["dent"], marks=True) == "X"
+    assert seen == [("verify_v2", P.verify_marks_template(), {"item": "cup", "lines": "- a (b)"})]
+
+
+def test_verify_prompt_default_is_old_verify(monkeypatch):
+    seen = []
+    monkeypatch.setattr(P, "get_prompt_text",
+                        lambda name, fallback, **kw: seen.append((name, kw)) or "X")
+    P.verify_prompt([{"what": "a", "where": "b"}], "cup", ["dent"])
+    assert seen == [("verify", {"item": "cup", "checklist": "dent", "lines": "- a (b)"})]
+
+
+def test_verify_prompt_marks_empty_anchors():
+    text = P.verify_prompt([], "cup", [], marks=True)
+    assert "{{" not in text
+
+
+# ── presets.unreadable / text_lock ──
+@pytest.mark.parametrize("text,expected", [
+    ("17? 5433", True), ("17？ 5433", True), ("?", True), ("？", True),
+    ("17가 5433", False), ("", False), ("SALE!", False), (None, False), (123, False),
+])
+def test_unreadable(text, expected):
+    from app.prompts.presets import unreadable
+    assert unreadable(text) is expected
+
+
+def test_text_lock_skips_unreadable_lines():
+    from app.prompts.presets import text_lock
+    out = text_lock([{"text": "17? 5433"}, {"text": "HYUNDAI"}, {"text": "A？B"}])
+    assert '"HYUNDAI"' in out and "?" not in out and "？" not in out
+
+
+def test_text_lock_all_unreadable_is_empty():
+    from app.prompts.presets import text_lock
+    assert text_lock([{"text": "17? 5433"}, {"text": "？"}]) == ""

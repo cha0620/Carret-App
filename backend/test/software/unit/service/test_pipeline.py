@@ -33,7 +33,6 @@ def restore_pipeline_mode(monkeypatch):
 def default_composite_first(monkeypatch):
     """생성 전 배경 교체 기준은 스펙 기본값으로 고정 (.env 영향 차단)."""
     monkeypatch.setattr(settings, "composite_first_min_texts", 12, raising=False)
-    monkeypatch.setattr(settings, "composite_first_min_anchors", 0, raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -121,10 +120,12 @@ def _expected(out, *, judge_pending=False, trace_id=None, trace_span_id=None):
         "item_similarity": out.get("item_similarity"),
         "gen_attempts": out.get("gen_attempts"),
         "photo_check": out.get("photo_check"),
-        "status": out.get("status", "pass"),
         "guard_report": out.get("guard_report", []),
         "mode": out.get("mode", "generate"),
         "composite_reason": out.get("composite_reason"),
+        "photo_type": out.get("photo_type"),
+        "wear_level": out.get("wear_level"),
+        "watermark": out.get("watermark"),
         "detect_failed": out.get("detect_failed", False),
         "verify_failed": out.get("verify_failed", False),
         "judge_pending": judge_pending,
@@ -157,8 +158,9 @@ def test_run_transform_mock_mode_bypasses_graph_and_tracing(monkeypatch, make_pn
         "result_name": "fid1_preset_a.jpg", "prompt_used": "PASS-THROUGH",
         "checks": [], "bubbles": [], "gate_passed": None,
         "item": "object", "considered": [],
-        "status": "pass", "guard_report": [], "mode": "generate",
+        "guard_report": [], "mode": "generate",
     }
+    assert "status" not in result
 
 
 def test_run_transform_mock_mode_missing_original_raises(monkeypatch):
@@ -233,20 +235,6 @@ def test_state_has_no_defer_judge_key():
     assert "defer_judge" not in pipeline_mod.State.__annotations__
 
 
-def test_run_transform_defer_judge_blocked_is_not_pending(monkeypatch):
-    monkeypatch.setattr(pipeline_mod, "GRAPH",
-                        FakeGraph(_graph_out(status="blocked")), raising=False)
-    result = pipeline_mod.run_transform("fid-d", "preset_b", defer_judge=True)
-    assert result["judge_pending"] is False
-
-
-def test_run_transform_defer_judge_missing_status_counts_as_pass(monkeypatch):
-    out = _graph_out()
-    assert "status" not in out
-    monkeypatch.setattr(pipeline_mod, "GRAPH", FakeGraph(out), raising=False)
-    assert pipeline_mod.run_transform("f", "p", defer_judge=True)["judge_pending"] is True
-
-
 def test_run_transform_defer_judge_is_keyword_only():
     with pytest.raises(TypeError):
         pipeline_mod.run_transform("f", "p", True)
@@ -282,14 +270,6 @@ def test_run_transform_inline_judges_exactly_once_after_graph(monkeypatch):
     assert result["judge_pending"] is False
 
 
-def test_run_transform_inline_missing_status_still_judges(monkeypatch):
-    out = _graph_out()
-    assert "status" not in out
-    order = _order_spies(monkeypatch, out)
-    pipeline_mod.run_transform("fo", "p", defer_judge=False)
-    assert [o for o in order if o[0] == "judge"] == [("judge", "fo", "p", {})]
-
-
 def test_run_transform_defer_never_calls_judge(monkeypatch):
     order = _order_spies(monkeypatch, _graph_out())
 
@@ -299,19 +279,6 @@ def test_run_transform_defer_never_calls_judge(monkeypatch):
     result = pipeline_mod.run_transform("fo", "p", defer_judge=True)
     assert order == [("clear", "fo_p.json"), "graph", ("clear", "fo_p.json")]
     assert result["judge_pending"] is True
-
-
-@pytest.mark.parametrize("defer", [True, False])
-def test_run_transform_blocked_never_judges(monkeypatch, defer):
-    order = _order_spies(monkeypatch, _graph_out(status="blocked"))
-
-    def poison(*a, **k):
-        raise AssertionError("blocked 에서 judge 금지")
-    monkeypatch.setattr(pipeline_mod.judge, "judge", poison)
-    result = pipeline_mod.run_transform("fo", "p", defer_judge=defer)
-    assert not any(o[0] == "judge" for o in order if isinstance(o, tuple))
-    assert result["judge_pending"] is False
-    assert result["status"] == "blocked"
 
 
 def test_run_transform_graph_exception_no_judge_but_flushes(monkeypatch):
@@ -362,8 +329,9 @@ def test_run_transform_real_mode_enabled_tracing_updates_obs_and_flushes(monkeyp
         "gate_passed": True, "bubbles": 1, "item": "chair",
         "visual_similarity": 0.87, "item_similarity": 0.84,
         "gen_attempts": 1, "photo_check": {"valid": True, "reason": ""},
-        "mode": "generate", "composite_reason": None, "detect_failed": False,
-        "verify_failed": False,
+        "mode": "generate", "composite_reason": None,
+        "photo_type": None, "wear_level": None,      # 그래프가 안 줬으면 None
+        "detect_failed": False, "verify_failed": False,
     }}]
     assert fake_lf.flushed is True
 
@@ -384,17 +352,26 @@ def test_run_transform_obs_output_includes_composite_reason(monkeypatch):
     assert output["mode"] == "composite"
 
 
+def test_run_transform_obs_output_includes_photo_type_and_wear(monkeypatch):
+    fake_lf = _enable_fake_langfuse(monkeypatch)
+    monkeypatch.setattr(pipeline_mod, "GRAPH", FakeGraph(
+        _graph_out(mode="original", composite_reason="document", photo_type="document",
+                   wear_level="heavy", watermark="on_item")), raising=False)
+    pipeline_mod.run_transform("f", "p")
+    output = fake_lf.obs.update_calls[0]["output"]
+    assert output["photo_type"] == "document" and output["wear_level"] == "heavy"
+    assert "scene" not in output and "watermark" not in output
+
+
 # ── run_transform_with_result(): dev 그래프 (build(dev=True)) ──
 def _patch_nodes(monkeypatch, checks, gate_passed, bubbles_out, visual_similarity=0.5,
                  detect_out=None):
     monkeypatch.setattr(pipeline_mod, "load", lambda s: {
         "original": b"ORIGINAL", "preset": {"prompt": "P", "name": "n", "bg_color": "#fff"},
     })
-    monkeypatch.setattr(pipeline_mod, "classify_node", lambda s: {
+    monkeypatch.setattr(pipeline_mod, "analyze", lambda s: {
         "item": "chair", "considered": ["scratch"],
-    })
-    monkeypatch.setattr(pipeline_mod, "detect", lambda s: detect_out or {
-        "anchors": [{"category": "other", "what": "얼룩", "where": "앞면"}],
+        **(detect_out or {"anchors": [{"category": "print", "what": "얼룩", "where": "앞면"}]}),
     })
     # DINOv2 실 모델 로드/네트워크 방지 - 반드시 mock
     monkeypatch.setattr(pipeline_mod, "score_similarity", lambda s: {
@@ -426,9 +403,21 @@ def test_run_transform_with_result_disabled_tracing_returns_expected_shape(monke
         "item": "chair", "considered": ["scratch"], "visual_similarity": 0.91,
         "item_similarity": None,   # dev 그래프엔 validate_result 가 없다
         "detect_failed": False, "verify_failed": False, "mode": "generate",
-        "status": "pass",
+        # analyze 가 분류값을 안 줬으면 None (dev 결과에도 실린다)
+        "photo_type": None, "wear_level": None, "watermark": None,
     }
     assert storage.load("result", "fid4_preset_d.jpg") is not None
+
+
+@pytest.mark.parametrize("ptype", ["inside_view", "document"])
+def test_run_transform_with_result_carries_photo_type_wear_watermark(monkeypatch, make_png, ptype):
+    _patch_nodes(monkeypatch, [], None, [], detect_out={
+        "anchors": [], "photo_type": ptype, "wear_level": "heavy", "watermark": "on_item"})
+    result = pipeline_mod.run_transform_with_result("fid4c", "preset_d", make_png())
+    assert (result["photo_type"], result["wear_level"], result["watermark"]) == (
+        ptype, "heavy", "on_item")
+    assert "scene" not in result
+    assert result["mode"] == "generate"     # dev 그래프는 inside_view·document 여도 제공 이미지를 쓴다
 
 
 def test_run_transform_with_result_reports_detect_failed(monkeypatch, make_png):
@@ -436,7 +425,6 @@ def test_run_transform_with_result_reports_detect_failed(monkeypatch, make_png):
                  detect_out={"anchors": [], "detect_failed": True})
     result = pipeline_mod.run_transform_with_result("fid4b", "preset_d", make_png())
     assert result["detect_failed"] is True
-    assert result["status"] == "pass"
 
 
 def test_run_transform_with_result_enabled_tracing_updates_obs_and_flushes(monkeypatch, make_png):
@@ -467,10 +455,11 @@ def test_dev_graph_replaces_generate_with_use_provided_and_has_no_loops():
     assert "use_provided" in nodes
     for n in ("generate", "validate_result", "mark_gate_retry", "composite"):
         assert n not in nodes
-    # 앞단은 운영 그래프와 같다: detect → plan → (필요할 때만) read_text
-    assert {("classify", "detect"), ("detect", "plan"),
+    assert "keep_original" not in nodes     # dev 그래프: 제공 이미지를 항상 쓴다
+    # 앞단은 운영 그래프와 같다: analyze → plan → (필요할 때만) read_text
+    assert {("load", "analyze"), ("analyze", "plan"),
             ("plan", "read_text"), ("read_text", "use_provided")} <= edges
-    assert ("classify", "read_text") not in edges and ("read_text", "plan") not in edges
+    assert ("analyze", "read_text") not in edges and ("read_text", "plan") not in edges
     assert {("plan", "use_provided"), ("use_provided", "score_similarity"),
             ("score_similarity", "verify"), ("verify", "save_inspect"),
             ("save_inspect", "finalize")} <= edges
@@ -557,12 +546,10 @@ def test_dev_graph_real_nodes_detect_failed_gate_false_no_generate(monkeypatch, 
     """실제 노드로 dev 그래프: detect 실패면 plan 이 composite_reason 을 달아도 dev
     그래프엔 분기가 없어 제공 이미지를 그대로 쓰고, verify 는 VLM 없이 gate False."""
     storage.save("original", "fid-dv.png", make_png())
-    monkeypatch.setattr(pipeline_mod.detector, "classify",
-                        lambda img: {"item": "cup", "considered": []})
 
     def fail(*a, **k):
-        raise ValueError("no defects list")
-    monkeypatch.setattr(pipeline_mod.detector, "detect_full", fail)
+        raise ValueError("analyze: 응답에 marks 목록 없음")
+    monkeypatch.setattr(pipeline_mod.detector, "analyze", fail)
 
     def poison(*a, **k):
         raise AssertionError("금지된 호출")
@@ -590,17 +577,12 @@ def test_dev_graph_real_nodes_detect_failed_gate_false_no_generate(monkeypatch, 
 
 
 # ── 출력 가드 폴백 정책 (validate_result) ──
-from app.services.quality.guards import GuardResult, run_output_guards as _ORIG_RUN_OUTPUT_GUARDS
+from app.services.quality.guards import GuardResult, dino_band_guard as _ORIG_DINO_BAND_GUARD
 from app.services.ai.detector import verify_and_locate as _ORIG_VERIFY_AND_LOCATE
 
 ORIG_COLOR = (120, 90, 60)   # make_png 기본색
 GEN_COLOR = (250, 250, 250)
 COMP_COLOR = (9, 9, 9)
-
-
-def _hard_fail():
-    return GuardResult(name="ocr_match", passed=False, value=0.5,
-                       threshold=0.95, severity="hard")
 
 
 def _soft_fail():
@@ -618,38 +600,46 @@ def _item_ok(value=0.86):
                        threshold=0.80, severity="soft")
 
 
-def _patch_graph_deps(monkeypatch, make_png, guard_side_effects, *,
-                      text_level="simple", item_box=None):
-    """guard_side_effects: generate 1회당 run_output_guards 가 돌려줄 리스트를
-    순서대로. detect_full 은 앵커 1개 + text_level(기본 simple = 예전처럼 글자 읽기 후
-    생성) + item_box 를 돌려준다. 반환: 호출 기록 dict."""
+def _patch_graph_deps(monkeypatch, make_png, dino_side_effects=(), *,
+                      text_level="simple", item_box=None, photo_type="product",
+                      wear_level="light"):
+    """dino_side_effects: generate 1회당 guards.dino_band_guard 가 돌려줄 값을 순서대로
+    (GuardResult 목록이면 첫 항목, 빈 목록·None·소진이면 None = 계산 실패).
+    detector.analyze 는 마크 1개 + text_level(기본 simple = 글자 읽기 후
+    생성) + item_box + photo_type/wear_level 을 돌려준다. 반환: 호출 기록 dict
+    (gen_seeds: _generate_ai 호출마다 None — seed 재시도는 없어졌다, dino: dino_band 호출 수)."""
     storage.save("original", "fid-g.png", make_png())
 
     calls = {"gen_seeds": [], "judge": 0, "verify": 0, "compose": 0,
-             "ocr": [], "cosine": 0, "detect_kw": []}
+             "cosine": 0, "analyze": 0, "dino": 0}
 
     def fake_generate_ai(original, preset, seed=None):
         calls["gen_seeds"].append(seed)
         return make_png(color=GEN_COLOR)
 
-    guard_iter = iter(guard_side_effects)
+    dino_iter = iter(dino_side_effects)
 
-    def fake_guards(orig, result, ocr_before, ocr_after):
-        calls["ocr"].append((list(ocr_before), list(ocr_after)))
-        return next(guard_iter)
+    def fake_dino_band(orig, result):
+        calls["dino"] += 1
+        v = next(dino_iter, None)
+        if isinstance(v, (list, tuple)):
+            v = v[0] if v else None
+        return v
 
     def fake_judge(orig, result):
         calls["judge"] += 1
         return {"analysis": "ok", "fidelity": 5, "realism": 5, "trust": 5}
 
-    def fake_verify(img, anchors, item, considered, **kw):
+    def fake_verify(img, anchors, item="object", considered=None, **kw):
         calls["verify"] += 1
         return [{"what": a["what"], "preserved": True} for a in anchors]
 
-    def fake_detect(img, item, considered, **kw):
-        calls["detect_kw"].append(kw)
-        return {"anchors": [{"category": "other", "what": "얼룩", "where": "앞면"}],
-                "text_level": text_level, "item_box": item_box}
+    def fake_analyze(img):
+        calls["analyze"] += 1
+        return {"item": "chair", "considered": [],
+                "anchors": [{"category": "print", "what": "얼룩", "where": "앞면"}],
+                "item_box": item_box, "photo_type": photo_type, "wear_level": wear_level,
+                "watermark": "none", "text_level": text_level}
 
     def fake_cosine(orig, result, **kw):
         calls["cosine"] += 1
@@ -659,17 +649,16 @@ def _patch_graph_deps(monkeypatch, make_png, guard_side_effects, *,
         calls["compose"] += 1
         return make_png(color=COMP_COLOR)
 
-    monkeypatch.setattr(pipeline_mod.detector, "classify",
-                        lambda img: {"item": "chair", "considered": []})
-    monkeypatch.setattr(pipeline_mod.detector, "detect_full", fake_detect)
+    monkeypatch.setattr(pipeline_mod.detector, "analyze", fake_analyze)
     monkeypatch.setattr(pipeline_mod, "_generate_ai", fake_generate_ai)
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", fake_guards)
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", fake_dino_band)
     monkeypatch.setattr(pipeline_mod.detector, "check_photo",
                         lambda img: {"valid": True, "reason": ""})
     monkeypatch.setattr(pipeline_mod.embedder, "cosine_similarity", fake_cosine)
     monkeypatch.setattr(pipeline_mod.detector, "verify_and_locate", fake_verify)
     monkeypatch.setattr(pipeline_mod.judge, "judge", fake_judge)
     monkeypatch.setattr(pipeline_mod.compositor, "compose", fake_compose)
+    monkeypatch.setattr(pipeline_mod.compositor, "compose_flat", fake_compose)   # document 경로
     return calls
 
 
@@ -679,6 +668,7 @@ def _compose_fails(monkeypatch, calls=None, exc=None):
             calls["compose"] += 1
         raise exc or ValueError("물건을 찾지 못함")
     monkeypatch.setattr(pipeline_mod.compositor, "compose", boom)
+    monkeypatch.setattr(pipeline_mod.compositor, "compose_flat", boom)   # document 경로
 
 
 def _mean_color(image_bytes):
@@ -695,94 +685,7 @@ def _close(c, ref, tol=2):
 def test_pipeline_detect_called_with_strict(monkeypatch, make_png):
     calls = _patch_graph_deps(monkeypatch, make_png, [[]])
     pipeline_mod.run_transform("fid-g", "studio_white")
-    assert calls["detect_kw"] == [{"strict": True}]
-
-
-def test_guard_hard_fail_twice_then_compose_fails_returns_blocked_with_original(monkeypatch, make_png):
-    calls = _patch_graph_deps(monkeypatch, make_png,
-                              [[_hard_fail()], [_hard_fail(), _soft_fail()]])
-    _compose_fails(monkeypatch, calls)
-
-    result = pipeline_mod.run_transform("fid-g", "studio_white")
-
-    assert result["status"] == "blocked"
-    assert result["mode"] == "composite_failed"
-    assert result["composite_reason"] == "guard_failed"
-    assert calls["compose"] == 1
-    assert [g["name"] for g in result["guard_report"]] == ["ocr_match", "dino_band"]
-    assert result["guard_report"][0] == {
-        "name": "ocr_match", "passed": False, "value": 0.5,
-        "threshold": 0.95, "severity": "hard"}
-    assert result["photo_check"] is None
-    # 변환 이미지는 내보내지 않는다 — 결과 슬롯엔 원본
-    served = storage.load("result", result["result_name"])
-    assert _close(_mean_color(served), ORIG_COLOR)
-    # blocked 결과로 verify/judge(비용 드는 VLM)를 돌리지 않는다
-    assert calls["verify"] == 0 and calls["judge"] == 0
-    assert result["gate_passed"] is None
-    assert storage.load("quality", "fid-g_studio_white.json") is None
-
-
-def test_guard_hard_fail_twice_then_compose_succeeds_gives_composite(monkeypatch, make_png):
-    calls = _patch_graph_deps(monkeypatch, make_png, [[_hard_fail()], [_hard_fail()]])
-
-    result = pipeline_mod.run_transform("fid-g", "studio_white")
-
-    assert result["status"] == "pass"
-    assert result["mode"] == "composite"
-    assert result["composite_reason"] == "guard_failed"
-    assert len(calls["gen_seeds"]) == 2 and calls["compose"] == 1
-    # 가드 불합격으로 왔으면 어떤 가드가 걸렸는지 기록은 남긴다
-    assert [g["name"] for g in result["guard_report"]] == ["ocr_match"]
-    assert result["photo_check"] is None
-    assert result["gate_passed"] is True and calls["verify"] == 1
-    assert calls["judge"] == 1
-    assert result["visual_similarity"] == 0.9    # 합성본 기준으로 다시 계산
-    served = storage.load("result", result["result_name"])
-    assert _close(_mean_color(served), COMP_COLOR)
-    ins = json.loads(storage.load("quality", "fid-g_studio_white_inspect.json"))
-    assert ins["guard_failed"] is True and ins["composite_reason"] == "guard_failed"
-    assert ins["mode"] == "composite"
-
-
-def test_guard_first_hard_fail_is_seed_retry_not_composite(monkeypatch, make_png):
-    calls = _patch_graph_deps(monkeypatch, make_png, [[_hard_fail()], []])
-    out = pipeline_mod.GRAPH.invoke({"file_id": "fid-g", "preset_key": "studio_white"})
-    assert calls["compose"] == 0
-    assert out["status"] == "pass" and out.get("mode", "generate") == "generate"
-    assert not out.get("guard_failed") and out.get("composite_reason") is None
-
-
-def test_guard_seed_retry_happens_exactly_once(monkeypatch, make_png):
-    """항상 hard fail 이어도 generate 는 최초 1회 + seed 재시도 1회 = 2회뿐."""
-    calls = _patch_graph_deps(monkeypatch, make_png,
-                              [[_hard_fail()], [_hard_fail()], [_hard_fail()]])
-    _compose_fails(monkeypatch, calls)
-
-    out = pipeline_mod.GRAPH.invoke({"file_id": "fid-g", "preset_key": "studio_white"})
-
-    assert len(calls["gen_seeds"]) == 2
-    assert calls["gen_seeds"][0] is None
-    assert isinstance(calls["gen_seeds"][1], int)
-    assert out["guard_seed"] == calls["gen_seeds"][1]
-    assert out["status"] == "blocked"
-
-
-def test_guard_seed_retry_same_prompt(monkeypatch, make_png):
-    """재시도는 '동일 파라미터' — 프롬프트가 바뀌면 안 된다."""
-    prompts = []
-    _patch_graph_deps(monkeypatch, make_png, [[_hard_fail()], []])
-
-    def spy(original, preset, seed=None):
-        prompts.append(preset["prompt"])
-        return make_png(color=GEN_COLOR)
-    monkeypatch.setattr(pipeline_mod, "_generate_ai", spy)
-
-    out = pipeline_mod.GRAPH.invoke({"file_id": "fid-g", "preset_key": "studio_white"})
-
-    assert len(prompts) == 2 and prompts[0] == prompts[1]
-    assert out["status"] == "pass"
-    assert out["guard_report"] == []
+    assert calls["analyze"] == 1
 
 
 def test_guard_soft_only_passes_with_report(monkeypatch, make_png):
@@ -790,7 +693,6 @@ def test_guard_soft_only_passes_with_report(monkeypatch, make_png):
 
     result = pipeline_mod.run_transform("fid-g", "studio_white")
 
-    assert result["status"] == "pass"
     assert result["guard_report"] == [{
         "name": "dino_band", "passed": False, "value": 0.6,
         "threshold": 0.75, "severity": "soft"}]
@@ -801,18 +703,28 @@ def test_guard_soft_only_passes_with_report(monkeypatch, make_png):
 
 
 def test_guard_report_written_to_inspect_json(monkeypatch, make_png):
-    calls = _patch_graph_deps(monkeypatch, make_png, [[_hard_fail()], [_hard_fail()]])
-    _compose_fails(monkeypatch, calls)
+    """기준 밖 dino_band 는 soft — 막지 않고 inspect 에 기록만. 가드 재시도·blocked 흔적 없음."""
+    calls = _patch_graph_deps(monkeypatch, make_png, [[_soft_fail()]])
 
-    pipeline_mod.run_transform("fid-g", "studio_white")
+    out = pipeline_mod.run_transform("fid-g", "studio_white")
 
     inspect = json.loads(storage.load("quality", "fid-g_studio_white_inspect.json"))
-    assert inspect["status"] == "blocked"
-    assert inspect["mode"] == "composite_failed"
-    assert inspect["guard_failed"] is True
-    assert inspect["guard_report"][0]["name"] == "ocr_match"
-    assert isinstance(inspect["guard_seed"], int)
-    assert "물건을 찾지 못함" in inspect["composite_error"]
+    assert inspect["mode"] == "generate" and out["mode"] == "generate"
+    assert [g["name"] for g in inspect["guard_report"]] == ["dino_band"]
+    assert inspect["guard_report"][0]["severity"] == "soft"
+    for gone in ("status", "guard_failed", "guard_seed", "guard_retry"):
+        assert gone not in inspect and gone not in out
+    assert calls["gen_seeds"] == [None]
+
+
+def test_every_guard_result_is_soft_never_blocks(monkeypatch, make_png):
+    """dino_band 가 기준 밖이어도 재생성·배경 교체 없이 생성본 그대로 (verify·채점도 정상)."""
+    calls = _patch_graph_deps(monkeypatch, make_png, [[_soft_fail()]])
+    out = pipeline_mod.run_transform("fid-g", "studio_white")
+    assert calls["gen_seeds"] == [None] and calls["compose"] == 0
+    assert calls["verify"] == 1 and calls["judge"] == 1
+    assert out["gate_passed"] is True and out.get("composite_reason") is None
+    assert _close(_mean_color(storage.load("result", "fid-g_studio_white.jpg")), GEN_COLOR)
 
 
 def test_guard_exception_propagates(monkeypatch, make_png):
@@ -821,80 +733,14 @@ def test_guard_exception_propagates(monkeypatch, make_png):
 
     def boom(*a, **kw):
         raise RuntimeError("embedder down")
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", boom)
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", boom)
 
     with pytest.raises(RuntimeError, match="embedder down"):
         pipeline_mod.run_transform("fid-g", "studio_white")
 
 
-def test_guard_retry_raising_leaves_no_generated_image(monkeypatch, make_png):
-    _patch_graph_deps(monkeypatch, make_png, [[_hard_fail()]])
-
-    def gen(original, preset, seed=None):
-        if seed is not None:
-            raise TimeoutError("fal timeout")
-        return make_png(color=GEN_COLOR)
-    monkeypatch.setattr(pipeline_mod, "_generate_ai", gen)
-
-    with pytest.raises(TimeoutError):
-        pipeline_mod.run_transform("fid-g", "studio_white")
-
-    assert storage.load("result", "fid-g_studio_white.jpg") is None
-
-
-def test_guard_retry_does_not_consume_photo_budget(monkeypatch, make_png):
-    """check_photo 는 가드와 동시에 시작하므로 가드가 막은 1번째 생성본에도 불릴 수
-    있다 (결과는 버림, 시작 전이면 취소). 호출 순서가 스레드에 따라 바뀔 수 있어 next(iter) 대신 생성본마다
-    다른 이미지를 만들고 이미지로 판정을 고른다: 1번(가드 차단)=버려질 invalid,
-    2번(seed 재시도)=invalid → 재생성, 3번=valid."""
-    monkeypatch.setattr(settings, "max_generate_attempts", 2, raising=False)
-    calls = _patch_graph_deps(monkeypatch, make_png, [[_hard_fail()], [], []])
-    gens = [make_png(color=(10 + 40 * i, 20, 30)) for i in range(3)]
-    verdicts = {gens[0]: {"valid": False, "reason": "discarded"},
-                gens[1]: {"valid": False, "reason": "cropped"},
-                gens[2]: {"valid": True, "reason": ""}}
-
-    def gen(original, preset, seed=None):
-        calls["gen_seeds"].append(seed)
-        return gens[len(calls["gen_seeds"]) - 1]
-    monkeypatch.setattr(pipeline_mod, "_generate_ai", gen)
-    photo_calls = []
-    monkeypatch.setattr(pipeline_mod.detector, "check_photo",
-                        lambda img: photo_calls.append(img) or verdicts[img])
-
-    out = pipeline_mod.GRAPH.invoke({"file_id": "fid-g", "preset_key": "studio_white"})
-
-    seeds = calls["gen_seeds"]
-    assert len(seeds) == 3
-    assert seeds[0] is None and isinstance(seeds[1], int) and seeds[2] is None
-    assert out["gen_attempts"] == 2
-    assert out["status"] == "pass"
-    assert out["photo_check"] == {"valid": True, "reason": ""}
-    # 통과한 2·3번은 반드시 검사. 차단된 1번은 시작 전이면 취소되고, 이미 시작했으면
-    # 호출되지만 결과는 버려진다 — 어느 쪽이든 예산을 쓰지 않는다 (타이밍 의존이라 둘 다 허용).
-    assert gens[1] in photo_calls and gens[2] in photo_calls
-    assert len(photo_calls) in (2, 3) and set(photo_calls) <= set(gens)
-
-
-def test_hard_fail_after_guard_retry_used_goes_to_composite_then_blocks(monkeypatch, make_png):
-    """가드 재시도를 이미 쓴 뒤 photo 재생성에서 hard fail → 추가 재시도 없이
-    배경 교체로, 그마저 실패하면 blocked."""
-    monkeypatch.setattr(settings, "max_generate_attempts", 2, raising=False)
-    calls = _patch_graph_deps(monkeypatch, make_png, [[_hard_fail()], [], [_hard_fail()]])
-    monkeypatch.setattr(pipeline_mod.detector, "check_photo",
-                        lambda img: {"valid": False, "reason": "cropped"})
-    _compose_fails(monkeypatch, calls)
-
-    out = pipeline_mod.GRAPH.invoke({"file_id": "fid-g", "preset_key": "studio_white"})
-
-    assert len(calls["gen_seeds"]) == 3
-    assert calls["compose"] == 1
-    assert out["status"] == "blocked"
-    assert out["photo_check"] is None
-
-
-def test_graph_item_pair_feeds_item_guard_not_run_output_guards(monkeypatch, make_png):
-    """_item_pair 결과는 run_output_guards 가 아니라 item_guard 로 간다."""
+def test_graph_item_pair_feeds_item_guard_not_dino_band(monkeypatch, make_png):
+    """_item_pair 결과는 dino_band 가 아니라 item_guard 로 간다."""
     _patch_graph_deps(monkeypatch, make_png, [[_dino_ok(0.9)]])
     monkeypatch.setattr(pipeline_mod, "_item_pair", lambda s: (b"OI", b"RI"))
     seen = []
@@ -916,18 +762,17 @@ def test_graph_cutout_failure_gives_no_item_similarity(monkeypatch, make_png):
                         lambda pair: pairs.append(pair) or real_item_guard(pair))
     out = pipeline_mod.GRAPH.invoke({"file_id": "fid-g", "preset_key": "studio_white"})
     assert pairs == [None]
-    assert out["status"] == "pass" and out["item_similarity"] is None
+    assert out["item_similarity"] is None
     assert out["guard_report"] == []
 
 
-def test_real_guards_with_empty_ocr_pass(monkeypatch, make_png):
-    """원본 글자가 없으면 OCR 은 [] vs [] — 실제 가드로도 hard fail 이 안 나야 한다."""
+def test_real_dino_band_guard_value_is_reused_as_similarity(monkeypatch, make_png):
+    """실제 dino_band_guard — 계산한 값이 유사도로 그대로 쓰인다."""
     calls = _patch_graph_deps(monkeypatch, make_png, [])
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", _ORIG_RUN_OUTPUT_GUARDS)
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", _ORIG_DINO_BAND_GUARD)
 
     out = pipeline_mod.GRAPH.invoke({"file_id": "fid-g", "preset_key": "studio_white"})
 
-    assert out["status"] == "pass"
     assert calls["gen_seeds"] == [None]
     # 실제 가드의 dino_band 가 계산한 값이 유사도로 그대로 쓰인다 (cosine 1회뿐)
     assert out["visual_similarity"] == 0.9 and calls["cosine"] == 1
@@ -947,54 +792,10 @@ def _text_reader(monkeypatch, original_texts, result_texts):
     return seen
 
 
-def test_real_guards_ocr_same_text_passes(monkeypatch, make_png):
-    calls = _patch_graph_deps(monkeypatch, make_png, [])
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", _ORIG_RUN_OUTPUT_GUARDS)
-    monkeypatch.setattr(settings, "text_lock", True)
-    reads = _text_reader(monkeypatch, [{"text": "NIKE"}, {"text": "AIR"}],
-                         [{"text": "AIR"}, {"text": "NIKE"}])   # 순서만 다름
-
-    out = pipeline_mod.GRAPH.invoke({"file_id": "fid-g", "preset_key": "studio_white"})
-
-    assert out["status"] == "pass" and calls["gen_seeds"] == [None]
-    assert len(reads) == 2
-    assert reads[1]["strict"] is True and reads[1]["item"] == "chair"
-    assert _close(_mean_color(reads[1]["img"]), GEN_COLOR)   # 결과 이미지를 읽음
-
-
-def test_real_guards_ocr_garbled_text_triggers_seed_retry(monkeypatch, make_png):
-    calls = _patch_graph_deps(monkeypatch, make_png, [])
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", _ORIG_RUN_OUTPUT_GUARDS)
-    monkeypatch.setattr(settings, "text_lock", True)
-    _text_reader(monkeypatch, [{"text": "시한부 선고"}], [{"text": "xq"}])
-    _compose_fails(monkeypatch, calls)
-
-    out = pipeline_mod.GRAPH.invoke({"file_id": "fid-g", "preset_key": "studio_white"})
-
-    assert len(calls["gen_seeds"]) == 2           # 최초 + seed 재시도
-    assert out["status"] == "blocked"
-    names = {g["name"] for g in out["guard_report"]}
-    assert "ocr_match" in names and "no_added_text" in names
-
-
-def test_ocr_read_failure_is_hard_fail_not_pass(monkeypatch, make_png):
-    calls = _patch_graph_deps(monkeypatch, make_png, [[], []])
-    monkeypatch.setattr(settings, "text_lock", True)
-    _text_reader(monkeypatch, [{"text": "SALE"}], RuntimeError("vlm down"))
-
-    out = pipeline_mod.GRAPH.invoke({"file_id": "fid-g", "preset_key": "studio_white"})
-
-    # 결과 읽기 실패 → 두 번 다 hard fail → 배경 교체
-    assert len(calls["gen_seeds"]) == 2
-    assert out["mode"] == "composite" and out["composite_reason"] == "guard_failed"
-    # 읽기 실패면 가드엔 빈 OCR 을 넘긴다 (별도 ocr_read_failed 로 막음)
-    assert calls["ocr"] == [([], []), ([], [])]
-
-
 def test_text_lock_puts_original_text_into_generate_prompt(monkeypatch, make_png):
     calls = _patch_graph_deps(monkeypatch, make_png, [[]])
     monkeypatch.setattr(settings, "text_lock", True)
-    _text_reader(monkeypatch,
+    reads = _text_reader(monkeypatch,
                  [{"text": "시한부", "x1": 300, "y1": 100, "x2": 700, "y2": 200}],
                  [{"text": "시한부"}])
     prompts = []
@@ -1006,8 +807,8 @@ def test_text_lock_puts_original_text_into_generate_prompt(monkeypatch, make_png
     assert '"시한부" (top-center)' in prompts[0]
     ins = json.loads(storage.load("quality", "fid-g_studio_white_inspect.json"))
     assert ins["item_texts"][0]["text"] == "시한부"
-    assert out["status"] == "pass"
-    assert calls["ocr"] == [(["시한부"], ["시한부"])]
+    assert len(reads) == 1                 # 원본만 읽는다 — 결과 글자를 다시 읽는 OCR 가드는 없다
+    assert len(prompts) == 1 and out["mode"] == "generate"
 
 
 def test_text_lock_read_failure_generates_without_text(monkeypatch, make_png):
@@ -1025,10 +826,9 @@ def test_text_lock_read_failure_generates_without_text(monkeypatch, make_png):
 
     out = pipeline_mod.run_transform("fid-g", "studio_white")
     assert "Text printed on the product" not in prompts[0]
-    # 원본 글자가 없으니 결과는 읽지 않는다 (읽기 1회 = 원본뿐), OCR 은 빈 목록끼리
+    # 결과는 읽지 않는다 (읽기 1회 = 원본뿐)
     assert len(reads) == 1
-    assert calls["ocr"] == [([], [])]
-    assert out["status"] == "pass"
+    assert len(prompts) == 1 and out["mode"] == "generate"
 
 
 # ── 게이트 실패 → 1회 재생성 → 배경 교체 모드 ──
@@ -1037,7 +837,7 @@ def _verify_seq(monkeypatch, seq):
     it = iter(seq)
     calls = []
 
-    def fake_verify(img, anchors, item, considered, **kw):
+    def fake_verify(img, anchors, item="object", considered=None, **kw):
         calls.append(img)
         return [{"what": "얼룩", "preserved": next(it)}]
     monkeypatch.setattr(pipeline_mod.detector, "verify_and_locate", fake_verify)
@@ -1066,12 +866,13 @@ def test_gate_fail_twice_switches_to_composite(monkeypatch, make_png):
 
     out = pipeline_mod.run_transform("fid-g", "studio_white")
 
-    assert out["mode"] == "composite" and out["gate_passed"] is True
-    assert out["composite_reason"] == "gate_failed"
-    assert len(verify_calls) == 3
+    # 합성본은 물건 픽셀이 원본 — verify VLM 을 다시 부르지 않는다 (gate 는 None = 확인 안 함)
+    assert out["mode"] == "composite" and out["gate_passed"] is None
+    assert out["composite_reason"] == "gate_failed" and out["checks"] == []
+    assert out["verify_failed"] is False
+    assert len(verify_calls) == 2
     saved = storage.load("result", "fid-g_studio_white.jpg")
     assert _mean_color(saved)[0] < 30
-    assert _mean_color(verify_calls[-1])[0] < 30
     ins = json.loads(storage.load("quality", "fid-g_studio_white_inspect.json"))
     assert ins["mode"] == "composite" and ins["gate_retried"] is True
     assert ins["composite_reason"] == "gate_failed"
@@ -1102,56 +903,31 @@ def test_composite_failure_keeps_generated_result_and_stops(monkeypatch, make_pn
     out = pipeline_mod.run_transform("fid-g", "studio_white")
 
     assert out["mode"] == "composite_failed" and out["gate_passed"] is False
-    assert out["status"] == "pass"                 # 가드 불합격이 아니면 blocked 아님
     assert len(verify_calls) == 2
     saved = storage.load("result", "fid-g_studio_white.jpg")
     assert _mean_color(saved)[0] > 200             # 생성본 유지
 
 
 def test_worst_path_fits_recursion_limit(monkeypatch, make_png):
-    """재생성 한도 5 + 가드 재시도 + 게이트 재생성 + 합성까지 다 타도 GraphRecursionError 없이 끝난다."""
-    from dataclasses import dataclass
-    _patch_graph_deps(monkeypatch, make_png, [])
+    """재생성 한도 5 + 게이트 재생성 + 합성까지 다 타도 GraphRecursionError 없이 끝난다."""
+    calls = _patch_graph_deps(monkeypatch, make_png, [])
     monkeypatch.setattr(settings, "max_generate_attempts", 5)
-
-    @dataclass
-    class G:
-        name: str = "x"; passed: bool = False; value: float = 0; threshold: float = 1; severity: str = "hard"
-    state = {"n": 0}
-
-    def guards_first_fail_each_round(orig, result, a, b):
-        state["n"] += 1
-        return [G()] if state["n"] == 1 else []
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", guards_first_fail_each_round)
-    monkeypatch.setattr(pipeline_mod.guards, "decide",
-                        lambda results: ("block" if any(not g.passed for g in results) else "pass", None))
     monkeypatch.setattr(pipeline_mod.detector, "check_photo",
                         lambda img: {"valid": False, "reason": "cropped"})
-    _verify_seq(monkeypatch, [False, False, False])
+    _verify_seq(monkeypatch, [False, False])
 
     out = pipeline_mod.run_transform("fid-g", "studio_white")
     assert out["mode"] == "composite"
+    # 구도 재생성 한도 5 + 게이트 재생성 1 (gen_attempts 는 초기화되지 않음) — seed 재시도는 없다
+    assert calls["gen_seeds"] == [None] * 6
 
 
 def test_worst_path_with_plan_composite_failure_fits_recursion_limit(monkeypatch, make_png):
-    """생성 전 합성(실패) → 생성 한도 5 + 가드 재시도 + 게이트 재생성 + 합성(실패)."""
-    from dataclasses import dataclass
-    calls = _patch_graph_deps(monkeypatch, make_png, [])
+    """생성 전 합성(실패) → 생성 한도 5 + 게이트 재생성 + 합성(실패)."""
+    # plan → composite(text_dense) → 오리기 실패 → 생성 (wear_heavy 는 오리기 실패면 원본 그대로라 안 씀)
+    calls = _patch_graph_deps(monkeypatch, make_png, [], text_level="dense")
     monkeypatch.setattr(settings, "max_generate_attempts", 5)
-    monkeypatch.setattr(settings, "composite_first_min_anchors", 1)   # plan → composite
     _compose_fails(monkeypatch, calls)
-
-    @dataclass
-    class G:
-        name: str = "x"; passed: bool = False; value: float = 0; threshold: float = 1; severity: str = "hard"
-    state = {"n": 0}
-
-    def first_fails(orig, result, a, b):
-        state["n"] += 1
-        return [G()] if state["n"] == 1 else []
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", first_fails)
-    monkeypatch.setattr(pipeline_mod.guards, "decide",
-                        lambda results: ("block" if any(not g.passed for g in results) else "pass", None))
     monkeypatch.setattr(pipeline_mod.detector, "check_photo",
                         lambda img: {"valid": False, "reason": "cropped"})
     _verify_seq(monkeypatch, [False] * 5)
@@ -1162,30 +938,39 @@ def test_worst_path_with_plan_composite_failure_fits_recursion_limit(monkeypatch
 
 
 # ══ detect 실패 ≠ "하자 없음" ═══════════════════════
+def _analyze_out(anchors, text_level="simple", item_box=None, *, item="object",
+                 considered=None, photo_type="product", wear_level="light", watermark="none"):
+    """detector.analyze 반환 모양."""
+    return {"item": item, "considered": list(considered or []), "anchors": anchors,
+            "item_box": item_box, "photo_type": photo_type, "wear_level": wear_level,
+            "watermark": watermark, "text_level": text_level}
+
+
 def _detect_seq(monkeypatch, seq):
-    """detect_full 이 호출될 때마다 seq 항목을 차례로: Exception 이면 raise, 목록이면
-    그 앵커 + text_level simple (예전 동작), dict 면 그대로 반환."""
+    """detector.analyze 가 호출될 때마다 seq 항목을 차례로: Exception 이면 raise, 목록이면
+    그 마크 + 기본 분류값(_analyze_out), dict 면 그대로 반환. 호출마다 이미지 바이트를 남긴다."""
     it = iter(seq)
     calls = []
 
-    def fake(img, item, considered, **kw):
-        calls.append({"item": item, **kw})
+    def fake(img):
+        calls.append(img)
         v = next(it)
         if isinstance(v, Exception):
             raise v
         if isinstance(v, dict):
             return v
-        return {"anchors": v, "text_level": "simple", "item_box": None}
-    monkeypatch.setattr(pipeline_mod.detector, "detect_full", fake)
+        return _analyze_out(v)
+    monkeypatch.setattr(pipeline_mod.detector, "analyze", fake)
     return calls
 
 
-_DETECT_FAILED = {"anchors": [], "detect_failed": True, "text_level": None}
+_DETECT_FAILED = {"item": "object", "considered": [], "anchors": [], "detect_failed": True,
+                  "text_level": None, "photo_type": None, "wear_level": None,
+                  "watermark": None}
 
 
-def _detect_ok(anchors, text_level="simple", item_box=None):
-    return {"anchors": anchors, "detect_failed": False, "text_level": text_level,
-            "item_box": item_box}
+def _detect_ok(anchors, text_level="simple", item_box=None, **kw):
+    return {**_analyze_out(anchors, text_level, item_box, **kw), "detect_failed": False}
 
 
 def _no_vlm_verify(monkeypatch):
@@ -1196,11 +981,11 @@ def _no_vlm_verify(monkeypatch):
 
 def test_detect_both_attempts_fail_marks_detect_failed(monkeypatch, no_detect_sleep):
     calls = _detect_seq(monkeypatch, [ValueError("no defects"), RuntimeError("down")])
-    out = pipeline_mod.detect({"original": b"x", "item": "chair", "considered": []})
+    out = pipeline_mod.analyze({"original": b"x", "item": "chair", "considered": []})
     assert out == _DETECT_FAILED
     assert "item_box" not in out      # 실패는 박스를 모른다 — 덮어쓰지 않는다
-    assert len(calls) == pipeline_mod.DETECT_ATTEMPTS == 2
-    assert all(c["strict"] is True for c in calls)
+    assert len(calls) == pipeline_mod.ANALYZE_ATTEMPTS == 2
+    assert calls == [b"x", b"x"]
     # 시도 사이 1회만 쉰다 (마지막 실패 뒤엔 안 쉼)
     assert no_detect_sleep == [pipeline_mod.DETECT_RETRY_DELAY_S]
 
@@ -1208,51 +993,43 @@ def test_detect_both_attempts_fail_marks_detect_failed(monkeypatch, no_detect_sl
 def test_detect_first_fail_then_success(monkeypatch, no_detect_sleep):
     anchors = [{"category": "other", "what": "얼룩", "where": "앞면"}]
     calls = _detect_seq(monkeypatch, [ValueError("empty"), anchors])
-    out = pipeline_mod.detect({"original": b"x"})
+    out = pipeline_mod.analyze({"original": b"x"})
     assert out == _detect_ok(anchors)
-    assert [c["item"] for c in calls] == ["object", "object"]
+    assert len(calls) == 2
     assert no_detect_sleep == [pipeline_mod.DETECT_RETRY_DELAY_S]
 
 
 def test_detect_first_success_no_retry(monkeypatch, no_detect_sleep):
     calls = _detect_seq(monkeypatch, [[]])
-    out = pipeline_mod.detect({"original": b"x", "item": "cup"})
+    out = pipeline_mod.analyze({"original": b"x", "item": "cup"})
     assert out == _detect_ok([])   # 진짜 "하자 없음"
-    assert len(calls) == 1 and calls[0]["strict"] is True
+    assert len(calls) == 1
     assert no_detect_sleep == []
 
 
 def test_detect_catches_non_value_errors(monkeypatch):
     _detect_seq(monkeypatch, [KeyError("x"), TimeoutError("t")])
-    assert pipeline_mod.detect({"original": b"x"})["detect_failed"] is True
+    assert pipeline_mod.analyze({"original": b"x"})["detect_failed"] is True
 
 
 def test_verify_detect_failed_generate_mode_fails_gate_without_vlm(monkeypatch):
     _no_vlm_verify(monkeypatch)
     s = {"detect_failed": True, "anchors": [], "result_name": "r.jpg",
          "item_texts": [{"text": "HELLO"}]}      # 글자가 있어도 VLM 안 부름
-    assert pipeline_mod.verify(s) == {"checks": [], "gate_passed": False}
-    assert pipeline_mod.verify({**s, "mode": "generate"})["gate_passed"] is False
-    assert pipeline_mod.verify({**s, "mode": "composite_failed"})["gate_passed"] is False
+    # 호출은 없었으니 verify_failed 는 False 로 명시 (앞 단계 값이 남지 않게)
+    assert pipeline_mod.verify(s) == {"checks": [], "gate_passed": False, "verify_failed": False}
+    assert pipeline_mod.verify({**s, "mode": "generate", "verify_failed": True}) == {
+        "checks": [], "gate_passed": False, "verify_failed": False}
 
 
-def test_verify_detect_failed_composite_mode_is_unverified(monkeypatch):
+@pytest.mark.parametrize("mode", ["composite", "composite_failed", "original", "other"])
+def test_verify_detect_failed_non_generate_mode_is_unverified(monkeypatch, mode):
+    """mode 분기가 detect_failed 보다 먼저 — 생성본이 아니면 gate None (False 아님)."""
     _no_vlm_verify(monkeypatch)
-    s = {"detect_failed": True, "anchors": [], "mode": "composite", "result_name": "r.jpg"}
-    assert pipeline_mod.verify(s) == {"checks": [], "gate_passed": None}
-
-
-def test_verify_blocked_wins_over_detect_failed(monkeypatch):
-    _no_vlm_verify(monkeypatch)
-    s = {"detect_failed": True, "status": "blocked", "anchors": []}
-    assert pipeline_mod.verify(s) == {"checks": [], "gate_passed": None}
-
-
-def test_verify_blocked_with_targets_no_call(monkeypatch):
-    _no_vlm_verify(monkeypatch)
-    s = {"status": "blocked", "anchors": [{"category": "other", "what": "a", "where": "b"}],
-         "item_texts": [{"text": "AB"}]}
-    assert pipeline_mod.verify(s) == {"checks": [], "gate_passed": None}
+    s = {"detect_failed": True, "anchors": [], "mode": mode, "result_name": "r.jpg"}
+    out = pipeline_mod.verify(s)
+    assert out == {"checks": [], "gate_passed": None}
+    assert "verify_failed" not in out and "gate_checks" not in out   # 이전 checks 없음
 
 
 def test_verify_no_targets_skips_vlm_and_gate_none(monkeypatch):
@@ -1261,22 +1038,54 @@ def test_verify_no_targets_skips_vlm_and_gate_none(monkeypatch):
     assert pipeline_mod.verify(s) == {"checks": [], "gate_passed": None, "verify_failed": False}
 
 
-def test_verify_composite_mode_excludes_text_targets(monkeypatch):
+@pytest.mark.parametrize("mode", ["composite", "composite_failed", "original"])
+def test_verify_non_generate_mode_never_calls_vlm_even_with_targets(monkeypatch, mode):
+    """배경 교체본 등은 물건 픽셀이 원본 — 앵커·글자가 있어도 VLM 을 부르지 않는다."""
+    _no_vlm_verify(monkeypatch)
+    anchor = {"category": "print", "what": "얼룩", "where": "앞면"}
+    out = pipeline_mod.verify({"anchors": [anchor], "item_texts": [{"text": "ABC"}],
+                               "mode": mode, "result_name": "r.jpg", "gate_passed": False,
+                               "checks": [{"what": "old", "preserved": False}]})
+    # 앞선 생성본의 checks 는 gate_checks 로 옮기고 checks·gate 는 비운다 (말풍선은 생성본 좌표)
+    assert out == {"checks": [], "gate_passed": None,
+                   "gate_checks": [{"what": "old", "preserved": False}]}
+
+
+@pytest.mark.parametrize("prior", [True, False])
+def test_verify_non_generate_mode_keeps_previous_verify_failed(monkeypatch, prior):
+    """verify_failed 는 반환하지 않는다 — LangGraph state 의 앞 단계 값이 그대로 남는다."""
+    _no_vlm_verify(monkeypatch)
+    out = pipeline_mod.verify({"anchors": [_ANCHOR_V], "mode": "composite",
+                               "result_name": "r.jpg", "verify_failed": prior})
+    assert "verify_failed" not in out
+
+
+@pytest.mark.parametrize("prev", [None, []])
+def test_verify_non_generate_mode_no_gate_checks_when_no_previous_checks(monkeypatch, prev):
+    _no_vlm_verify(monkeypatch)
+    out = pipeline_mod.verify({"anchors": [], "mode": "composite", "result_name": "r.jpg",
+                               "checks": prev})
+    assert out == {"checks": [], "gate_passed": None}
+
+
+@pytest.mark.parametrize("state", [{}, {"mode": "generate"}])
+def test_verify_generate_or_missing_mode_calls_vlm(monkeypatch, state):
     seen = []
     monkeypatch.setattr(pipeline_mod.detector, "verify_and_locate",
-                        lambda img, t, i, c, **kw: seen.append(t) or
+                        lambda img, t, i="object", **kw: seen.append(t) or
                         [{"what": x["what"], "preserved": True} for x in t])
-    anchor = {"category": "other", "what": "얼룩", "where": "앞면"}
-    out = pipeline_mod.verify({"anchors": [anchor], "item_texts": [{"text": "ABC"}],
-                               "mode": "composite", "result_name": "r.jpg"})
-    assert seen == [[anchor]] and out["gate_passed"] is True
+    out = pipeline_mod.verify({"anchors": [_ANCHOR_V], "result_name": "r.jpg", **state})
+    assert seen == [[_ANCHOR_V]] and out["gate_passed"] is True
+
+
+_ANCHOR_V = {"category": "other", "what": "얼룩", "where": "앞면"}
 
 
 def test_verify_composite_mode_texts_only_skips_vlm(monkeypatch):
     _no_vlm_verify(monkeypatch)
     out = pipeline_mod.verify({"anchors": [], "item_texts": [{"text": "ABC"}],
                                "mode": "composite", "result_name": "r.jpg"})
-    assert out == {"checks": [], "gate_passed": None, "verify_failed": False}
+    assert out == {"checks": [], "gate_passed": None}
 
 
 # ── verify 호출 실패 ≠ "보존됨" (예전엔 gate None 으로 남아 통과됐다) ──
@@ -1296,7 +1105,7 @@ def _verify_raises(monkeypatch, seq):
     calls = _Calls()
     kwargs = calls.kwargs
 
-    def fake(img, targets, item, considered, **kw):
+    def fake(img, targets, item="object", considered=None, **kw):
         calls.append(img)
         kwargs.append(kw)
         v = next(it)
@@ -1316,18 +1125,20 @@ def test_verify_vlm_exception_twice_generate_mode_fails_gate(monkeypatch, no_det
     assert no_detect_sleep == [pipeline_mod.DETECT_RETRY_DELAY_S]
 
 
-@pytest.mark.parametrize("mode", ["generate", "composite_failed"])
-def test_verify_vlm_exception_non_composite_modes_fail_gate(monkeypatch, mode):
+@pytest.mark.parametrize("mode", ["generate"])
+def test_verify_vlm_exception_generate_mode_fails_gate(monkeypatch, mode):
     _verify_raises(monkeypatch, [RuntimeError("x"), RuntimeError("y")])
     out = pipeline_mod.verify({"anchors": [_ANCHOR], "result_name": "r.jpg", "mode": mode})
     assert out["verify_failed"] is True and out["gate_passed"] is False
 
 
-def test_verify_vlm_exception_twice_composite_mode_is_unverified(monkeypatch):
-    _verify_raises(monkeypatch, [RuntimeError("x"), RuntimeError("y")])
-    out = pipeline_mod.verify({"anchors": [_ANCHOR], "result_name": "r.jpg",
-                               "mode": "composite"})
-    assert out == {"checks": [], "verify_failed": True, "gate_passed": None}
+@pytest.mark.parametrize("mode", ["composite", "composite_failed"])
+def test_verify_non_generate_mode_never_reaches_failing_vlm(monkeypatch, mode):
+    """호출 실패 분기는 generate 에만 — 합성본은 VLM 을 부르지 않으니 verify_failed 도 안 건드린다."""
+    calls = _verify_raises(monkeypatch, [RuntimeError("x"), RuntimeError("y")])
+    out = pipeline_mod.verify({"anchors": [_ANCHOR], "result_name": "r.jpg", "mode": mode})
+    assert out == {"checks": [], "gate_passed": None}
+    assert len(calls) == 0
 
 
 def test_verify_first_fail_then_success(monkeypatch, no_detect_sleep):
@@ -1391,15 +1202,30 @@ def test_route_after_verify_detect_failed(state, expected):
 
 
 @pytest.mark.parametrize("state,expected", [
-    ({"guard_retry": True}, "retry"),
-    ({"guard_retry": True, "guard_failed": True}, "retry"),
-    ({"guard_failed": True}, "composite"),
-    ({"guard_failed": True, "photo_check": {"valid": False}}, "composite"),
-    ({"status": "pass", "photo_check": {"valid": True}}, "ok"),
+    # 가드 재시도·배경 교체 분기는 없어졌다 — 옛 키가 남아 있어도 무시
+    ({"guard_retry": True}, "ok"),
+    ({"guard_failed": True}, "ok"),
+    ({"guard_failed": True, "photo_check": {"valid": False}, "gen_attempts": 1}, "retry"),
+    ({"photo_check": {"valid": True}}, "ok"),
+    ({"photo_check": None}, "ok"),
+    ({"photo_check": {}}, "ok"),
+    ({"photo_check": {"valid": False}, "gen_attempts": 0}, "retry"),
+    ({"photo_check": {"valid": False}}, "retry"),
+    ({"photo_check": {"valid": False}, "gen_attempts": 2}, "retry"),
+    ({"photo_check": {"valid": False}, "gen_attempts": 3}, "ok"),   # 한도 소진
+    ({"photo_check": {"valid": False}, "gen_attempts": 9}, "ok"),
     ({}, "ok"),
 ])
-def test_route_after_validate(state, expected):
+def test_route_after_validate(monkeypatch, state, expected):
+    monkeypatch.setattr(settings, "max_generate_attempts", 3)
     assert pipeline_mod._route_after_validate(state) == expected
+
+
+@pytest.mark.parametrize("state", [
+    {"photo_check": {"valid": False}, "gen_attempts": 1}, {"guard_failed": True}, {}])
+def test_route_after_validate_never_composite(monkeypatch, state):
+    monkeypatch.setattr(settings, "max_generate_attempts", 3)
+    assert pipeline_mod._route_after_validate(state) in ("retry", "ok")
 
 
 @pytest.mark.parametrize("mode,expected", [
@@ -1444,7 +1270,6 @@ def test_graph_detect_fails_and_composite_fails_keeps_gate_false(monkeypatch, ma
     assert out["mode"] == "composite_failed"
     assert out["gate_passed"] is False
     assert out["detect_failed"] is True
-    assert out["status"] == "pass"
     assert out["composite_reason"] is None
     assert len(calls["gen_seeds"]) == 1
     assert calls["compose"] == 1
@@ -1468,21 +1293,6 @@ def test_graph_detect_retry_success_takes_normal_path(monkeypatch, make_png):
     assert ins["detect_failed"] is False and ins["anchors"] == anchors
 
 
-def test_graph_detect_failed_then_guard_fails_twice_blocks(monkeypatch, make_png):
-    """detect 실패 → 합성 실패 → 생성 → 가드 2회 불합격 → 합성(재호출 없이 실패) → blocked."""
-    calls = _patch_graph_deps(monkeypatch, make_png, [[_hard_fail()], [_hard_fail()]])
-    _detect_seq(monkeypatch, [ValueError("x")] * 10)
-    _no_vlm_verify(monkeypatch)
-    _compose_fails(monkeypatch, calls)
-
-    out = pipeline_mod.run_transform("fid-g", "studio_white")
-    assert out["status"] == "blocked" and out["gate_passed"] is None
-    assert out["mode"] == "composite_failed"
-    assert out["composite_reason"] == "guard_failed"
-    assert calls["compose"] == 1 and len(calls["gen_seeds"]) == 2
-    assert calls["judge"] == 0
-
-
 # ══ plan: 생성 전 배경 교체 판단 ═════════════════════
 def _texts(n):
     return [{"text": f"t{i:02d}"} for i in range(n)]
@@ -1492,35 +1302,57 @@ def _anchors(n):
     return [{"category": "other", "what": f"a{i}", "where": "x"} for i in range(n)]
 
 
-@pytest.mark.parametrize("state,min_texts,min_anchors,expected", [
-    ({}, 12, 0, None),
-    ({"detect_failed": True}, 12, 0, "detect_failed"),
-    ({"detect_failed": False, "item_texts": _texts(11)}, 12, 0, None),
+@pytest.mark.parametrize("state,min_texts,expected", [
+    ({}, 12, None),
+    ({"detect_failed": True}, 12, "detect_failed"),
+    ({"detect_failed": False, "item_texts": _texts(11)}, 12, None),
     # 글자 수(text_heavy)는 plan 이 아니라 read_text 가 본다 — plan 땐 아직 안 읽었다
-    ({"item_texts": _texts(12)}, 12, 0, None),
-    ({"item_texts": _texts(40)}, 0, 0, None),
-    ({"item_texts": _texts(1)}, 1, 0, None),
-    ({"item_texts": None}, 12, 0, None),
+    ({"item_texts": _texts(12)}, 12, None),
+    ({"item_texts": _texts(40)}, 0, None),
+    ({"item_texts": _texts(1)}, 1, None),
+    ({"item_texts": None}, 12, None),
     # text_level: dense 만 배경 교체 (min_texts 설정과 무관)
-    ({"text_level": "dense"}, 12, 0, "text_dense"),
-    ({"text_level": "dense"}, 0, 0, "text_dense"),
-    ({"text_level": "simple"}, 12, 0, None),
-    ({"text_level": "none"}, 12, 0, None),
-    ({"text_level": None}, 12, 0, None),
-    ({"anchors": _anchors(50)}, 12, 0, None),                  # 기본 끔
-    ({"anchors": _anchors(2)}, 12, 3, None),
-    ({"anchors": _anchors(3)}, 12, 3, "many_defects"),
-    ({"anchors": None}, 12, 1, None),
-    # 우선순위: detect_failed > text_dense > many_defects
-    ({"detect_failed": True, "text_level": "dense", "anchors": _anchors(3)}, 12, 3, "detect_failed"),
-    ({"text_level": "dense", "anchors": _anchors(3)}, 12, 3, "text_dense"),
-    ({"text_level": "none", "anchors": _anchors(3)}, 12, 3, "many_defects"),
-    ({"text_level": "simple", "item_texts": _texts(12), "anchors": _anchors(3)}, 12, 3,
-     "many_defects"),
+    ({"text_level": "dense"}, 12, "text_dense"),
+    ({"text_level": "dense"}, 0, "text_dense"),
+    ({"text_level": "simple"}, 12, None),
+    ({"text_level": "none"}, 12, None),
+    ({"text_level": None}, 12, None),
+    # 하자는 개수로 보지 않는다 (many_defects 삭제) — 마크가 아무리 많아도 사유 없음
+    ({"anchors": _anchors(50)}, 12, None),
+    ({"anchors": None}, 12, None),
+    # photo_type / wear_level
+    ({"photo_type": "inside_view"}, 12, "inside_view"),
+    ({"photo_type": "document"}, 12, "document"),
+    ({"photo_type": "product"}, 12, None),
+    ({"photo_type": None}, 12, None),
+    ({"photo_type": "other"}, 12, None),
+    # 예전 필드는 더 이상 보지 않는다
+    ({"scene": "partial_view"}, 12, None),
+    ({"text_is_product": True}, 12, None),
+    ({"wear_level": "heavy"}, 12, "wear_heavy"),
+    ({"wear_level": "light"}, 12, None),
+    ({"wear_level": "none"}, 12, None),
+    ({"wear_level": None}, 12, None),
+    ({"watermark": "on_item"}, 12, None),          # 관측만 — 경로를 바꾸지 않는다
+    # 대소문자 정규화는 detector 몫 — 여기선 정확히 일치할 때만
+    ({"photo_type": "INSIDE_VIEW", "wear_level": "HEAVY"}, 12, None),
+    ({"photo_type": "Document"}, 12, None),
+    # 우선순위: detect_failed, inside_view, document, text_dense, wear_heavy 순
+    ({"detect_failed": True, "photo_type": "inside_view", "text_level": "dense",
+      "wear_level": "heavy"}, 12, "detect_failed"),
+    ({"detect_failed": True, "photo_type": "document"}, 12, "detect_failed"),
+    ({"photo_type": "inside_view", "text_level": "dense", "wear_level": "heavy"}, 12,
+     "inside_view"),
+    ({"photo_type": "document", "text_level": "dense", "wear_level": "heavy"}, 12,
+     "document"),
+    ({"text_level": "dense", "wear_level": "heavy"}, 12, "text_dense"),
+    ({"text_level": "simple", "wear_level": "heavy"}, 12, "wear_heavy"),
+    ({"text_level": "none", "wear_level": "heavy", "anchors": _anchors(3)}, 12, "wear_heavy"),
+    ({"detect_failed": False, "photo_type": "product", "text_level": "simple",
+      "wear_level": "light", "item_texts": _texts(12), "anchors": _anchors(3)}, 12, None),
 ])
-def test_composite_first_reason(monkeypatch, state, min_texts, min_anchors, expected):
+def test_composite_first_reason(monkeypatch, state, min_texts, expected):
     monkeypatch.setattr(settings, "composite_first_min_texts", min_texts)
-    monkeypatch.setattr(settings, "composite_first_min_anchors", min_anchors)
     assert pipeline_mod._composite_first_reason(state) == expected
 
 
@@ -1528,7 +1360,14 @@ def test_composite_first_defaults_in_settings():
     from app.core.config import Settings
     f = Settings.model_fields
     assert f["composite_first_min_texts"].default == 12
-    assert f["composite_first_min_anchors"].default == 0
+    assert "composite_first_min_anchors" not in f     # 하자 개수 기준은 삭제됨 (wear_level 로 대체)
+    assert "ocr_guard" not in f                        # VLM OCR 가드는 09-27 에 삭제
+
+
+def test_settings_rejects_removed_min_anchors_attribute():
+    """삭제된 설정을 코드가 다시 읽지 않는지 — 붙이려 해도 pydantic 이 막는다."""
+    with pytest.raises(ValueError):
+        settings.composite_first_min_anchors = 1
 
 
 def test_plan_sets_result_name_and_reason():
@@ -1571,8 +1410,13 @@ def test_route_after_plan(state, expected):
     ({}, "read_text"),
     ({"text_level": "none"}, "generate"),      # 글자 없음 — VLM 읽기 생략
     ({"text_level": "dense"}, "generate"),     # 사유 없이 dense 면 _needs_text 가 거른다
-    ({"text_level": "simple", "composite_reason": "many_defects"}, "composite"),
-    ({"text_level": "none", "composite_reason": "many_defects"}, "composite"),
+    ({"text_level": "simple", "composite_reason": "wear_heavy"}, "composite"),
+    ({"text_level": "none", "composite_reason": "wear_heavy"}, "composite"),
+    ({"text_level": "simple", "composite_reason": "inside_view"}, "keep_original"),
+    ({"text_level": "dense", "composite_reason": "inside_view"}, "keep_original"),
+    ({"text_level": "simple", "composite_reason": "document"}, "composite"),
+    ({"text_level": "none", "composite_reason": "document"}, "composite"),
+    ({"text_level": "simple", "composite_reason": "partial_view"}, "composite"),   # 옛 사유
     ({"text_level": "dense", "composite_reason": "text_dense"}, "composite"),
 ])
 def test_route_after_plan_text_lock_on(monkeypatch, state, expected):
@@ -1625,7 +1469,7 @@ def test_graph_text_heavy_goes_to_composite_without_generate(monkeypatch, make_p
     monkeypatch.setattr(pipeline_mod, "GRAPH", pipeline_mod.build())
     seen = []
     monkeypatch.setattr(pipeline_mod.detector, "verify_and_locate",
-                        lambda img, t, i, c, **kw: seen.append(t) or
+                        lambda img, t, i="object", c=None, **kw: seen.append(t) or
                         [{"what": x["what"], "preserved": True} for x in t])
 
     out = pipeline_mod.run_transform("fid-g", "studio_white")
@@ -1634,18 +1478,35 @@ def test_graph_text_heavy_goes_to_composite_without_generate(monkeypatch, make_p
     assert out["mode"] == "composite" and out["composite_reason"] == "text_heavy"
     assert plans == [{"result_name": "fid-g_studio_white.jpg"}]   # plan 은 사유 없음
     assert len(reads) == 1                      # 원본만 읽음 (OCR 가드 안 탐)
-    assert calls["detect_kw"] == [{"strict": True}]
-    assert [t["what"] for t in seen[0]] == ["얼룩"]   # 합성본은 글자 항목 없이 앵커만
-    assert out["gate_passed"] is True
+    assert calls["analyze"] == 1
+    assert seen == []                           # 합성본은 verify VLM 을 부르지 않는다
+    assert out["gate_passed"] is None and out["checks"] == []
     assert out["visual_similarity"] == 0.9
 
 
-def test_graph_many_defects_goes_to_composite(monkeypatch, make_png):
-    calls = _patch_graph_deps(monkeypatch, make_png, [])
-    monkeypatch.setattr(settings, "composite_first_min_anchors", 1)
+def test_graph_wear_heavy_goes_to_composite(monkeypatch, make_png):
+    """wear_level=heavy → 생성 없이 바로 배경 교체 (원본 픽셀로 하자 상태를 그대로)."""
+    calls = _patch_graph_deps(monkeypatch, make_png, [], wear_level="heavy")
     out = pipeline_mod.run_transform("fid-g", "studio_white")
     assert calls["gen_seeds"] == [] and calls["compose"] == 1
-    assert out["composite_reason"] == "many_defects"
+    assert out["composite_reason"] == "wear_heavy"
+    assert out["mode"] == "composite" and out["wear_level"] == "heavy"
+    assert calls["judge"] == 1                     # 합성본은 채점한다 (original 만 생략)
+    ins = json.loads(storage.load("quality", "fid-g_studio_white_inspect.json"))
+    assert ins["wear_level"] == "heavy" and ins["composite_reason"] == "wear_heavy"
+
+
+def test_graph_many_marks_alone_do_not_composite(monkeypatch, make_png):
+    """마크(앵커)가 많아도 wear_level 이 heavy 가 아니면 생성한다 (many_defects 삭제)."""
+    calls = _patch_graph_deps(monkeypatch, make_png, [[]])
+    many = [{"category": "print", "what": f"m{i}", "where": "x"} for i in range(20)]
+    _detect_seq(monkeypatch, [_analyze_out(many, text_level="none")])
+    monkeypatch.setattr(pipeline_mod.detector, "verify_and_locate",
+                        lambda img, t, i="object", c=None, **kw: [{"what": x["what"], "preserved": True}
+                                                    for x in t])
+    out = pipeline_mod.run_transform("fid-g", "studio_white")
+    assert calls["gen_seeds"] == [None] and calls["compose"] == 0
+    assert out["composite_reason"] is None and out["mode"] == "generate"
 
 
 def test_graph_plan_composite_failure_falls_back_to_normal_generate(monkeypatch, make_png):
@@ -1661,9 +1522,8 @@ def test_graph_plan_composite_failure_falls_back_to_normal_generate(monkeypatch,
     assert calls["gen_seeds"] == [None]
     assert out["mode"] == "generate" and out["composite_reason"] is None
     assert out["composite_error"] == "물건을 찾지 못함"
-    assert out["status"] == "pass" and out["gate_passed"] is True
-    # OCR 가드 원본 글자는 _key_texts 로 고른 최대 TEXT_VERIFY_MAX 개
-    assert len(calls["ocr"][0][0]) == pipeline_mod.TEXT_VERIFY_MAX
+    assert out["gate_passed"] is True
+    assert calls["verify"] == 1                 # 생성본은 verify VLM 을 부른다
 
 
 # ══ composite 노드 단위 ═══════════════════════════════
@@ -1688,8 +1548,9 @@ def _comp_state(**kw):
 
 def _compose_ok(monkeypatch, out=COMP_PNG):
     seen = []
-    monkeypatch.setattr(pipeline_mod.compositor, "compose",
-                        lambda o, bg, box=None: seen.append((o, bg, box)) or out)
+    for fn in ("compose", "compose_flat"):   # document 는 compose_flat
+        monkeypatch.setattr(pipeline_mod.compositor, fn,
+                            lambda o, bg, box=None: seen.append((o, bg, box)) or out)
     return seen
 
 
@@ -1713,17 +1574,9 @@ def test_composite_success_resets_similarity_and_reports(monkeypatch):
     assert seen == [(ORIG_PNG, "#fff", {"x1": 1})]
     assert out["visual_similarity"] is None and out["photo_check"] is None
     assert "item_similarity" in out and out["item_similarity"] is None
-    assert out["guard_report"] == [] and out["status"] == "pass"
+    assert out["guard_report"] == []
     assert out["composite_error"] is None and out["result"] == COMP_PNG
     assert _close(_mean_color(storage.load("result", "c_p.jpg")), COMP_COLOR)
-
-
-def test_composite_success_after_guard_failed_keeps_guard_report(monkeypatch):
-    _compose_ok(monkeypatch)
-    report = [{"name": "ocr_match", "passed": False}]
-    out = pipeline_mod.composite(_comp_state(guard_failed=True, guard_report=report,
-                                             composite_reason="guard_failed"))
-    assert out["guard_report"] == report and out["status"] == "pass"
 
 
 def test_composite_does_not_retry_after_previous_error(monkeypatch):
@@ -1733,16 +1586,6 @@ def test_composite_does_not_retry_after_previous_error(monkeypatch):
     out = pipeline_mod.composite(_comp_state(composite_error="old", result=b"GEN"))
     assert out["mode"] == "composite_failed"
     assert "old" in out["composite_error"]
-
-
-def test_composite_previous_error_with_guard_failed_blocks(monkeypatch):
-    monkeypatch.setattr(pipeline_mod.compositor, "compose",
-                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no")))
-    out = pipeline_mod.composite(_comp_state(composite_error="old", result=GEN_PNG,
-                                             guard_failed=True))
-    assert out["status"] == "blocked" and out["result"] == ORIG_PNG
-    assert out["mode"] == "composite_failed" and out["photo_check"] is None
-    assert _close(_mean_color(storage.load("result", "c_p.jpg")), ORIG_COLOR)
 
 
 def test_composite_failure_before_generate_returns_generate_mode(monkeypatch):
@@ -1759,11 +1602,74 @@ def test_composite_failure_after_generate_keeps_result(monkeypatch):
     assert out == {"mode": "composite_failed", "composite_error": "물건을 찾지 못함"}
 
 
-def test_composite_failure_guard_failed_blocks_even_before_result(monkeypatch):
-    """guard_failed 가 result 유무보다 우선 (blocked 로 끝나야 함)."""
+def _compose_split(monkeypatch):
+    """compose / compose_flat 을 따로 기록 — 어느 쪽이 불렸는지 구분."""
+    seen = []
+    for fn in ("compose", "compose_flat"):
+        monkeypatch.setattr(pipeline_mod.compositor, fn,
+                            lambda o, bg, box=None, _fn=fn: seen.append((_fn, o, bg, box)) or COMP_PNG)
+    return seen
+
+
+@pytest.mark.parametrize("wear", [None, "none", "light", "LIGHT", "unknown"])
+def test_composite_document_uses_compose_flat(monkeypatch, wear):
+    seen = _compose_split(monkeypatch)
+    out = pipeline_mod.composite(_comp_state(composite_reason="document", item_box={"x1": 1},
+                                             wear_level=wear))
+    assert seen == [("compose_flat", ORIG_PNG, "#fff", {"x1": 1})]
+    assert out["mode"] == "composite" and out["composite_reason"] == "document"
+    assert out["result"] == COMP_PNG
+
+
+def test_composite_document_wear_heavy_uses_plain_compose(monkeypatch):
+    """찢김·접힘이 넓은 문서는 펴지 않는다 (모서리 잘림·접힌 자국이 펴져 상태가 좋아 보임)."""
+    seen = _compose_split(monkeypatch)
+    out = pipeline_mod.composite(_comp_state(composite_reason="document", item_box={"x1": 1},
+                                             wear_level="heavy"))
+    assert seen == [("compose", ORIG_PNG, "#fff", {"x1": 1})]
+    assert out["mode"] == "composite" and out["composite_reason"] == "document"
+
+
+def test_composite_document_wear_heavy_cutout_failure_keeps_original(monkeypatch):
     _compose_fails(monkeypatch)
-    out = pipeline_mod.composite(_comp_state(guard_failed=True))
-    assert out["status"] == "blocked"
+    out = pipeline_mod.composite(_comp_state(composite_reason="document", wear_level="heavy"))
+    assert out["mode"] == "original" and out["composite_reason"] == "document"
+    assert out["result"] == ORIG_PNG
+
+
+@pytest.mark.parametrize("state", [
+    {"photo_type": "document", "composite_reason": "text_dense"},
+    {"photo_type": "document", "composite_reason": "gate_failed"},
+    {"photo_type": "document"},
+])
+def test_composite_photo_type_alone_does_not_flatten(monkeypatch, state):
+    """compose_flat 은 사유(composite_reason) 기준 — photo_type 만 document 면 일반 compose."""
+    seen = _compose_split(monkeypatch)
+    pipeline_mod.composite(_comp_state(**state))
+    assert [c[0] for c in seen] == ["compose"]
+
+
+@pytest.mark.parametrize("state", [
+    {"composite_reason": "text_dense"}, {"composite_reason": "text_heavy"},
+    {"composite_reason": "wear_heavy"}, {"composite_reason": "guard_failed"},
+    {"composite_reason": "detect_failed"}, {"detect_failed": True},
+    {"composite_reason": "text_product"}, {"composite_reason": "inside_view"},
+    {"verify_failed": True}, {},
+])
+def test_composite_other_reasons_use_plain_compose(monkeypatch, state):
+    seen = _compose_split(monkeypatch)
+    pipeline_mod.composite(_comp_state(**state))
+    assert [c[0] for c in seen] == ["compose"]
+
+
+def test_composite_document_failure_before_generate_keeps_original(monkeypatch):
+    """compose_flat(→compose) 실패 + 생성 전 → 생성하지 않고 원본 그대로."""
+    calls = {"compose": 0}
+    _compose_fails(monkeypatch, calls)
+    out = pipeline_mod.composite(_comp_state(composite_reason="document"))
+    assert calls["compose"] == 1
+    assert out["composite_reason"] == "document" and out["result"] == ORIG_PNG
+    assert out["mode"] != "generate" and "물건을 찾지 못함" in out["composite_error"]
 
 
 # ══ _key_texts / _verify_targets ═════════════════════
@@ -1866,13 +1772,6 @@ def test_verify_targets_non_print_anchor_does_not_cover_text():
     assert [t["what"] for t in pipeline_mod._verify_targets(s)][-1] == 'text: "NIKE"'
 
 
-def test_verify_targets_include_texts_false_returns_anchors_copy():
-    anchors = [{"category": "other", "what": "얼룩", "where": "앞면"}]
-    s = {"anchors": anchors, "item_texts": [{"text": "HELLO"}]}
-    out = pipeline_mod._verify_targets(s, include_texts=False)
-    assert out == anchors and out is not anchors
-
-
 def test_verify_targets_uses_key_texts_rules():
     s = {"anchors": [], "item_texts": [{"text": "Brand"}, {"text": "BRAND"},
                                        {"text": "x"}, {"text": ""}]}
@@ -1901,7 +1800,7 @@ def test_verify_expected_counts_text_targets(monkeypatch):
     """앵커 1 + 글자 1 인데 verify 가 1개만 답하면 게이트 실패."""
     seen = {}
 
-    def fake_verify(img, targets, item, considered, **kw):
+    def fake_verify(img, targets, item="object", considered=None, **kw):
         seen["targets"] = targets
         return [{"what": "얼룩", "preserved": True}]
     monkeypatch.setattr(pipeline_mod.detector, "verify_and_locate", fake_verify)
@@ -1917,7 +1816,7 @@ def test_verify_expected_counts_text_targets(monkeypatch):
 def test_verify_text_only_targets_still_gated(monkeypatch):
     calls = []
     monkeypatch.setattr(pipeline_mod.detector, "verify_and_locate",
-                        lambda img, t, i, c, **kw: calls.append(t) or
+                        lambda img, t, i="object", c=None, **kw: calls.append(t) or
                         [{"what": x["what"], "preserved": True} for x in t])
     out = pipeline_mod.verify({"anchors": [], "item_texts": [{"text": "ABC"}],
                                "result_name": "none.jpg"})
@@ -1932,10 +1831,11 @@ def test_lost_text_triggers_gate_retry_with_note(monkeypatch, make_png):
     rounds = iter([False, True])
     seen_targets = []
 
-    def fake_verify(img, targets, item, considered, **kw):
+    def fake_verify(img, targets, item="object", considered=None, **kw):
         seen_targets.append(targets)
         ok = next(rounds)
-        return [{"what": t["what"], "preserved": ok or t["category"] != "print"}
+        # 마크(얼룩)는 지켜졌고 글자만 사라짐 — 노트에는 사라진 것만 들어가야 한다
+        return [{"what": t["what"], "preserved": ok or not t["what"].startswith("text")}
                 for t in targets]
     monkeypatch.setattr(pipeline_mod.detector, "verify_and_locate", fake_verify)
     prompts = []
@@ -1959,132 +1859,22 @@ def _poison_read(monkeypatch):
     monkeypatch.setattr(pipeline_mod.detector, "read_item_text", poison)
 
 
-@pytest.mark.parametrize("texts", [None, [], [{"text": ""}], [{"text": "A"}, {"text": " "}],
-                                   [{"text": "z" * 200}]])
-def test_ocr_pair_no_key_texts_does_not_read_result(monkeypatch, texts):
-    _poison_read(monkeypatch)
-    s = {"result": b"R", "item_texts": texts}
-    assert pipeline_mod._ocr_pair(s) == ([], [], [])
-
-
-def test_ocr_pair_reads_result_with_strict(monkeypatch):
-    seen = []
-    monkeypatch.setattr(pipeline_mod.detector, "read_item_text",
-                        lambda img, item, **kw: seen.append((img, item, kw)) or {
-                            "item_box": None,
-                            "texts": [{"text": "NIKE"}, {"text": "x"}, {"text": "extra line"}]})
-    s = {"result": b"R", "item": "shoe",
-         "item_texts": [{"text": "NIKE"}, {"text": "A"}]}
-    before, after, extra = pipeline_mod._ocr_pair(s)
-    assert seen == [(b"R", "shoe", {"strict": True})]
-    assert before == ["NIKE"]                      # _key_texts 로 고른 것만
-    assert after == ["NIKE", "x", "extra line"]    # 결과는 읽은 전부
-    assert extra == []
-
-
-def test_ocr_pair_before_capped_like_verify(monkeypatch):
-    monkeypatch.setattr(pipeline_mod.detector, "read_item_text",
-                        lambda img, item, **kw: {"item_box": None, "texts": []})
-    before, _, _ = pipeline_mod._ocr_pair({"result": b"R", "item_texts": _texts(20)})
-    assert len(before) == pipeline_mod.TEXT_VERIFY_MAX
-
-
-def test_ocr_pair_default_item(monkeypatch):
-    seen = []
-    monkeypatch.setattr(pipeline_mod.detector, "read_item_text",
-                        lambda img, item, **kw: seen.append(item) or {"texts": []})
-    pipeline_mod._ocr_pair({"result": b"R", "item_texts": [{"text": "AB"}]})
-    assert seen == ["object"]
-
-
-@pytest.mark.parametrize("exc", [ValueError("item_text: 응답에 texts 목록 없음"),
-                                 RuntimeError("vlm down"), TimeoutError()])
-def test_ocr_pair_read_failure_is_hard_guard(monkeypatch, exc):
-    def boom(*a, **k):
-        raise exc
-    monkeypatch.setattr(pipeline_mod.detector, "read_item_text", boom)
-    before, after, extra = pipeline_mod._ocr_pair({"result": b"R", "item_texts": [{"text": "AB"}]})
-    assert before == [] and after == []
-    assert extra == [GuardResult(name="ocr_read_failed", passed=False, value=0.0,
-                                 threshold=1.0, severity="hard")]
-
-
-def test_run_guards_returns_dino_value_and_passes_ocr(monkeypatch):
-    seen = {}
-    monkeypatch.setattr(pipeline_mod.detector, "read_item_text",
-                        lambda img, item, **kw: {"texts": [{"text": "AB"}]})
-
-    def spy(orig, result, before, after):
-        seen.update(before=before, after=after)
-        return [_dino_ok(0.81)]
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", spy)
-
-    out = pipeline_mod._run_guards(
-        {"original": b"O", "result": b"R", "item_texts": [{"text": "AB"}], "anchors": []})
-
-    assert out == ("pass", [], 0.81)       # 3-tuple — 누끼 유사도는 여기서 안 다룬다
-    assert seen == {"before": ["AB"], "after": ["AB"]}
-
-
-def test_run_guards_no_dino_band_returns_none(monkeypatch):
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [_soft_fail()][:0])
-    assert pipeline_mod._run_guards({"original": b"O", "result": b"R"})[2] is None
-
-
-def test_run_guards_ocr_read_failed_blocks_and_is_reported(monkeypatch):
-    def boom(*a, **k):
-        raise ValueError("no texts")
-    monkeypatch.setattr(pipeline_mod.detector, "read_item_text", boom)
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [_dino_ok(0.8)])
-    verdict, report, dino = pipeline_mod._run_guards(
-        {"original": b"O", "result": b"R", "item_texts": [{"text": "AB"}]})
-    assert verdict == "block"
-    assert [g["name"] for g in report] == ["ocr_read_failed"]
-    assert dino == 0.8
-
-
-def test_run_guards_real_guards_embedder_failure_gives_none(monkeypatch):
-    """실제 가드: dino 계산 예외는 삼키고 dino_band 를 빼므로 dino=None."""
-    def boom(*a):
-        raise RuntimeError("OOM")
-    monkeypatch.setattr(pipeline_mod.embedder, "cosine_similarity", boom)
-    verdict, report, dino = pipeline_mod._run_guards({"original": b"O", "result": b"R"})
-    assert verdict == "pass" and report == [] and dino is None
-
-
 def _validate_state(**kw):
     return {"original": ORIG_PNG, "result": GEN_PNG, "result_name": "v_p.jpg", **kw}
 
 
 def test_validate_result_pass_returns_dino_similarity(monkeypatch):
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [_dino_ok(0.83)])
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a, **k: _dino_ok(0.83))
     monkeypatch.setattr(pipeline_mod.detector, "check_photo", lambda img: {"valid": True, "reason": ""})
     out = pipeline_mod.validate_result(_validate_state())
-    assert out["status"] == "pass" and out["visual_similarity"] == 0.83
+    assert out["visual_similarity"] == 0.83
     assert _close(_mean_color(storage.load("result", "v_p.jpg")), GEN_COLOR)
 
 
 def test_validate_result_pass_without_dino_is_none(monkeypatch):
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [])
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a, **k: None)
     monkeypatch.setattr(pipeline_mod.detector, "check_photo", lambda img: {"valid": True, "reason": ""})
     assert pipeline_mod.validate_result(_validate_state())["visual_similarity"] is None
-
-
-def test_validate_result_second_hard_fail_routes_to_composite_not_blocked(monkeypatch):
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [_hard_fail()])
-    out = pipeline_mod.validate_result(_validate_state(guard_seed=123))
-    assert out["guard_failed"] is True and out["composite_reason"] == "guard_failed"
-    assert out["guard_retry"] is False
-    assert "status" not in out and "result" not in out
-    assert storage.load("result", "v_p.jpg") is None      # 불합격본은 저장 안 함
-    assert pipeline_mod._route_after_validate({**_validate_state(), **out}) == "composite"
-
-
-def test_validate_result_first_hard_fail_seed_retry(monkeypatch):
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [_hard_fail()])
-    out = pipeline_mod.validate_result(_validate_state())
-    assert out["guard_retry"] is True and isinstance(out["guard_seed"], int)
-    assert "guard_failed" not in out
 
 
 # ══ score_similarity / generate: 유사도 재사용·초기화 ══
@@ -2121,12 +1911,6 @@ def test_score_similarity_computes_when_missing(monkeypatch):
                                          "visual_similarity": None})
     assert out == {"visual_similarity": 0.42}
     assert seen == [("visual_similarity", 0.42, {"data_type": "NUMERIC"})]
-
-
-def test_score_similarity_blocked_is_none_even_with_value(monkeypatch):
-    seen = _score_spy(monkeypatch)
-    out = pipeline_mod.score_similarity({"status": "blocked", "visual_similarity": 0.9})
-    assert out == {"visual_similarity": None} and seen == []
 
 
 def test_score_similarity_embedder_failure_is_none(monkeypatch):
@@ -2411,18 +2195,39 @@ def test_run_transform_clears_stale_quality_before_graph(monkeypatch):
 
 
 @pytest.mark.parametrize("defer", [True, False])
-def test_run_transform_blocked_clears_stale_and_never_judges(monkeypatch, defer):
+def test_run_transform_original_clears_stale_and_never_judges(monkeypatch, defer):
     _seed_pair()
     storage.save("quality", "frt_p.json", b'{"stale": true}')
 
     def poison(*a, **k):
-        raise AssertionError("blocked 에서 judge 금지")
+        raise AssertionError("mode original 에서 judge 금지")
     monkeypatch.setattr(pipeline_mod.judge, "judge", poison)
     monkeypatch.setattr(pipeline_mod, "GRAPH",
-                        FakeGraph(_graph_out(status="blocked")), raising=False)
+                        FakeGraph(_graph_out(mode="original")), raising=False)
     out = pipeline_mod.run_transform("frt", "p", defer_judge=defer)
     assert out["judge_pending"] is False
     assert storage.load("quality", "frt_p.json") is None
+
+
+@pytest.mark.parametrize("defer", [True, False])
+def test_run_transform_leftover_status_blocked_is_ignored(monkeypatch, defer):
+    """status 필드는 없어졌다 — 그래프 출력에 옛 status 가 남아 있어도 채점 여부는 mode 만 본다."""
+    order = _order_spies(monkeypatch, _graph_out(status="blocked"))
+    result = pipeline_mod.run_transform("fo", "p", defer_judge=defer)
+    assert "status" not in result
+    assert result["judge_pending"] is defer
+    judged = [o for o in order if isinstance(o, tuple) and o[0] == "judge"]
+    assert judged == ([] if defer else [("judge", "fo", "p", {})])
+
+
+@pytest.mark.parametrize("mode,judged", [("generate", True), ("composite", True),
+                                         ("composite_failed", True), ("original", False)])
+def test_run_transform_judged_iff_mode_not_original(monkeypatch, mode, judged):
+    order = _order_spies(monkeypatch, _graph_out(mode=mode))
+    result = pipeline_mod.run_transform("fo", "p")
+    assert any(isinstance(o, tuple) and o[0] == "judge" for o in order) is judged
+    assert result["judge_pending"] is False
+    assert pipeline_mod.run_transform("fo", "p", defer_judge=True)["judge_pending"] is judged
 
 
 def test_run_transform_stale_report_written_during_graph_is_cleared(monkeypatch):
@@ -2438,13 +2243,13 @@ def test_run_transform_stale_report_written_during_graph_is_cleared(monkeypatch)
     assert storage.load("quality", "frt_p.json") is None
 
 
-def test_run_transform_blocked_stale_report_written_during_graph_is_cleared(monkeypatch):
+def test_run_transform_original_stale_report_written_during_graph_is_cleared(monkeypatch):
     class RacingGraph(FakeGraph):
         def invoke(self, state, config=None):
             storage.save("quality", "frt_p.json", b'{"stale": true}')
             return super().invoke(state, config)
     monkeypatch.setattr(pipeline_mod, "GRAPH",
-                        RacingGraph(_graph_out(status="blocked")), raising=False)
+                        RacingGraph(_graph_out(mode="original")), raising=False)
     pipeline_mod.run_transform("frt", "p")
     assert storage.load("quality", "frt_p.json") is None
 
@@ -2529,7 +2334,8 @@ def test_run_transform_inline_judge_missing_result_is_noop(monkeypatch):
 
 # ══ 그래프 연결 ═════════════════════════════════════
 def test_detect_then_read_text_then_single_generate(monkeypatch, make_png):
-    """detect 가 먼저(text_level 판단) → simple 이면 plan 뒤 read_text → 생성 1회."""
+    """analyze 가 먼저(text_level 판단) → simple 이면 plan 뒤 read_text → 생성 1회.
+    결과 글자를 VLM 으로 다시 읽는 OCR 가드는 없다 — 읽기는 원본 1회뿐."""
     calls = _patch_graph_deps(monkeypatch, make_png, [[]])
     monkeypatch.setattr(settings, "text_lock", True)
     order = []
@@ -2537,10 +2343,9 @@ def test_detect_then_read_text_then_single_generate(monkeypatch, make_png):
                         lambda img, item, **kw: order.append("read_result" if kw.get("strict") else "read") or {
                             "item_box": None,
                             "texts": [{"text": "SALE", "x1": 0, "y1": 0, "x2": 100, "y2": 100}]})
-    anchors = [{"category": "scratch", "what": "긁힘", "where": "뒷면"}]
-    monkeypatch.setattr(pipeline_mod.detector, "detect_full",
-                        lambda img, item, considered, **kw: order.append("detect") or {
-                            "anchors": anchors, "text_level": "simple", "item_box": None})
+    anchors = [{"category": "print", "what": "로고", "where": "뒷면"}]
+    monkeypatch.setattr(pipeline_mod.detector, "analyze",
+                        lambda img: order.append("analyze") or _analyze_out(anchors))
     prompts = []
 
     def gen(original, preset, seed=None):
@@ -2551,14 +2356,14 @@ def test_detect_then_read_text_then_single_generate(monkeypatch, make_png):
 
     out = pipeline_mod.run_transform("fid-g", "studio_white")
 
-    # 순서 고정: detect → read(원본) → 생성 1회 → OCR 가드용 결과 읽기
-    assert order == ["detect", "read", "gen", "read_result"]
+    # 순서 고정: analyze → read(원본) → 생성 1회 (결과 읽기 없음)
+    assert order == ["analyze", "read", "gen"]
     assert '"SALE" (top-left)' in prompts[0]
-    assert calls["ocr"] == [(["SALE"], ["SALE"])]
+    assert calls["dino"] == 1
     ins = json.loads(storage.load("quality", "fid-g_studio_white_inspect.json"))
     assert ins["anchors"] == anchors
     assert ins["item_texts"][0]["text"] == "SALE"
-    assert out["status"] == "pass" and out["gate_passed"] is True
+    assert out["gate_passed"] is True
 
 
 def test_graph_edges_detect_then_plan_then_optional_read_text():
@@ -2567,14 +2372,20 @@ def test_graph_edges_detect_then_plan_then_optional_read_text():
     outs = {}
     for s_, t in edges:
         outs.setdefault(s_, set()).add(t)
-    # 병렬(read_text ∥ detect)이 아니라 순차: classify → detect → plan
-    assert outs["classify"] == {"detect"}
-    assert outs["detect"] == {"plan"}
-    assert ("classify", "read_text") not in edges and ("read_text", "plan") not in edges
-    assert ("read_text", "detect") not in edges and ("detect", "generate") not in edges
-    assert outs["plan"] == {"composite", "read_text", "generate"}
+    # 순차: load → analyze → plan (classify·detect 노드는 없다)
+    nodes = set(g.nodes)
+    assert "classify" not in nodes and "detect" not in nodes
+    assert outs["load"] == {"analyze"}
+    assert outs["analyze"] == {"plan"}
+    assert ("analyze", "read_text") not in edges and ("read_text", "plan") not in edges
+    assert ("read_text", "analyze") not in edges and ("analyze", "generate") not in edges
+    assert outs["plan"] == {"composite", "read_text", "generate", "keep_original"}
+    # 원본 그대로는 검사할 게 없다 — 바로 save_inspect
+    assert outs["keep_original"] == {"save_inspect"}
     assert outs["read_text"] == {"composite", "generate"}
-    assert ("validate_result", "composite") in edges
+    # 출력 가드가 전부 soft — validate_result 는 재생성 아니면 다음 단계뿐 (배경 교체로 안 간다)
+    assert outs["validate_result"] == {"generate", "score_similarity"}
+    assert ("validate_result", "composite") not in edges
     assert outs["composite"] == {"generate", "read_text", "score_similarity", "save_inspect"}
 
 
@@ -2623,104 +2434,52 @@ def _spy_background(monkeypatch, future, item_future=None):
     return submitted
 
 
-def test_validate_result_block_still_calls_check_photo_but_ignores_it(monkeypatch):
-    """가드가 막아도 check_photo 는 (동시에 시작했으니) 불린다 — 결과는 버린다."""
-    photo = []
-    monkeypatch.setattr(pipeline_mod.detector, "check_photo",
-                        lambda img: photo.append(img) or {"valid": False, "reason": "cropped"})
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [_hard_fail()])
-
-    out = pipeline_mod.validate_result(_validate_state())
-
-    assert out["guard_retry"] is True
-    assert "photo_check" not in out and "status" not in out
-    # 취소는 시작 전일 때만 된다 — 이미 시작했다면 끝까지 돈다. 여기선 시작 여부가
-    # 스레드 타이밍에 달려 있어 "호출됐다면 결과 이미지로" 만 확인한다.
-    assert photo in ([], [GEN_PNG])
-
-
-def test_validate_result_block_submits_check_photo_then_cancels(monkeypatch):
-    fut = _FakeFuture({"valid": False, "reason": "x"})
+def test_validate_result_dino_band_exception_cancels_background_and_reraises(monkeypatch):
+    """_dino_band 가 터지면 이미 시작한 check_photo·누끼 비교를 취소하고 그대로 올린다 (저장 안 함)."""
+    fut = _FakeFuture({"valid": True, "reason": ""})
     item = _FakeFuture((None, None))
     submitted = _spy_background(monkeypatch, fut, item)
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [_hard_fail()])
-    state = _validate_state(guard_seed=1)
-
-    out = pipeline_mod.validate_result(state)
-
-    # 막힌 시도엔 누끼를 시작하지 않는다 — check_photo 하나만
-    assert submitted == [(pipeline_mod.detector.check_photo, (GEN_PNG,), {})]
-    assert fut.cancelled == 1 and fut.result_timeouts == []
-    assert item.result_timeouts == []
-    assert out["guard_failed"] is True and "photo_check" not in out
-
-
-def test_validate_result_block_check_photo_really_runs_in_graph_when_started(monkeypatch):
-    """실제 풀: check_photo 가 가드보다 먼저 시작되도록 가드를 잠깐 붙잡으면
-    (취소 불가 상태) 차단된 시도에서도 확실히 호출된다."""
-    import threading
-    started = threading.Event()
-    photo = []
-
-    def check(img):
-        photo.append(img)
-        started.set()
-        return {"valid": False, "reason": "cropped"}
-
-    def guards(*a):
-        assert started.wait(5)
-        return [_hard_fail()]
-    monkeypatch.setattr(pipeline_mod.detector, "check_photo", check)
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", guards)
-
-    out = pipeline_mod.validate_result(_validate_state())
-
-    assert photo == [GEN_PNG]
-    assert "photo_check" not in out and out["guard_retry"] is True
-
-
-def test_validate_result_guard_exception_cancels_photo_and_reraises(monkeypatch):
-    fut = _FakeFuture({"valid": True, "reason": ""})
-    submitted = _spy_background(monkeypatch, fut)
 
     def boom(*a):
         raise RuntimeError("guard crashed")
-    monkeypatch.setattr(pipeline_mod, "_run_guards", boom)
+    monkeypatch.setattr(pipeline_mod, "_dino_band", boom)
 
     with pytest.raises(RuntimeError, match="guard crashed"):
         pipeline_mod.validate_result(_validate_state())
-    assert fut.cancelled == 1
-    assert [fn for fn, _, _ in submitted] == [pipeline_mod.detector.check_photo]   # 누끼 없음
+    assert fut.cancelled == 1 and item.cancelled == 1
+    assert [fn for fn, _, _ in submitted] == [pipeline_mod.detector.check_photo,
+                                              pipeline_mod._item_signals]
     assert storage.load("result", "v_p.jpg") is None
 
 
-def test_validate_result_run_output_guards_exception_cancels_photo_no_item(monkeypatch):
-    """_run_guards 안쪽(실제 코드)에서 가드가 터지면 photo 취소, 누끼는 시작도 안 함."""
+def test_validate_result_dino_band_guard_exception_propagates_and_cancels(monkeypatch):
+    """dino_band_guard 자체(바꿔 끼운 함수)가 던지면 _dino_band 는 삼키지 않는다 — 취소 후 전파."""
     fut = _FakeFuture({"valid": True, "reason": ""})
-    submitted = _spy_background(monkeypatch, fut)
+    item = _FakeFuture((None, None))
+    _spy_background(monkeypatch, fut, item)
 
     def boom(*a, **k):
         raise RuntimeError("embedder down")
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", boom)
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", boom)
 
     with pytest.raises(RuntimeError, match="embedder down"):
         pipeline_mod.validate_result(_validate_state())
-    assert fut.cancelled == 1
-    assert [fn for fn, _, _ in submitted] == [pipeline_mod.detector.check_photo]
+    assert fut.cancelled == 1 and item.cancelled == 1
 
 
 def test_validate_result_guard_keyboard_interrupt_also_cancels(monkeypatch):
     """BaseException 도 취소 후 그대로 올린다."""
     fut = _FakeFuture()
-    submitted = _spy_background(monkeypatch, fut)
+    item = _FakeFuture((None, None))
+    submitted = _spy_background(monkeypatch, fut, item)
 
     def boom(*a):
         raise KeyboardInterrupt
-    monkeypatch.setattr(pipeline_mod, "_run_guards", boom)
+    monkeypatch.setattr(pipeline_mod, "_dino_band", boom)
 
     with pytest.raises(KeyboardInterrupt):
         pipeline_mod.validate_result(_validate_state())
-    assert fut.cancelled == 1 and len(submitted) == 1
+    assert fut.cancelled == 1 and item.cancelled == 1 and len(submitted) == 2
 
 
 def test_validate_result_pass_waits_with_timeout_and_uses_photo(monkeypatch):
@@ -2728,7 +2487,7 @@ def test_validate_result_pass_waits_with_timeout_and_uses_photo(monkeypatch):
     item = _FakeFuture((None, None))
     _spy_background(monkeypatch, fut, item)
     monkeypatch.setattr(settings, "vlm_timeout_s", 7)
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [])
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a, **k: None)
 
     out = pipeline_mod.validate_result(_validate_state())
 
@@ -2737,7 +2496,6 @@ def test_validate_result_pass_waits_with_timeout_and_uses_photo(monkeypatch):
     assert 0 < t <= pipeline_mod.ITEM_WAIT_S
     assert fut.cancelled == 0 and item.cancelled == 0
     assert out["photo_check"] == {"valid": False, "reason": "cropped"}
-    assert out["status"] == "pass"
 
 
 def test_validate_result_saves_before_waiting_for_photo(monkeypatch):
@@ -2749,7 +2507,7 @@ def test_validate_result_saves_before_waiting_for_photo(monkeypatch):
             order.append(("wait", storage.load("result", "v_p.jpg") is not None))
             return {"valid": True, "reason": ""}
     _spy_background(monkeypatch, F())   # 누끼는 기본 가짜(None) — 기록 안 함
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [])
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a, **k: None)
 
     pipeline_mod.validate_result(_validate_state())
 
@@ -2759,12 +2517,11 @@ def test_validate_result_saves_before_waiting_for_photo(monkeypatch):
 @pytest.mark.parametrize("exc", [RuntimeError("vlm down"), TimeoutError()])
 def test_validate_result_photo_failure_or_timeout_is_valid(monkeypatch, exc):
     _spy_background(monkeypatch, _FakeFuture(exc=exc))
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [])
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a, **k: None)
 
     out = pipeline_mod.validate_result(_validate_state())
 
     assert out["photo_check"] == {"valid": True, "reason": ""}
-    assert out["status"] == "pass"
 
 
 def test_validate_result_check_photo_exception_in_real_pool_gives_valid(monkeypatch):
@@ -2773,7 +2530,7 @@ def test_validate_result_check_photo_exception_in_real_pool_gives_valid(monkeypa
     def boom(img):
         raise RuntimeError("vlm down")
     monkeypatch.setattr(pipeline_mod.detector, "check_photo", boom)
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [])
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a, **k: None)
 
     out = pipeline_mod.validate_result(_validate_state())
 
@@ -2785,7 +2542,7 @@ def test_validate_result_real_check_photo_vlm_failure_gives_valid(monkeypatch):
     def no_client():
         raise ConnectionError("no network")
     monkeypatch.setattr(pipeline_mod.detector, "get_client", no_client)
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [])
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a, **k: None)
 
     out = pipeline_mod.validate_result(_validate_state())
 
@@ -2801,7 +2558,7 @@ def test_validate_result_photo_real_timeout_gives_valid(monkeypatch):
         release.wait(5)
         return {"valid": False, "reason": "late"}
     monkeypatch.setattr(pipeline_mod.detector, "check_photo", slow)
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [])
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a, **k: None)
     # 설정 검증(ge=1)을 우회해 상한을 0.05초로 — 실제 대기 없이 타임아웃 경로 확인
     monkeypatch.setattr(settings, "vlm_timeout_s", -9.95)
     try:
@@ -2817,11 +2574,11 @@ def test_validate_result_check_photo_bound_at_submit_time(monkeypatch):
     monkeypatch.setattr(pipeline_mod.detector, "check_photo",
                         lambda img: {"valid": False, "reason": "first"})
 
-    def guards(*a):
+    def guards(*a, **k):
         monkeypatch.setattr(pipeline_mod.detector, "check_photo",
                             lambda img: {"valid": True, "reason": "second"})
-        return []
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", guards)
+        return None
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", guards)
 
     out = pipeline_mod.validate_result(_validate_state())
 
@@ -2840,7 +2597,7 @@ def test_validate_result_propagates_contextvars_to_check_photo(monkeypatch):
         seen["thread"] = threading.current_thread().name
         return {"valid": True, "reason": ""}
     monkeypatch.setattr(pipeline_mod.detector, "check_photo", check)
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [])
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a, **k: None)
 
     token = var.set("trace-abc")
     try:
@@ -2885,7 +2642,7 @@ def _client_error(code):
 def test_verify_passes_strict_true(monkeypatch):
     calls = _verify_raises(monkeypatch, [[{"what": "a", "preserved": True}]])
     pipeline_mod.verify({"anchors": [_ANCHOR], "result_name": "r.jpg"})
-    assert calls.kwargs == [{"strict": True}]
+    assert calls.kwargs == [{"strict": True, "marks": True}]
 
 
 @pytest.mark.parametrize("exc", [_client_error(400), TypeError("sig"), KeyError("k"),
@@ -2911,8 +2668,8 @@ def test_verify_non_retryable_uses_pipeline_retryable_name(monkeypatch, no_detec
     monkeypatch.setattr(pipeline_mod, "retryable", lambda e: False)
     calls = _verify_raises(monkeypatch, [RuntimeError("x"), RuntimeError("y")])
     out = pipeline_mod.verify({"anchors": [_ANCHOR], "result_name": "r.jpg",
-                               "mode": "composite"})
-    assert out == {"checks": [], "verify_failed": True, "gate_passed": None}
+                               "mode": "generate"})
+    assert out == {"checks": [], "verify_failed": True, "gate_passed": False}
     assert len(calls) == 1
 
 
@@ -2930,14 +2687,14 @@ def test_verify_strict_bad_response_via_real_verify_and_locate(monkeypatch, no_d
 @pytest.mark.parametrize("exc", [_client_error(400), TypeError("sig")])
 def test_detect_non_retryable_error_single_attempt(monkeypatch, no_detect_sleep, exc):
     calls = _detect_seq(monkeypatch, [exc, []])
-    out = pipeline_mod.detect({"original": b"x"})
+    out = pipeline_mod.analyze({"original": b"x"})
     assert out == _DETECT_FAILED
     assert len(calls) == 1 and no_detect_sleep == []
 
 
 def test_detect_429_is_retried(monkeypatch, no_detect_sleep):
     calls = _detect_seq(monkeypatch, [_client_error(429), []])
-    assert pipeline_mod.detect({"original": b"x"}) == _detect_ok([])
+    assert pipeline_mod.analyze({"original": b"x"}) == _detect_ok([])
     assert len(calls) == 2 and no_detect_sleep == [pipeline_mod.DETECT_RETRY_DELAY_S]
 
 
@@ -2951,27 +2708,68 @@ def test_graph_verify_always_fails_goes_composite_without_regen(monkeypatch, mak
     assert calls["gen_seeds"] == [None]                 # FLUX 1회 — 재생성 없음
     assert calls["compose"] == 1
     assert out["mode"] == "composite"
-    assert out["composite_reason"] == "verify_failed"
-    assert out["verify_failed"] is True                 # 합성본 verify 도 실패
-    assert out["gate_passed"] is None                   # 합성본은 원본 물건 픽셀 → 미검증
+    assert out["composite_reason"] == "verify_failed"   # 사유는 남는다
+    # 합성본은 verify VLM 을 부르지 않고 verify_failed 도 건드리지 않는다 — 생성본 호출 실패가 남는다
+    assert out["verify_failed"] is True
+    assert out["gate_passed"] is None and out["checks"] == []
     assert out["detect_failed"] is False
-    assert len(vcalls) == 2 * pipeline_mod.VERIFY_ATTEMPTS
+    assert len(vcalls) == pipeline_mod.VERIFY_ATTEMPTS   # 생성본에서만
     ins = json.loads(storage.load("quality", "fid-g_studio_white_inspect.json"))
     assert ins["verify_failed"] is True and ins["composite_reason"] == "verify_failed"
+    assert ins["gate_checks"] == []                     # 호출 실패라 떨어진 checks 는 없다
     assert ins.get("gate_retried") in (None, False)
 
 
-def test_graph_verify_fails_on_generate_then_ok_on_composite(monkeypatch, make_png):
-    """생성본 verify 실패 → 배경 교체 → 합성본 verify 성공: verify_failed 는 최신값(False)."""
+def test_graph_verify_fails_on_generate_then_composite_skips_verify(monkeypatch, make_png):
+    """생성본 verify 호출 실패 → 배경 교체 성공 → 합성본은 verify 를 건너뛴다: verify_failed True 유지."""
     calls = _patch_graph_deps(monkeypatch, make_png, [[]])
-    _verify_raises(monkeypatch, [RuntimeError("a"), RuntimeError("b"),
-                                 [{"what": "얼룩", "preserved": True}]])
+    vcalls = _verify_raises(monkeypatch, [RuntimeError("a"), RuntimeError("b"),
+                                          [{"what": "얼룩", "preserved": True}]])
 
     out = pipeline_mod.run_transform("fid-g", "studio_white")
 
-    assert calls["gen_seeds"] == [None]
+    assert calls["gen_seeds"] == [None] and len(vcalls) == 2
     assert out["mode"] == "composite" and out["composite_reason"] == "verify_failed"
-    assert out["verify_failed"] is False and out["gate_passed"] is True
+    assert out["verify_failed"] is True and out["gate_passed"] is None
+
+
+def test_graph_gate_fail_twice_composite_keeps_dropped_checks_in_gate_checks(monkeypatch, make_png):
+    """게이트 두 번 실패(마크 사라짐) → 배경 교체 성공: 떨어진 checks 는 gate_checks 로, checks 는 비고
+    (말풍선은 생성본 좌표), verify_failed 는 False 그대로 (호출은 성공했다)."""
+    calls = _patch_graph_deps(monkeypatch, make_png, [[], []])
+    lost = [{"what": "얼룩", "preserved": False}]
+    vcalls = _verify_raises(monkeypatch, [lost, lost])
+
+    out = pipeline_mod.run_transform("fid-g", "studio_white")
+
+    assert len(calls["gen_seeds"]) == 2 and calls["compose"] == 1 and len(vcalls) == 2
+    assert out["mode"] == "composite" and out["composite_reason"] == "gate_failed"
+    assert out["checks"] == [] and out["bubbles"] == [] and out["gate_passed"] is None
+    assert out["verify_failed"] is False
+    ins = json.loads(storage.load("quality", "fid-g_studio_white_inspect.json"))
+    assert ins["gate_checks"] == lost and ins["checks"] == []
+
+
+def test_graph_gate_fail_then_verify_call_fail_composite(monkeypatch, make_png, no_detect_sleep):
+    """1차 게이트 실패(checks 있음) → 재생성 → 2차 verify 호출 실패 → 배경 교체 성공:
+    verify_failed True 유지. 호출 실패가 checks 를 [] 로 덮으므로 gate_checks 는 비어 있다."""
+    calls = _patch_graph_deps(monkeypatch, make_png, [[], []])
+    lost = [{"what": "얼룩", "preserved": False}]
+    _verify_raises(monkeypatch, [lost, RuntimeError("a"), RuntimeError("b")])
+
+    out = pipeline_mod.run_transform("fid-g", "studio_white")
+
+    assert len(calls["gen_seeds"]) == 2 and calls["compose"] == 1
+    assert out["mode"] == "composite" and out["composite_reason"] == "verify_failed"
+    assert out["verify_failed"] is True and out["gate_passed"] is None
+    ins = json.loads(storage.load("quality", "fid-g_studio_white_inspect.json"))
+    assert ins["verify_failed"] is True and ins["gate_checks"] == []
+
+
+def test_save_inspect_gate_checks_default_empty():
+    pipeline_mod.save_inspect({"file_id": "si", "preset_key": "p", "anchors": []})
+    ins = json.loads(storage.load("quality", "si_p_inspect.json"))
+    assert ins["gate_checks"] == []
 
 
 def test_graph_verify_first_raises_then_succeeds_takes_normal_path(monkeypatch, make_png,
@@ -3001,7 +2799,7 @@ def test_graph_verify_bad_json_goes_composite_not_regen(monkeypatch, make_png):
 
     assert calls["gen_seeds"] == [None]
     assert out["mode"] == "composite" and out["composite_reason"] == "verify_failed"
-    assert out["verify_failed"] is True
+    assert out["verify_failed"] is True and out["gate_passed"] is None   # 생성본 호출 실패가 남는다
 
 
 def test_graph_verify_fail_with_composite_failure_keeps_unverified_generate(monkeypatch, make_png):
@@ -3015,7 +2813,7 @@ def test_graph_verify_fail_with_composite_failure_keeps_unverified_generate(monk
     out = pipeline_mod.run_transform("fid-g", "studio_white")
 
     assert calls["gen_seeds"] == [None] and calls["compose"] == 1
-    assert out["mode"] == "composite_failed" and out["status"] == "pass"
+    assert out["mode"] == "composite_failed"
     assert out["gate_passed"] is False and out["verify_failed"] is True
     assert out["composite_reason"] is None
     assert len(vcalls) == pipeline_mod.VERIFY_ATTEMPTS
@@ -3044,7 +2842,7 @@ def test_run_transform_with_result_includes_verify_failed_and_mode(monkeypatch, 
 
     assert out["verify_failed"] is True and out["gate_passed"] is False
     assert out["mode"] == "generate"
-    assert out["detect_failed"] is False and out["status"] == "pass"
+    assert out["detect_failed"] is False
     assert len(vcalls) == pipeline_mod.VERIFY_ATTEMPTS
 
 
@@ -3358,18 +3156,13 @@ def _spy_background_by_fn(monkeypatch, futures):
     return submitted
 
 
-def _no_vlm_ocr_pair(monkeypatch):
-    """item_texts 가 있으면 _ocr_pair 가 결과 글자를 VLM 으로 읽는다 — 여기선 비교할 게 없다고."""
-    monkeypatch.setattr(pipeline_mod, "_ocr_pair", lambda s: ([], [], []))
-
-
 def _photo_ok():
     return _FakeFuture({"valid": True, "reason": ""})
 
 
 def test_validate_result_pass_submits_item_signals_on_cutout_pool(monkeypatch):
     submitted = _spy_background(monkeypatch, _photo_ok(), _FakeFuture((_item_ok(), None)))
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [])
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a, **k: None)
     state = _validate_state()
 
     pipeline_mod.validate_result(state)
@@ -3396,31 +3189,19 @@ def test_in_background_pool_kwarg_selects_pool():
     assert cut.startswith("cutout") and ocr.startswith("ocr") and default.startswith("pipeline")
 
 
-@pytest.mark.parametrize("seed", [None, 5])
-def test_validate_result_block_never_submits_item_real_pool(monkeypatch, seed):
-    """실제 _in_background: 막힌 시도(재시도/배경 교체 모두)엔 누끼 비교가 안 돈다."""
-    ran = []
-    monkeypatch.setattr(pipeline_mod, "_item_signals", lambda s: ran.append(s))
-    monkeypatch.setattr(pipeline_mod, "_item_pair", lambda s: ran.append(s))
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [_hard_fail()])
-    out = pipeline_mod.validate_result(_validate_state(guard_seed=seed))
-    assert "item_similarity" not in out and ran == []
-
-
 def test_validate_result_pass_returns_item_similarity(monkeypatch):
     _spy_background(monkeypatch, _photo_ok(), _FakeFuture((_item_ok(0.88), _patch_ok(0.97))))
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [_dino_ok(0.83)])
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a, **k: _dino_ok(0.83))
     out = pipeline_mod.validate_result(_validate_state())
-    assert out["status"] == "pass" and out["guard_report"] == []
+    assert out["guard_report"] == []
     assert out["visual_similarity"] == 0.83 and out["item_similarity"] == 0.88
     assert out["item_patch_similarity"] == 0.97
 
 
 def test_validate_result_failed_item_dino_appended_to_guard_report(monkeypatch):
     _spy_background(monkeypatch, _photo_ok(), _FakeFuture((_item_ok(0.5), None)))
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [_soft_fail()])
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a, **k: _soft_fail())
     out = pipeline_mod.validate_result(_validate_state())
-    assert out["status"] == "pass"                       # soft — 판정 영향 없음
     assert [g["name"] for g in out["guard_report"]] == ["dino_band", "item_dino"]
     assert out["guard_report"][1] == {"name": "item_dino", "passed": False, "value": 0.5,
                                       "threshold": 0.80, "severity": "soft"}
@@ -3430,11 +3211,10 @@ def test_validate_result_failed_item_dino_appended_to_guard_report(monkeypatch):
 def test_validate_result_item_timeout_gives_none_cancels_and_verdict_unaffected(monkeypatch):
     item = _FakeFuture(exc=TimeoutError())
     _spy_background(monkeypatch, _photo_ok(), item)
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [_dino_ok(0.9)])
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a, **k: _dino_ok(0.9))
     out = pipeline_mod.validate_result(_validate_state())
     [t] = item.result_timeouts
     assert 0 < t <= pipeline_mod.ITEM_WAIT_S and item.cancelled == 1
-    assert out["status"] == "pass" and out["guard_retry"] is False
     assert out["item_similarity"] is None and out["item_patch_similarity"] is None
     assert out["guard_report"] == [] and out["visual_similarity"] == 0.9
     assert out["photo_check"] == {"valid": True, "reason": ""}
@@ -3453,12 +3233,12 @@ def test_validate_result_item_real_timeout_does_not_block(monkeypatch):
     monkeypatch.setattr(pipeline_mod, "ITEM_WAIT_S", 0.05)
     monkeypatch.setattr(pipeline_mod.detector, "check_photo",
                         lambda img: {"valid": True, "reason": ""})
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [])
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a, **k: None)
     try:
         out = pipeline_mod.validate_result(_validate_state())
     finally:
         release.set()
-    assert out["status"] == "pass" and out["item_similarity"] is None
+    assert out["item_similarity"] is None
 
 
 def _fake_clock(monkeypatch, start=100.0):
@@ -3481,8 +3261,7 @@ def test_validate_result_deadlines_start_before_photo_wait(monkeypatch):
     item, ocr = _FakeFuture((None, None)), _FakeFuture(([], []))
     _spy_background_by_fn(monkeypatch, {"check_photo": SlowPhoto(),
                                         "_item_signals": item, "_local_ocr_lines": ocr})
-    _no_vlm_ocr_pair(monkeypatch)
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [])
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a, **k: None)
 
     pipeline_mod.validate_result(_validate_state(item_texts=[{"text": "NIKE"}]))
 
@@ -3499,7 +3278,7 @@ def test_validate_result_photo_wait_longer_than_item_wait_gives_zero_timeout(mon
             return {"valid": True, "reason": ""}
     item = _FakeFuture((_item_ok(0.9), None))
     _spy_background_by_fn(monkeypatch, {"check_photo": VerySlowPhoto(), "_item_signals": item})
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [])
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a, **k: None)
     out = pipeline_mod.validate_result(_validate_state())
     assert item.result_timeouts == [0.0]
     assert out["item_similarity"] == 0.9     # 이미 끝나 있으면 0초 대기로도 값을 받는다
@@ -3508,7 +3287,7 @@ def test_validate_result_photo_wait_longer_than_item_wait_gives_zero_timeout(mon
 def test_validate_result_photo_timeout_still_checks_item(monkeypatch):
     _spy_background(monkeypatch, _FakeFuture(exc=TimeoutError()),
                     _FakeFuture((_item_ok(0.81), None)))
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [])
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a, **k: None)
     out = pipeline_mod.validate_result(_validate_state())
     assert out["photo_check"] == {"valid": True, "reason": ""}
     assert out["item_similarity"] == 0.81
@@ -3537,7 +3316,7 @@ def test_validate_result_item_submitted_before_save_and_photo_wait(monkeypatch):
         order.append("save")
         return real_save(*a, **k)
     monkeypatch.setattr(pipeline_mod.storage, "save", save)
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [])
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a, **k: None)
 
     pipeline_mod.validate_result(_validate_state())
 
@@ -3551,8 +3330,7 @@ def test_validate_result_save_failure_cancels_all_background_and_reraises(monkey
     photo, item, ocr = _photo_ok(), _FakeFuture((None, None)), _FakeFuture(([], []))
     _spy_background_by_fn(monkeypatch, {"check_photo": photo, "_item_signals": item,
                                         "_local_ocr_lines": ocr})
-    _no_vlm_ocr_pair(monkeypatch)
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [])
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a, **k: None)
 
     def boom(*a, **k):
         raise OSError("disk full")
@@ -3569,7 +3347,7 @@ def test_validate_result_save_failure_cancels_all_background_and_reraises(monkey
 def test_validate_result_save_keyboard_interrupt_also_cancels(monkeypatch):
     photo, item = _photo_ok(), _FakeFuture((None, None))
     _spy_background_by_fn(monkeypatch, {"check_photo": photo, "_item_signals": item})
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [])
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a, **k: None)
 
     def interrupt(*a, **k):
         raise KeyboardInterrupt
@@ -3583,7 +3361,7 @@ def test_validate_result_real_pool_runs_item_signals_with_state(monkeypatch):
     seen = _isolate_spy(monkeypatch)
     monkeypatch.setattr(pipeline_mod.detector, "check_photo",
                         lambda img: {"valid": True, "reason": ""})
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [])
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a, **k: None)
     got = _stub_item_guards(monkeypatch, _item_ok(0.93), _patch_ok(0.96))
 
     out = pipeline_mod.validate_result(_validate_state(item_box={"x1": 5}))
@@ -3600,9 +3378,9 @@ def test_validate_result_real_pool_item_signals_crash_gives_none(monkeypatch):
     monkeypatch.setattr(pipeline_mod, "_item_signals", boom)
     monkeypatch.setattr(pipeline_mod.detector, "check_photo",
                         lambda img: {"valid": True, "reason": ""})
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [])
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a, **k: None)
     out = pipeline_mod.validate_result(_validate_state())
-    assert out["status"] == "pass" and out["item_similarity"] is None
+    assert out["item_similarity"] is None
     assert out["item_patch_similarity"] is None
 
 
@@ -3616,8 +3394,7 @@ def test_validate_result_real_pool_item_signals_crash_gives_none(monkeypatch):
 def test_validate_result_local_ocr_not_started_when_off_or_no_texts(monkeypatch, enabled, texts):
     monkeypatch.setattr(settings, "local_ocr_guard", enabled)
     submitted = _spy_background_by_fn(monkeypatch, {"check_photo": _photo_ok()})
-    _no_vlm_ocr_pair(monkeypatch)
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [])
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a, **k: None)
 
     def poison(*a):
         raise AssertionError("로컬 OCR 이 꺼져 있으면 가드도 안 부른다")
@@ -3640,8 +3417,7 @@ def test_validate_result_local_ocr_started_on_ocr_pool_when_on(monkeypatch):
     monkeypatch.setattr(settings, "local_ocr_guard", True)
     submitted = _spy_background_by_fn(monkeypatch, {
         "check_photo": _photo_ok(), "_local_ocr_lines": _FakeFuture((["NIKE"], ["NIKE"]))})
-    _no_vlm_ocr_pair(monkeypatch)
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [])
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a, **k: None)
     state = _validate_state(item_texts=[{"text": "NIKE"}])
 
     out = pipeline_mod.validate_result(state)
@@ -3652,16 +3428,6 @@ def test_validate_result_local_ocr_started_on_ocr_pool_when_on(monkeypatch):
     assert out["ocr_local_recall"] == 1.0 and out["guard_report"] == []
 
 
-def test_validate_result_block_never_starts_local_ocr(monkeypatch):
-    monkeypatch.setattr(settings, "local_ocr_guard", True)
-    submitted = _spy_background_by_fn(monkeypatch, {})
-    _no_vlm_ocr_pair(monkeypatch)
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [_hard_fail()])
-    out = pipeline_mod.validate_result(_validate_state(item_texts=[{"text": "NIKE"}]))
-    assert [n for n, _, _ in submitted] == ["check_photo"]
-    assert "ocr_local_recall" not in out
-
-
 def test_validate_result_report_order_run_item_patch_then_ocr(monkeypatch):
     """soft 실패 기록 순서: 출력 가드 → item_dino → item_patch → ocr_local. 판정은 pass."""
     monkeypatch.setattr(settings, "local_ocr_guard", True)
@@ -3669,12 +3435,10 @@ def test_validate_result_report_order_run_item_patch_then_ocr(monkeypatch):
         "check_photo": _photo_ok(),
         "_item_signals": _FakeFuture((_item_ok(0.5), _patch_ok(0.6))),
         "_local_ocr_lines": _FakeFuture((["NIKE"], []))})
-    _no_vlm_ocr_pair(monkeypatch)
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [_soft_fail()])
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a, **k: _soft_fail())
 
     out = pipeline_mod.validate_result(_validate_state(item_texts=[{"text": "NIKE"}]))
 
-    assert out["status"] == "pass" and out["guard_retry"] is False
     assert [g["name"] for g in out["guard_report"]] == [
         "dino_band", "item_dino", "item_patch", "ocr_local"]
     assert (out["item_similarity"], out["item_patch_similarity"], out["ocr_local_recall"]) \
@@ -3685,10 +3449,9 @@ def test_validate_result_local_ocr_failure_cancels_and_does_not_affect_verdict(m
     monkeypatch.setattr(settings, "local_ocr_guard", True)
     ocr = _FakeFuture(exc=ModuleNotFoundError("easyocr"))
     _spy_background_by_fn(monkeypatch, {"check_photo": _photo_ok(), "_local_ocr_lines": ocr})
-    _no_vlm_ocr_pair(monkeypatch)
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [_dino_ok(0.9)])
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a, **k: _dino_ok(0.9))
     out = pipeline_mod.validate_result(_validate_state(item_texts=[{"text": "NIKE"}]))
-    assert out["status"] == "pass" and out["guard_report"] == []
+    assert out["guard_report"] == []
     assert out["ocr_local_recall"] is None and out["visual_similarity"] == 0.9
     assert ocr.cancelled == 1
 
@@ -3706,8 +3469,7 @@ def test_validate_result_real_pool_local_ocr_with_stubbed_reader(monkeypatch):
     monkeypatch.setattr(settings, "local_ocr_guard", True)
     monkeypatch.setattr(pipeline_mod.detector, "check_photo",
                         lambda img: {"valid": True, "reason": ""})
-    _no_vlm_ocr_pair(monkeypatch)
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", lambda *a: [])
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a, **k: None)
     _stub_item_guards(monkeypatch)
     out = pipeline_mod.validate_result(_validate_state(item_texts=[{"text": "NIKE"}]))
     assert out["ocr_local_recall"] == 1.0 and out["guard_report"] == []
@@ -3752,7 +3514,7 @@ def test_save_inspect_new_fields_default_none():
 # ── 그래프 끝까지 ──
 def test_item_similarity_written_to_inspect_json_and_result(monkeypatch, make_png):
     calls = _patch_graph_deps(monkeypatch, make_png, [])
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", _ORIG_RUN_OUTPUT_GUARDS)
+    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", _ORIG_DINO_BAND_GUARD)
     _isolate_spy(monkeypatch)
     names = []
 
@@ -3767,7 +3529,6 @@ def test_item_similarity_written_to_inspect_json_and_result(monkeypatch, make_pn
 
     result = pipeline_mod.run_transform("fid-g", "studio_white")
 
-    assert result["status"] == "pass"
     assert result["visual_similarity"] == 0.9 and result["item_similarity"] == 0.82
     assert sorted(names) == ["dino_similarity", "item_dino_similarity"]
     assert patches == [(b"ISO_original", b"ISO_result")]
@@ -3783,7 +3544,7 @@ def test_failed_item_dino_written_to_inspect_guard_report(monkeypatch, make_png)
     monkeypatch.setattr(pipeline_mod, "_item_pair", lambda s: (b"a", b"b"))
     _stub_item_guards(monkeypatch, _item_ok(0.4), _patch_ok(0.97))
     result = pipeline_mod.run_transform("fid-g", "studio_white")
-    assert result["status"] == "pass" and result["item_similarity"] == 0.4
+    assert result["item_similarity"] == 0.4
     ins = json.loads(storage.load("quality", "fid-g_studio_white_inspect.json"))
     assert [g["name"] for g in ins["guard_report"]] == ["item_dino"]
 
@@ -3793,15 +3554,14 @@ def test_item_patch_similarity_written_to_inspect_json_end_to_end(monkeypatch, m
     monkeypatch.setattr(pipeline_mod, "_item_pair", lambda s: (b"a", b"b"))
     _stub_item_guards(monkeypatch, _item_ok(0.9), _patch_ok(0.7))
     result = pipeline_mod.run_transform("fid-g", "studio_white")
-    assert result["status"] == "pass"
     ins = json.loads(storage.load("quality", "fid-g_studio_white_inspect.json"))
     assert ins["item_patch_similarity"] == 0.7 and ins["ocr_local_recall"] is None
     assert [g["name"] for g in ins["guard_report"]] == ["item_patch"]
 
 
 def test_item_similarity_none_in_inspect_json_after_composite(monkeypatch, make_png):
-    """가드 두 번 불합격 → 배경 교체: 누끼 비교는 한 번도 안 돌고 값은 None."""
-    _patch_graph_deps(monkeypatch, make_png, [[_hard_fail()], [_hard_fail()]])
+    """생성 전 배경 교체(wear_heavy): 누끼 비교는 한 번도 안 돌고 값은 None."""
+    _patch_graph_deps(monkeypatch, make_png, [], wear_level="heavy")
     ran = []
     monkeypatch.setattr(pipeline_mod, "_item_pair", lambda s: ran.append(1))
     result = pipeline_mod.run_transform("fid-g", "studio_white")
@@ -3842,7 +3602,7 @@ def test_state_declares_text_level():
 def test_detect_node_passes_text_level_and_item_box(monkeypatch, level, box):
     anchors = [{"category": "print", "what": "logo", "where": "front"}]
     _detect_seq(monkeypatch, [{"anchors": anchors, "text_level": level, "item_box": box}])
-    out = pipeline_mod.detect({"original": b"x"})
+    out = pipeline_mod.analyze({"original": b"x"})
     assert out == {"anchors": anchors, "detect_failed": False, "text_level": level,
                    "item_box": box}
 
@@ -3944,7 +3704,7 @@ def test_read_text_empty_composite_error_does_not_skip_text_heavy(monkeypatch):
     ({"mode": "generate", "text_level": "dense"}, "read_text"),
     ({"mode": "generate", "text_level": None}, "read_text"),       # detect 실패
     ({"mode": "generate"}, "read_text"),
-    ({"mode": "generate", "text_level": "simple"}, "read_text"),   # many_defects 로 갔던 simple
+    ({"mode": "generate", "text_level": "simple"}, "read_text"),   # wear_heavy 로 갔던 simple
     ({"mode": "generate", "text_level": "none"}, "generate"),      # 글자 없음 확인됨
     ({"mode": "generate", "text_level": "dense", "item_texts": []}, "generate"),   # 이미 읽음
     ({"mode": "generate", "text_level": "dense", "item_texts": _texts(3)}, "generate"),
@@ -4007,7 +3767,7 @@ def test_graph_simple_runs_read_text_once(monkeypatch, make_png):
     out = pipeline_mod.run_transform("fid-g", "studio_white")
 
     assert ran == [1] and len(_nonstrict(reads)) == 1
-    assert calls["gen_seeds"] == [None] and out["status"] == "pass"
+    assert calls["gen_seeds"] == [None]
 
 
 def _compose_spy(monkeypatch, make_png, calls):
@@ -4047,16 +3807,16 @@ def test_graph_dense_goes_to_composite_without_read_text_or_generate(monkeypatch
     boxes = _compose_spy(monkeypatch, make_png, calls)
     seen = []
     monkeypatch.setattr(pipeline_mod.detector, "verify_and_locate",
-                        lambda img, t, i, c, **kw: seen.append(t) or
+                        lambda img, t, i="object", c=None, **kw: seen.append(t) or
                         [{"what": x["what"], "preserved": True} for x in t])
 
     out = pipeline_mod.run_transform("fid-g", "studio_white")
 
     assert ran == []
     assert out["mode"] == "composite" and out["composite_reason"] == "text_dense"
-    assert out["gate_passed"] is True and out["status"] == "pass"
+    assert out["gate_passed"] is None                  # 합성본은 verify VLM 을 부르지 않는다
     assert boxes == [_B_DETECT]                        # detect 박스로 오림
-    assert [[t["what"] for t in ts] for ts in seen] == [["얼룩"]]   # 앵커만 확인
+    assert seen == []
     ins = json.loads(storage.load("quality", "fid-g_studio_white_inspect.json"))
     assert ins["text_level"] == "dense" and ins["composite_reason"] == "text_dense"
     assert ins["item_texts"] == []
@@ -4091,41 +3851,57 @@ def test_graph_dense_composite_failure_reads_text_once_then_generates_with_lock(
     assert out["mode"] == "generate" and out["composite_reason"] is None
     assert out["composite_error"] == "물건을 찾지 못함"
     assert out["text_level"] == "dense" and len(out["item_texts"]) == 12
-    assert out["status"] == "pass" and out["gate_passed"] is True
-    assert len(calls["ocr"][0][0]) == pipeline_mod.TEXT_VERIFY_MAX   # OCR 가드도 켜짐
+    assert out["gate_passed"] is True and calls["verify"] == 1
 
 
-def test_graph_none_composite_failure_generates_directly(monkeypatch, make_png):
+def test_graph_wear_heavy_none_composite_failure_keeps_original(monkeypatch, make_png):
+    """wear_heavy 로 생성 전 배경 교체 -> 오리기 실패 -> 생성으로 가지 않고 원본 그대로
+    (예전엔 생성으로 갔다). 글자 읽기, 생성, 검증, 채점 없음."""
     monkeypatch.setattr(settings, "text_lock", True)
-    monkeypatch.setattr(settings, "composite_first_min_anchors", 1)   # plan → many_defects
-    calls = _patch_graph_deps(monkeypatch, make_png, [[]], text_level="none")
+    calls = _patch_graph_deps(monkeypatch, make_png, [[]], text_level="none",
+                              wear_level="heavy")   # plan -> wear_heavy
     _compose_fails(monkeypatch, calls)
     ran = _spy_read_text_node(monkeypatch)
     _poison_item_text(monkeypatch)
 
-    out = pipeline_mod.GRAPH.invoke({"file_id": "fid-g", "preset_key": "studio_white"},
-                                    {"recursion_limit": pipeline_mod.RECURSION_LIMIT})
+    out = pipeline_mod.run_transform("fid-g", "studio_white")
 
-    assert ran == [] and calls["compose"] == 1 and calls["gen_seeds"] == [None]
-    assert out["mode"] == "generate" and out["gate_passed"] is True
-    assert "item_texts" not in out
+    assert ran == [] and calls["compose"] == 1 and calls["gen_seeds"] == []
+    assert calls["verify"] == 0 and calls["judge"] == 0
+    assert out["mode"] == "original"
+    assert out["composite_reason"] == "wear_heavy" and out["gate_passed"] is None
+    assert out["checks"] == [] and out["bubbles"] == [] and out["judge_pending"] is False
+    assert out["verify_failed"] is False and out["guard_report"] == []
+    assert _close(_mean_color(storage.load("result", "fid-g_studio_white.jpg")), ORIG_COLOR)
+    assert storage.load("quality", "fid-g_studio_white.json") is None
+    ins = json.loads(storage.load("quality", "fid-g_studio_white_inspect.json"))
+    assert ins["mode"] == "original" and ins["composite_reason"] == "wear_heavy"
+    assert ins["composite_error"] == "물건을 찾지 못함"
 
 
-def test_graph_simple_many_defects_composite_failure_reads_text(monkeypatch, make_png):
-    """simple 인데 many_defects 로 먼저 배경 교체 → 실패 → 글자 아직 안 읽음 → read_text."""
+def test_graph_wear_heavy_simple_composite_failure_keeps_original(monkeypatch, make_png):
+    """wear_heavy 로 생성 전 배경 교체 -> 오리기 실패 -> 생성으로 가지 않고 원본 그대로
+    (예전엔 생성으로 갔다). 글자 읽기, 생성, 검증, 채점 없음."""
     monkeypatch.setattr(settings, "text_lock", True)
-    monkeypatch.setattr(settings, "composite_first_min_anchors", 1)
-    calls = _patch_graph_deps(monkeypatch, make_png, [[]], text_level="simple")
+    calls = _patch_graph_deps(monkeypatch, make_png, [[]], text_level="simple",
+                              wear_level="heavy")   # plan -> wear_heavy
     _compose_fails(monkeypatch, calls)
     ran = _spy_read_text_node(monkeypatch)
-    reads = _text_reader(monkeypatch, [{"text": "SALE"}], [{"text": "SALE"}])
+    _poison_item_text(monkeypatch)
 
-    out = pipeline_mod.GRAPH.invoke({"file_id": "fid-g", "preset_key": "studio_white"},
-                                    {"recursion_limit": pipeline_mod.RECURSION_LIMIT})
+    out = pipeline_mod.run_transform("fid-g", "studio_white")
 
-    assert ran == [1] and len(_nonstrict(reads)) == 1
-    assert calls["compose"] == 1 and calls["gen_seeds"] == [None]
-    assert out["mode"] == "generate" and out["item_texts"] == [{"text": "SALE"}]
+    assert ran == [] and calls["compose"] == 1 and calls["gen_seeds"] == []
+    assert calls["verify"] == 0 and calls["judge"] == 0
+    assert out["mode"] == "original"
+    assert out["composite_reason"] == "wear_heavy" and out["gate_passed"] is None
+    assert out["checks"] == [] and out["bubbles"] == [] and out["judge_pending"] is False
+    assert out["verify_failed"] is False and out["guard_report"] == []
+    assert _close(_mean_color(storage.load("result", "fid-g_studio_white.jpg")), ORIG_COLOR)
+    assert storage.load("quality", "fid-g_studio_white.json") is None
+    ins = json.loads(storage.load("quality", "fid-g_studio_white_inspect.json"))
+    assert ins["mode"] == "original" and ins["composite_reason"] == "wear_heavy"
+    assert ins["composite_error"] == "물건을 찾지 못함"
 
 
 def test_graph_detect_failed_composite_failure_reads_text(monkeypatch, make_png):
@@ -4169,25 +3945,12 @@ def test_graph_dense_composite_failure_read_failure_still_generates(monkeypatch,
 
 def test_worst_path_dense_composite_failure_with_text_lock_fits_recursion_limit(
         monkeypatch, make_png):
-    """dense → 합성 실패 → read_text → 생성 한도 5 + 가드 재시도 + 게이트 재생성 + 합성 실패."""
-    from dataclasses import dataclass
+    """dense → 합성 실패 → read_text → 생성 한도 5 + 게이트 재생성 + 합성 실패."""
     monkeypatch.setattr(settings, "text_lock", True)
     monkeypatch.setattr(settings, "max_generate_attempts", 5)
     calls = _patch_graph_deps(monkeypatch, make_png, [], text_level="dense")
     _compose_fails(monkeypatch, calls)
     _text_reader(monkeypatch, _texts(12), _texts(12))
-
-    @dataclass
-    class G:
-        name: str = "x"; passed: bool = False; value: float = 0; threshold: float = 1; severity: str = "hard"
-    state = {"n": 0}
-
-    def first_fails(orig, result, a, b):
-        state["n"] += 1
-        return [G()] if state["n"] == 1 else []
-    monkeypatch.setattr(pipeline_mod.guards, "run_output_guards", first_fails)
-    monkeypatch.setattr(pipeline_mod.guards, "decide",
-                        lambda results: ("block" if any(not g.passed for g in results) else "pass", None))
     monkeypatch.setattr(pipeline_mod.detector, "check_photo",
                         lambda img: {"valid": False, "reason": "cropped"})
     _verify_seq(monkeypatch, [False] * 5)
@@ -4248,3 +4011,589 @@ def test_save_inspect_text_level_missing_is_none():
     pipeline_mod.save_inspect({"file_id": "si", "preset_key": "p", "anchors": []})
     ins = json.loads(storage.load("quality", "si_p_inspect.json"))
     assert "text_level" in ins and ins["text_level"] is None
+
+
+# ══ 09-27 analyze 앞단 (classify + detect → analyze VLM 1회) ══════════════
+def test_old_front_nodes_are_gone():
+    for name in ("classify_node", "detect", "DETECT_ATTEMPTS"):
+        assert not hasattr(pipeline_mod, name), name
+    assert pipeline_mod.ANALYZE_ATTEMPTS == 2
+    nodes = set(pipeline_mod.GRAPH.get_graph().nodes)
+    assert "analyze" in nodes and "keep_original" in nodes
+    assert "classify" not in nodes and "detect" not in nodes
+
+
+def test_analyze_node_success_passes_everything_through(monkeypatch, no_detect_sleep):
+    marks = [{"category": "print", "what": "BRAUN", "where": "front"}]
+    raw = _analyze_out(marks, "dense", {"x1": 1, "y1": 2, "x2": 3, "y2": 4}, item="shaver",
+                       considered=["logo"], photo_type="document", wear_level="heavy",
+                       watermark="on_item")
+    calls = _detect_seq(monkeypatch, [raw])
+    out = pipeline_mod.analyze({"original": b"img"})
+    assert out == {**raw, "detect_failed": False}
+    assert calls == [b"img"] and no_detect_sleep == []
+
+
+def test_analyze_node_success_with_no_marks_is_not_failure(monkeypatch):
+    _detect_seq(monkeypatch, [[]])
+    out = pipeline_mod.analyze({"original": b"x"})
+    assert out["detect_failed"] is False and out["anchors"] == []
+
+
+def test_analyze_node_failure_defaults_override_stale_state(monkeypatch, no_detect_sleep):
+    """실패 기본값은 state 에 남은 옛 값(item·photo_type 등)을 덮어쓴다 — 검증 불가로 처리."""
+    _detect_seq(monkeypatch, [RuntimeError("down"), RuntimeError("down")])
+    out = pipeline_mod.analyze({"original": b"x", "item": "chair", "photo_type": "inside_view",
+                                "wear_level": "heavy", "text_level": "dense"})
+    assert out == _DETECT_FAILED
+    assert "text_is_product" not in out and "scene" not in out
+    assert out["photo_type"] is None and out["wear_level"] is None and out["watermark"] is None
+    assert out["item"] == "object" and out["considered"] == []
+    assert no_detect_sleep == [pipeline_mod.DETECT_RETRY_DELAY_S]
+
+
+def test_analyze_node_real_detector_bad_json_retries_then_fails(monkeypatch, no_detect_sleep):
+    """실제 detector.analyze: _call 이 {} (JSON 깨짐) → ValueError(marks 없음) → 재시도 → detect_failed."""
+    names = []
+    monkeypatch.setattr(pipeline_mod.detector, "_call",
+                        lambda img, prompt, name="": names.append(name) or {})
+    out = pipeline_mod.analyze({"original": b"x"})
+    assert out["detect_failed"] is True
+    assert names == ["analyze", "analyze"]
+
+
+def test_analyze_node_real_detector_success_second_try(monkeypatch, no_detect_sleep):
+    seq = iter([{}, {"item": "cup", "marks": [{"what": "LOGO", "where": "side"}],
+                     "photo_type": "Inside_View", "wear_level": "light", "text_level": "none"}])
+    monkeypatch.setattr(pipeline_mod.detector, "_call", lambda *a, **k: next(seq))
+    out = pipeline_mod.analyze({"original": b"x"})
+    assert out["detect_failed"] is False and out["item"] == "cup"
+    assert out["photo_type"] == "inside_view"
+    assert out["text_level"] == "simple"     # none + 마크 → simple
+
+
+# ── plan / 라우팅 ──
+def test_plan_inside_view_sets_reason():
+    out = pipeline_mod.plan({"file_id": "f", "preset_key": "p", "photo_type": "inside_view",
+                             "wear_level": "heavy", "text_level": "dense"})
+    assert out == {"result_name": "f_p.jpg", "composite_reason": "inside_view"}
+
+
+def test_plan_wear_heavy_sets_reason():
+    out = pipeline_mod.plan({"file_id": "f", "preset_key": "p", "wear_level": "heavy"})
+    assert out == {"result_name": "f_p.jpg", "composite_reason": "wear_heavy"}
+
+
+@pytest.mark.parametrize("extra", [{"photo_type": "inside_view"}, {"photo_type": "document"},
+                                   {"wear_level": "heavy"}])
+def test_plan_dev_graph_ignores_photo_type_and_wear(extra):
+    s = {"file_id": "f", "preset_key": "p", "provided_result": b"img", **extra}
+    assert pipeline_mod.plan(s) == {"result_name": "f_p.jpg"}
+
+
+@pytest.mark.parametrize("lock", [True, False])
+@pytest.mark.parametrize("state,expected", [
+    ({"composite_reason": "inside_view"}, "keep_original"),
+    ({"composite_reason": "inside_view", "text_level": "simple"}, "keep_original"),
+    ({"composite_reason": "inside_view", "photo_type": "document"}, "keep_original"),
+    ({"composite_reason": "wear_heavy"}, "composite"),
+    ({"composite_reason": "detect_failed"}, "composite"),
+    ({"composite_reason": "text_dense"}, "composite"),
+    ({"composite_reason": "document"}, "composite"),
+    ({"composite_reason": "partial_view"}, "composite"),     # 옛 사유는 원본 그대로가 아니다
+    # photo_type 만 있고 plan 이 사유를 안 달았으면(dev 등) 라우팅은 사유만 본다
+    ({"photo_type": "inside_view", "text_level": "none"}, "generate"),
+    ({"photo_type": "document", "text_level": "none"}, "generate"),
+])
+def test_route_after_plan_keep_original(monkeypatch, lock, state, expected):
+    monkeypatch.setattr(settings, "text_lock", lock)
+    assert pipeline_mod._route_after_plan(state) == expected
+
+
+# ── keep_original 노드 ──
+def test_keep_original_node_saves_original_and_skips_checks():
+    s = {"original": ORIG_PNG, "result_name": "ko_p.jpg"}
+    out = pipeline_mod.keep_original(s)
+    assert out["result"] == ORIG_PNG
+    assert out["mode"] == "original"
+    assert out["checks"] == [] and out["gate_passed"] is None and out["photo_check"] is None
+    assert out["prompt_used"].startswith("ORIGINAL")
+    assert _close(_mean_color(storage.load("result", "ko_p.jpg")), ORIG_COLOR)
+
+
+def _poison_all_generation(monkeypatch):
+    def poison(*a, **k):
+        raise AssertionError("inside_view 에서 생성·오리기·검증·채점 금지")
+    for mod, name in [(pipeline_mod, "_generate_ai"), (pipeline_mod.compositor, "compose"),
+                      (pipeline_mod.compositor, "compose_flat"),
+                      (pipeline_mod.detector, "verify_and_locate"),
+                      (pipeline_mod.detector, "read_item_text"),
+                      (pipeline_mod.detector, "check_photo"),
+                      (pipeline_mod.judge, "judge"), (pipeline_mod, "judge_and_save")]:
+        monkeypatch.setattr(mod, name, poison)
+
+
+@pytest.mark.parametrize("defer", [False, True])
+def test_graph_inside_view_keeps_original(monkeypatch, make_png, defer):
+    calls = _patch_graph_deps(monkeypatch, make_png, [], photo_type="inside_view",
+                              wear_level="heavy", text_level="dense")
+    monkeypatch.setattr(settings, "text_lock", True)
+    _poison_all_generation(monkeypatch)
+
+    out = pipeline_mod.run_transform("fid-g", "studio_white", defer_judge=defer)
+
+    assert calls["gen_seeds"] == [] and calls["compose"] == 0 and calls["verify"] == 0
+    assert out["mode"] == "original"
+    assert out["composite_reason"] == "inside_view"
+    assert out["photo_type"] == "inside_view" and out["wear_level"] == "heavy"
+    assert out["watermark"] == "none"
+    assert out["gate_passed"] is None and out["checks"] == [] and out["bubbles"] == []
+    assert out["judge_pending"] is False            # 원본은 채점하지 않는다 (배경 채점도 예약 안 함)
+    assert out["detect_failed"] is False
+    saved = storage.load("result", "fid-g_studio_white.jpg")
+    assert _close(_mean_color(saved), ORIG_COLOR)
+    assert storage.load("quality", "fid-g_studio_white.json") is None
+    ins = json.loads(storage.load("quality", "fid-g_studio_white_inspect.json"))
+    assert ins["mode"] == "original" and ins["photo_type"] == "inside_view"
+    assert ins["wear_level"] == "heavy" and ins["watermark"] == "none"
+    assert ins["composite_reason"] == "inside_view"
+    assert "scene" not in ins and "text_is_product" not in ins
+
+
+def test_graph_inside_view_node_path(monkeypatch, make_png):
+    """경로: load → analyze → plan → keep_original → save_inspect → finalize (다른 노드 없음)."""
+    _patch_graph_deps(monkeypatch, make_png, [], photo_type="inside_view")
+    _poison_all_generation(monkeypatch)
+    ran = []
+    for name in ("read_text", "generate", "validate_result", "composite", "score_similarity",
+                 "verify", "keep_original", "save_inspect"):
+        real = getattr(pipeline_mod, name)
+        monkeypatch.setattr(pipeline_mod, name,
+                            lambda s, _n=name, _r=real: ran.append(_n) or _r(s))
+    g = pipeline_mod.build()
+    out = g.invoke({"file_id": "fid-g", "preset_key": "studio_white"},
+                   {"recursion_limit": pipeline_mod.RECURSION_LIMIT})
+    assert ran == ["keep_original", "save_inspect"]
+    assert out["mode"] == "original"
+
+
+def test_graph_detect_failed_is_composite_not_keep_original(monkeypatch, make_png):
+    """analyze 실패면 photo_type 을 모른다 → 원본 그대로가 아니라 배경 교체 (검증 불가 처리 유지)."""
+    calls = _patch_graph_deps(monkeypatch, make_png, [])
+    _detect_seq(monkeypatch, [RuntimeError("x"), RuntimeError("y")])
+    _no_vlm_verify(monkeypatch)
+    out = pipeline_mod.run_transform("fid-g", "studio_white")
+    assert out["mode"] == "composite" and out["composite_reason"] == "detect_failed"
+    assert out["gate_passed"] is None and out["photo_type"] is None
+    assert calls["gen_seeds"] == [] and calls["compose"] == 1
+
+
+def test_run_transform_mode_original_never_judges(monkeypatch):
+    def poison(*a, **k):
+        raise AssertionError("mode original 은 채점 금지")
+    monkeypatch.setattr(pipeline_mod, "judge_and_save", poison)
+    out_graph = _graph_out(mode="original", composite_reason="inside_view",
+                           photo_type="inside_view", wear_level="light", watermark="background",
+                           gate_passed=None, checks=[], bubbles=[])
+    monkeypatch.setattr(pipeline_mod, "GRAPH", FakeGraph(out_graph), raising=False)
+    result = pipeline_mod.run_transform("f", "p")
+    assert result == _expected(out_graph)
+    assert result["mode"] == "original" and result["watermark"] == "background"
+    assert pipeline_mod.run_transform("f", "p", defer_judge=True)["judge_pending"] is False
+
+
+def test_run_transform_generate_mode_still_judges(monkeypatch):
+    judged = []
+    monkeypatch.setattr(pipeline_mod, "judge_and_save", lambda f, p, **kw: judged.append((f, p)))
+    monkeypatch.setattr(pipeline_mod, "GRAPH", FakeGraph(_graph_out(photo_type="product")),
+                        raising=False)
+    result = pipeline_mod.run_transform("f", "p")
+    assert judged == [("f", "p")] and result["photo_type"] == "product"
+    assert "scene" not in result
+    assert result["wear_level"] is None and result["watermark"] is None   # 그래프가 안 줬으면 None
+
+
+# ── save_inspect: 분석 흔적 ──
+@pytest.mark.parametrize("ptype", ["document", "inside_view", "product"])
+def test_save_inspect_writes_photo_type_wear_watermark(ptype):
+    pipeline_mod.save_inspect({"file_id": "si", "preset_key": "p", "anchors": [],
+                               "photo_type": ptype, "wear_level": "none",
+                               "watermark": "on_item", "scene": "stale",
+                               "text_is_product": True})
+    ins = json.loads(storage.load("quality", "si_p_inspect.json"))
+    assert (ins["photo_type"], ins["wear_level"], ins["watermark"]) == (ptype, "none", "on_item")
+    assert "scene" not in ins and "text_is_product" not in ins   # 옛 필드는 기록하지 않는다
+
+
+def test_save_inspect_photo_type_fields_missing_are_none():
+    pipeline_mod.save_inspect({"file_id": "si", "preset_key": "p", "anchors": []})
+    ins = json.loads(storage.load("quality", "si_p_inspect.json"))
+    assert ins["photo_type"] is None and ins["wear_level"] is None and ins["watermark"] is None
+
+
+# ── ocr_guard 꺼짐(기본): 결과 글자를 다시 읽지 않는다 ──
+
+
+# ── _key_texts: 원본에서도 못 읽은 글자("?") 제외 ──
+@pytest.mark.parametrize("text", ["17? 5433", "?", "??", "AB?", "?AB", "A ? B"])
+def test_key_texts_excludes_question_mark(text):
+    assert pipeline_mod._key_texts([{"text": text}]) == []
+
+
+def test_key_texts_question_mark_only_drops_that_line():
+    out = pipeline_mod._key_texts([{"text": "17? 5433"}, {"text": "HYUNDAI"}, {"text": "12가 3456"}])
+    assert [t for t, _ in out] == ["HYUNDAI", "12가 3456"]
+
+
+def test_verify_targets_exclude_unreadable_text(monkeypatch):
+    s = {"anchors": [], "item_texts": [{"text": "17? 5433"}, {"text": "SONATA"}]}
+    whats = [t["what"] for t in pipeline_mod._verify_targets(s)]
+    assert len(whats) == 1 and "SONATA" in whats[0]
+    assert not any("?" in w for w in whats)
+
+
+# ── mark_gate_retry 문구 ──
+def test_mark_gate_retry_note_says_marks_not_defects():
+    out = pipeline_mod.mark_gate_retry({"checks": [
+        {"what": "BRAUN", "preserved": False}, {"what": "ok", "preserved": True}]})
+    assert "lost or altered these marks on the product" in out["gate_note"]
+    assert "defects" not in out["gate_note"]
+    assert '"BRAUN"' in out["gate_note"] and '"ok"' not in out["gate_note"]
+
+
+def test_mark_gate_retry_no_lost_no_note():
+    assert pipeline_mod.mark_gate_retry({"checks": [{"what": "a", "preserved": True}]})[
+        "gate_note"] == ""
+
+
+# ── verify: 마크 전용 프롬프트 (marks=True), considered 안 넘김 ──
+def test_verify_calls_marks_prompt_without_considered(monkeypatch):
+    seen = []
+
+    def fake(*a, **kw):
+        seen.append((a, kw))
+        return [{"what": "a", "preserved": True}]
+    monkeypatch.setattr(pipeline_mod.detector, "verify_and_locate", fake)
+    out = pipeline_mod.verify({"anchors": [_ANCHOR], "result_name": "r.jpg",
+                               "item": "shaver", "considered": ["scratch", "dent"]})
+    assert out["gate_passed"] is True
+    (args, kw), = seen
+    assert args[1:] == ([_ANCHOR], "shaver")          # (img, targets, item) 만
+    assert kw == {"strict": True, "marks": True}
+
+
+def test_verify_default_item_is_object(monkeypatch):
+    seen = []
+    monkeypatch.setattr(pipeline_mod.detector, "verify_and_locate",
+                        lambda *a, **kw: seen.append(a) or [{"what": "a", "preserved": True}])
+    pipeline_mod.verify({"anchors": [_ANCHOR], "result_name": "r.jpg"})
+    assert seen[0][2] == "object"
+
+
+# ── composite(): wear_heavy 오리기 실패 -> 원본 그대로 ──
+def test_original_as_result_fields():
+    out = pipeline_mod._original_as_result({"original": ORIG_PNG, "result_name": "oa_p.jpg"})
+    assert out == {"result": ORIG_PNG, "mode": "original", "checks": [],
+                   "gate_passed": None, "photo_check": None, "verify_failed": False,
+                   "guard_report": [], "prompt_used": "ORIGINAL: background not replaced"}
+    assert _close(_mean_color(storage.load("result", "oa_p.jpg")), ORIG_COLOR)
+
+
+def test_keep_original_is_original_as_result():
+    s = {"original": ORIG_PNG, "result_name": "ko2_p.jpg"}
+    assert pipeline_mod.keep_original(s) == pipeline_mod._original_as_result(s)
+
+
+def test_composite_wear_heavy_cutout_failure_before_generate_keeps_original(monkeypatch):
+    _compose_fails(monkeypatch)
+    out = pipeline_mod.composite(_comp_state(composite_reason="wear_heavy"))
+    assert out["mode"] == "original"
+    assert out["composite_reason"] == "wear_heavy"
+    assert out["composite_error"] == "물건을 찾지 못함"
+    assert out["result"] == ORIG_PNG and out["gate_passed"] is None
+    assert _close(_mean_color(storage.load("result", "c_p.jpg")), ORIG_COLOR)
+    assert pipeline_mod._route_after_composite(out) == "failed"
+
+
+def test_composite_wear_heavy_previous_cutout_error_keeps_original(monkeypatch):
+    """이미 실패한 오리기(composite_error)는 다시 부르지 않고 같은 규칙(원본 그대로)."""
+    def poison(*a, **k):
+        raise AssertionError("재호출 금지")
+    monkeypatch.setattr(pipeline_mod.compositor, "compose", poison)
+    out = pipeline_mod.composite(_comp_state(composite_reason="wear_heavy",
+                                             composite_error="앞서 실패"))
+    assert out["mode"] == "original" and "앞서 실패" in out["composite_error"]
+
+
+@pytest.mark.parametrize("reason,extra", [
+    ("text_dense", {}), ("detect_failed", {"detect_failed": True}), (None, {"detect_failed": True}),
+])
+def test_composite_other_reasons_cutout_failure_still_generates(monkeypatch, reason, extra):
+    _compose_fails(monkeypatch)
+    out = pipeline_mod.composite(_comp_state(composite_reason=reason, **extra))
+    assert out == {"mode": "generate", "composite_error": "물건을 찾지 못함",
+                   "composite_reason": None}
+
+
+def test_composite_wear_heavy_with_generated_result_keeps_generated(monkeypatch):
+    """생성 결과가 이미 있으면(원본 그대로 규칙은 생성 전에만) 예전처럼 composite_failed."""
+    _compose_fails(monkeypatch)
+    out = pipeline_mod.composite(_comp_state(composite_reason="wear_heavy", result=GEN_PNG))
+    assert out["mode"] == "composite_failed"
+
+
+@pytest.mark.parametrize("lock", [True, False])
+@pytest.mark.parametrize("level", ["none", "simple", "dense", None])
+def test_route_after_composite_original_goes_to_save_inspect(monkeypatch, lock, level):
+    monkeypatch.setattr(settings, "text_lock", lock)
+    assert pipeline_mod._route_after_composite({"mode": "original", "text_level": level}) == "failed"
+
+
+def test_graph_wear_heavy_cutout_ok_is_composite_not_original(monkeypatch, make_png):
+    """오리기가 되면 wear_heavy 는 평범한 배경 교체 (원본 그대로는 실패했을 때만)."""
+    calls = _patch_graph_deps(monkeypatch, make_png, [], wear_level="heavy")
+    out = pipeline_mod.run_transform("fid-g", "studio_white")
+    assert out["mode"] == "composite" and calls["judge"] == 1 and calls["gen_seeds"] == []
+
+
+# ── _key_texts: 전각 물음표도 제외 ──
+@pytest.mark.parametrize("text", ["17？ 5433", "？", "AB？"])
+def test_key_texts_excludes_fullwidth_question_mark(text):
+    assert pipeline_mod._key_texts([{"text": text}]) == []
+
+
+def test_graph_generate_prompt_omits_unreadable_text(monkeypatch, make_png):
+    """TEXT_LOCK 문구에도 못 읽은 글자는 넣지 않는다 (생성 모델이 ? 를 그리거나 채워 넣음)."""
+    _patch_graph_deps(monkeypatch, make_png, [[]])
+    monkeypatch.setattr(settings, "text_lock", True)
+    _text_reader(monkeypatch, [{"text": "17? 5433"}, {"text": "SONATA"}], [])
+    prompts = []
+    monkeypatch.setattr(pipeline_mod, "_generate_ai",
+                        lambda original, preset, seed=None: prompts.append(preset["prompt"]) or make_png())
+    pipeline_mod.run_transform("fid-g", "studio_white")
+    assert '"SONATA"' in prompts[0] and "17?" not in prompts[0]
+
+
+# ══ photo_type=document → 사유 document (책·음반·보증서 — 글자가 곧 물건) ═══════════
+@pytest.mark.parametrize("state,expected", [
+    ({"photo_type": "document"}, "document"),
+    ({"photo_type": "product"}, None),
+    ({"photo_type": None}, None),
+    # 글자 수준과 무관 — 표지 글자가 적어도(none·simple) 문서면 생성하지 않는다
+    ({"photo_type": "document", "text_level": "none"}, "document"),
+    ({"photo_type": "document", "text_level": "simple"}, "document"),
+    ({"photo_type": "document", "text_level": None}, "document"),
+    # 우선순위: detect_failed, inside_view, document, text_dense, wear_heavy 순
+    ({"detect_failed": True, "photo_type": "document"}, "detect_failed"),
+    ({"detect_failed": True, "photo_type": "inside_view", "text_level": "dense",
+      "wear_level": "heavy"}, "detect_failed"),
+    ({"photo_type": "inside_view", "text_level": "dense", "wear_level": "heavy"}, "inside_view"),
+    ({"photo_type": "document", "text_level": "dense"}, "document"),
+    ({"photo_type": "document", "wear_level": "heavy"}, "document"),
+    ({"photo_type": "document", "text_level": "dense", "wear_level": "heavy"}, "document"),
+    ({"detect_failed": False, "photo_type": "document", "item_texts": _texts(50)}, "document"),
+    # product 면 기존 판단 그대로
+    ({"photo_type": "product", "text_level": "dense", "wear_level": "heavy"}, "text_dense"),
+    ({"photo_type": "product", "wear_level": "heavy"}, "wear_heavy"),
+    ({"photo_type": "product", "text_level": "simple", "wear_level": "light"}, None),
+])
+def test_composite_first_reason_photo_type(state, expected):
+    assert pipeline_mod._composite_first_reason(state) == expected
+
+
+@pytest.mark.parametrize("level", ["none", "simple", "dense"])
+def test_plan_document_sets_reason(level):
+    out = pipeline_mod.plan({"file_id": "f", "preset_key": "p", "photo_type": "document",
+                             "text_level": level})
+    assert out == {"result_name": "f_p.jpg", "composite_reason": "document"}
+
+
+@pytest.mark.parametrize("provided", [b"img", b""])
+@pytest.mark.parametrize("ptype", ["document", "inside_view"])
+def test_plan_dev_graph_ignores_photo_type(provided, ptype):
+    s = {"file_id": "f", "preset_key": "p", "photo_type": ptype, "provided_result": provided}
+    assert pipeline_mod.plan(s) == {"result_name": "f_p.jpg"}
+
+
+@pytest.mark.parametrize("lock", [True, False])
+@pytest.mark.parametrize("level", ["none", "simple", "dense", None])
+def test_route_after_plan_document_goes_to_composite(monkeypatch, lock, level):
+    """document 는 글자 읽기(read_text)도 생성도 건너뛰고 바로 배경 교체."""
+    monkeypatch.setattr(settings, "text_lock", lock)
+    s = {"composite_reason": "document", "photo_type": "document", "text_level": level}
+    assert pipeline_mod._route_after_plan(s) == "composite"
+
+
+@pytest.mark.parametrize("lock", [True, False])
+@pytest.mark.parametrize("ptype,expected", [("document", "composite"),
+                                            ("inside_view", "keep_original")])
+def test_route_after_plan_from_plan_output(monkeypatch, lock, ptype, expected):
+    monkeypatch.setattr(settings, "text_lock", lock)
+    s = {"file_id": "f", "preset_key": "p", "photo_type": ptype, "text_level": "simple",
+         "wear_level": "heavy"}
+    s.update(pipeline_mod.plan(s))
+    assert pipeline_mod._route_after_plan(s) == expected
+
+
+@pytest.mark.parametrize("ptype", ["document", "inside_view", "product"])
+def test_analyze_node_passes_photo_type_through(monkeypatch, no_detect_sleep, ptype):
+    _detect_seq(monkeypatch, [_analyze_out([], photo_type=ptype)])
+    out = pipeline_mod.analyze({"original": b"x"})
+    assert out["photo_type"] == ptype and out["detect_failed"] is False
+
+
+def test_analyze_node_failure_photo_type_none(monkeypatch, no_detect_sleep):
+    _detect_seq(monkeypatch, [RuntimeError("a"), RuntimeError("b")])
+    out = pipeline_mod.analyze({"original": b"x", "photo_type": "document"})
+    assert out["photo_type"] is None
+    # 실패 기본값으로 plan 이 document·inside_view 로 가지 않는다 (detect_failed 가 먼저)
+    assert pipeline_mod._composite_first_reason(out) == "detect_failed"
+
+
+# ── composite 노드: 오리기 실패 시 document 는 wear_heavy 처럼 원본 그대로 ──
+@pytest.mark.parametrize("reason", ["document", "text_dense", "wear_heavy"])
+def test_composite_success_keeps_plan_reason(monkeypatch, reason):
+    _compose_ok(monkeypatch)
+    out = pipeline_mod.composite(_comp_state(composite_reason=reason))
+    assert out["mode"] == "composite" and out["composite_reason"] == reason
+
+
+def test_composite_document_cutout_failure_before_generate_keeps_original(monkeypatch):
+    _compose_fails(monkeypatch)
+    out = pipeline_mod.composite(_comp_state(composite_reason="document",
+                                             photo_type="document"))
+    assert out["mode"] == "original"
+    assert out["composite_reason"] == "document"     # 사유 유지 (배지 문구 분기)
+    assert out["composite_error"] == "물건을 찾지 못함"
+    assert out["result"] == ORIG_PNG and out["gate_passed"] is None
+    assert _close(_mean_color(storage.load("result", "c_p.jpg")), ORIG_COLOR)
+    assert pipeline_mod._route_after_composite(out) == "failed"
+
+
+def test_composite_document_failure_matches_wear_heavy_shape(monkeypatch):
+    _compose_fails(monkeypatch)
+    a = pipeline_mod.composite(_comp_state(composite_reason="document"))
+    b = pipeline_mod.composite(_comp_state(composite_reason="wear_heavy"))
+    assert {**a, "composite_reason": None} == {**b, "composite_reason": None}
+
+
+def test_composite_document_previous_cutout_error_keeps_original(monkeypatch):
+    def poison(*a, **k):
+        raise AssertionError("재호출 금지")
+    monkeypatch.setattr(pipeline_mod.compositor, "compose", poison)
+    monkeypatch.setattr(pipeline_mod.compositor, "compose_flat", poison)
+    out = pipeline_mod.composite(_comp_state(composite_reason="document",
+                                             composite_error="앞서 실패"))
+    assert out["mode"] == "original" and "앞서 실패" in out["composite_error"]
+    assert out["composite_reason"] == "document"
+
+
+def test_composite_document_with_generated_result_keeps_generated(monkeypatch):
+    """원본 그대로 규칙은 생성 전(result 없음)에만 — 이미 생성본이 있으면 composite_failed."""
+    _compose_fails(monkeypatch)
+    out = pipeline_mod.composite(_comp_state(composite_reason="document", result=GEN_PNG))
+    assert out["mode"] == "composite_failed"
+
+
+@pytest.mark.parametrize("reason", ["text_dense", "detect_failed", "text_heavy",
+                                    "partial_view", "text_product"])
+def test_composite_photo_type_document_alone_does_not_keep_original(monkeypatch, reason):
+    """원본 그대로는 사유(composite_reason) 기준 — photo_type 만 document 고 사유가 다르면 생성으로."""
+    _compose_fails(monkeypatch)
+    out = pipeline_mod.composite(_comp_state(composite_reason=reason, photo_type="document"))
+    assert out == {"mode": "generate", "composite_error": "물건을 찾지 못함",
+                   "composite_reason": None}
+
+
+@pytest.mark.parametrize("state,expected", [
+    ({"mode": "generate", "photo_type": "document", "text_level": "simple"}, "read_text"),
+    ({"mode": "generate", "photo_type": "document", "text_level": "dense"}, "read_text"),
+    ({"mode": "generate", "photo_type": "document", "text_level": None}, "read_text"),
+    ({"mode": "generate", "photo_type": "document", "text_level": "none"}, "generate"),
+    ({"mode": "composite", "photo_type": "document"}, "ok"),
+])
+def test_route_after_composite_document_lock_on(monkeypatch, state, expected):
+    monkeypatch.setattr(settings, "text_lock", True)
+    assert pipeline_mod._route_after_composite(state) == expected
+
+
+# ── 그래프 ──
+@pytest.mark.parametrize("level", ["none", "simple", "dense"])
+def test_graph_document_goes_to_compose_flat_without_read_or_generate(monkeypatch, make_png, level):
+    """document 는 text_level 이 무엇이든 read_text·generate 없이 compose_flat."""
+    calls = _patch_graph_deps(monkeypatch, make_png, photo_type="document",
+                              text_level=level, wear_level="light")
+    monkeypatch.setattr(settings, "text_lock", True)
+    flat = []
+    monkeypatch.setattr(pipeline_mod.compositor, "compose_flat",
+                        lambda o, bg, box=None: flat.append(o) or make_png(color=COMP_COLOR))
+    monkeypatch.setattr(pipeline_mod.compositor, "compose",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("compose 금지")))
+    ran = _spy_read_text_node(monkeypatch)
+    _poison_item_text(monkeypatch)
+    out = pipeline_mod.run_transform("fid-g", "studio_white")
+    assert ran == [] and calls["gen_seeds"] == [] and len(flat) == 1
+    assert calls["verify"] == 0                 # 합성본은 verify VLM 을 부르지 않는다
+    assert out["mode"] == "composite" and out["composite_reason"] == "document"
+    assert out["photo_type"] == "document" and out["gate_passed"] is None
+    ins = json.loads(storage.load("quality", "fid-g_studio_white_inspect.json"))
+    assert ins["composite_reason"] == "document" and ins["photo_type"] == "document"
+
+
+def test_graph_document_wear_heavy_uses_plain_compose(monkeypatch, make_png):
+    calls = _patch_graph_deps(monkeypatch, make_png, photo_type="document",
+                              text_level="dense", wear_level="heavy")
+    monkeypatch.setattr(pipeline_mod.compositor, "compose_flat",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("펴기 금지")))
+    out = pipeline_mod.run_transform("fid-g", "studio_white")
+    assert calls["gen_seeds"] == [] and calls["compose"] == 1
+    assert out["mode"] == "composite" and out["composite_reason"] == "document"
+
+
+def test_graph_inside_view_beats_document_fields(monkeypatch, make_png):
+    calls = _patch_graph_deps(monkeypatch, make_png, photo_type="inside_view",
+                              text_level="dense", wear_level="heavy")
+    out = pipeline_mod.run_transform("fid-g", "studio_white")
+    assert calls["gen_seeds"] == [] and calls["compose"] == 0
+    assert out["mode"] == "original" and out["composite_reason"] == "inside_view"
+
+
+@pytest.mark.parametrize("level", ["none", "simple", "dense"])
+def test_graph_document_cutout_failure_keeps_original(monkeypatch, make_png, level):
+    """document 오리기 실패 = 생성으로 가지 않고 원본 그대로. 글자 읽기·생성·검증·채점 없음."""
+    monkeypatch.setattr(settings, "text_lock", True)
+    calls = _patch_graph_deps(monkeypatch, make_png, text_level=level, photo_type="document")
+    _compose_fails(monkeypatch, calls)
+    ran = _spy_read_text_node(monkeypatch)
+    _poison_item_text(monkeypatch)
+
+    out = pipeline_mod.run_transform("fid-g", "studio_white")
+
+    assert ran == [] and calls["compose"] == 1 and calls["gen_seeds"] == []
+    assert calls["verify"] == 0 and calls["judge"] == 0
+    assert out["mode"] == "original"
+    assert out["composite_reason"] == "document" and out["gate_passed"] is None
+    assert out["judge_pending"] is False
+    assert _close(_mean_color(storage.load("result", "fid-g_studio_white.jpg")), ORIG_COLOR)
+    ins = json.loads(storage.load("quality", "fid-g_studio_white_inspect.json"))
+    assert ins["mode"] == "original" and ins["composite_reason"] == "document"
+    assert ins["photo_type"] == "document"
+    assert ins["composite_error"] == "물건을 찾지 못함"
+
+
+# ── save_inspect: photo_type 기록 ──
+def test_graph_inspect_records_photo_type_product(monkeypatch, make_png):
+    _patch_graph_deps(monkeypatch, make_png, text_level="none", photo_type="product")
+    pipeline_mod.run_transform("fid-g", "studio_white")
+    ins = json.loads(storage.load("quality", "fid-g_studio_white_inspect.json"))
+    assert ins["photo_type"] == "product" and "text_is_product" not in ins
+
+
+def test_graph_inspect_photo_type_none_when_detect_failed(monkeypatch, make_png,
+                                                          no_detect_sleep):
+    _patch_graph_deps(monkeypatch, make_png)
+    _detect_seq(monkeypatch, [RuntimeError("a"), RuntimeError("b")])
+    out = pipeline_mod.run_transform("fid-g", "studio_white")
+    assert out["composite_reason"] == "detect_failed" and out["photo_type"] is None
+    ins = json.loads(storage.load("quality", "fid-g_studio_white_inspect.json"))
+    assert ins["photo_type"] is None
