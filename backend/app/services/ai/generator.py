@@ -4,14 +4,14 @@ import tempfile
 import fal_client
 import httpx
 
-from app.core.config import settings
+from app.core.config import reveal, settings
 from app.core.tracing import observe
 
 
 def _generate_ai(image_bytes: bytes, preset: dict, seed: int | None = None) -> bytes:
     """생성 편집 모델: 프롬프트가 전체 편집을 지시 (마스크 불필요).
     seed=None 이면 fal 기본(랜덤) — 출력 가드 재시도만 seed 를 명시해서 바꾼다."""
-    os.environ.setdefault("FAL_KEY", settings.fal_key)
+    os.environ.setdefault("FAL_KEY", reveal(settings.fal_key))
 
     image_url = _upload(image_bytes)
 

@@ -8,7 +8,9 @@
   클래스에 선언된 기본값(model_fields[...].default) 자체를 검사해서
   .env 내용과 무관하게 결정적으로 확인한다.
 """
-from app.core.config import Settings
+from pydantic import SecretStr
+
+from app.core.config import Settings, reveal
 
 
 def test_settings_survives_unknown_env_var(monkeypatch):
@@ -23,11 +25,11 @@ def test_settings_model_config_extra_is_ignore():
 
 
 def test_langfuse_public_key_default_is_empty_string():
-    assert Settings.model_fields["langfuse_public_key"].default == ""
+    assert reveal(Settings.model_fields["langfuse_public_key"].default) == ""
 
 
 def test_langfuse_secret_key_default_is_empty_string():
-    assert Settings.model_fields["langfuse_secret_key"].default == ""
+    assert reveal(Settings.model_fields["langfuse_secret_key"].default) == ""
 
 
 def test_settings_langfuse_keys_can_be_forced_empty_via_env(monkeypatch):
@@ -36,8 +38,8 @@ def test_settings_langfuse_keys_can_be_forced_empty_via_env(monkeypatch):
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "")
     s = Settings()
-    assert s.langfuse_public_key == ""
-    assert s.langfuse_secret_key == ""
+    assert reveal(s.langfuse_public_key) == ""
+    assert reveal(s.langfuse_secret_key) == ""
 
 
 def test_langfuse_host_reads_langfuse_host_env(monkeypatch):
@@ -54,3 +56,31 @@ def test_langfuse_host_reads_langfuse_base_url_env(monkeypatch):
     monkeypatch.setenv("LANGFUSE_BASE_URL", "https://us.cloud.langfuse.com")
     s = Settings()
     assert s.langfuse_host == "https://us.cloud.langfuse.com"
+
+
+SECRET_FIELDS = ["VLM_KEY", "fal_key", "external_api_key", "langfuse_public_key",
+                 "langfuse_secret_key", "aws_access_key_id", "aws_secret_access_key"]
+
+
+def test_secret_fields_are_secretstr():
+    """키 필드는 SecretStr — pytest 실패 출력처럼 Settings 가 통째로 찍혀도 값이 안 보이게."""
+    for name in SECRET_FIELDS:
+        assert Settings.model_fields[name].annotation is SecretStr, name
+
+
+def test_settings_repr_and_str_hide_secret_values(monkeypatch):
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "super-secret-value-123")
+    monkeypatch.setenv("VLM_KEY", "vlm-secret-456")
+    s = Settings()
+    for text in (repr(s), str(s), str(s.model_dump())):
+        assert "super-secret-value-123" not in text
+        assert "vlm-secret-456" not in text
+    assert reveal(s.aws_secret_access_key) == "super-secret-value-123"
+    assert reveal(s.VLM_KEY) == "vlm-secret-456"
+
+
+def test_reveal_accepts_plain_str_and_none():
+    """테스트가 monkeypatch 로 평문을 넣어도, 값이 없어도 호출 지점이 깨지지 않는다."""
+    assert reveal("plain") == "plain"
+    assert reveal(None) == ""
+    assert reveal(SecretStr("")) == ""

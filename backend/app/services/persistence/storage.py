@@ -10,7 +10,7 @@ import logging
 import boto3
 from botocore.exceptions import ClientError
 
-from app.core.config import settings
+from app.core.config import reveal, settings
 from app.util import img_util
 
 IMAGE_KINDS = {"original", "result"}   # 정규화 대상 (quality json 등은 제외)
@@ -53,8 +53,8 @@ class S3Backend:
         self.s3 = boto3.client(
             "s3",
             region_name=settings.aws_region,
-            aws_access_key_id=settings.aws_access_key_id or None,
-            aws_secret_access_key=settings.aws_secret_access_key or None,
+            aws_access_key_id=reveal(settings.aws_access_key_id) or None,
+            aws_secret_access_key=reveal(settings.aws_secret_access_key) or None,
         )
 
     def _key(self, kind: str, name: str) -> str:

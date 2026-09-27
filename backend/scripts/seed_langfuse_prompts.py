@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from app.core.config import settings
+from app.core.config import reveal, settings
 from app.prompts import (check_photo_template, detect_template, frag,
                          verify_template)
 from app.prompts.presets import PRESETS
@@ -72,14 +72,14 @@ def main():
               f"가능한 이름: {list(seeds)}")
         sys.exit(1)
 
-    if not (settings.langfuse_public_key and settings.langfuse_secret_key):
+    if not (reveal(settings.langfuse_public_key) and reveal(settings.langfuse_secret_key)):
         print("LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY 가 없습니다. .env 확인.")
         sys.exit(1)
 
     from langfuse import Langfuse
     lf = Langfuse(
-        public_key=settings.langfuse_public_key,
-        secret_key=settings.langfuse_secret_key,
+        public_key=reveal(settings.langfuse_public_key),
+        secret_key=reveal(settings.langfuse_secret_key),
         host=settings.langfuse_host,
     )
     if not lf.auth_check():

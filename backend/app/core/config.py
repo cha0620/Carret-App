@@ -2,7 +2,7 @@ import json
 import logging
 from typing import Annotated
 
-from pydantic import Field, AliasChoices, field_validator
+from pydantic import Field, AliasChoices, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from typing import Literal
 
@@ -23,11 +23,11 @@ class Settings(BaseSettings):              # ⭐ 대문자 클래스
 
     # 생성 모델
     model_provider: str = "external_api"
-    external_api_key: str = ""
+    external_api_key: SecretStr = SecretStr("")
     external_model_id: str = ""
     local_model_path: str = "./models"
     device: str = "cpu"
-    fal_key: str = ""
+    fal_key: SecretStr = SecretStr("")
     fal_model: str = "fal-ai/flux-2/flash/edit"
     # 구도 잘림/자막 오버레이 감지 시 재생성 횟수 (최초 포함) — 상한 없으면
     # 오설정(.env 오타 등) 시 invalid 가 계속 나올 때 fal.ai/VLM 비용이 무한정 나간다.
@@ -47,7 +47,7 @@ class Settings(BaseSettings):              # ⭐ 대문자 클래스
     local_ocr_guard: bool = False
 
     # VLM (소문자 통일)
-    VLM_KEY: str = ""
+    VLM_KEY: SecretStr = SecretStr("")
     VLM_MODEL: str = "gemini-3.8-flash"   # 2026-09-26 3.5 → 3.8 (헛하자↓·단가 ½, app/core/vlm.py 참고)
     # VLM 호출 1회 타임아웃(초). verify(생각 2048 토큰)도 보통 10~20초 — 여유를 두되
     # 재시도(×2)까지 겹쳐 요청 전체가 수 분으로 늘지 않게. 1 미만은 ms 변환 시 0 = 무제한이 된다.
@@ -81,8 +81,8 @@ class Settings(BaseSettings):              # ⭐ 대문자 클래스
 
     inspect_img: str | None = None
 
-    langfuse_public_key: str = ""
-    langfuse_secret_key: str = ""
+    langfuse_public_key: SecretStr = SecretStr("")
+    langfuse_secret_key: SecretStr = SecretStr("")
     langfuse_host: str = Field(
         default="https://cloud.langfuse.com",
         validation_alias=AliasChoices("LANGFUSE_HOST", "LANGFUSE_BASE_URL"),
@@ -93,7 +93,16 @@ class Settings(BaseSettings):              # ⭐ 대문자 클래스
     s3_bucket: str = ""
     s3_prefix: str = "carret"
     aws_region: str = "ap-northeast-2"
-    aws_access_key_id: str = ""
-    aws_secret_access_key: str = ""
+    aws_access_key_id: SecretStr = SecretStr("")
+    aws_secret_access_key: SecretStr = SecretStr("")
+
+def reveal(value: SecretStr | str | None) -> str:
+    """비밀값 꺼내기 — 키 필드는 SecretStr 라 repr·로그·예외 출력(pytest 가 Settings 를 통째로
+    찍는 경우 포함)에 "**********" 로만 보인다. 실제 값이 필요한 호출 지점에서만 이걸로 꺼낸다.
+    테스트가 monkeypatch 로 평문 str 을 넣어도 동작한다."""
+    if isinstance(value, SecretStr):
+        return value.get_secret_value()
+    return value or ""
+
 
 settings = Settings()          # ⭐ 인스턴스 = 소문자
