@@ -23,6 +23,24 @@
 
 `[TODO: 흠집이 지워진 결과 / 로고가 뭉개진 결과 before-after 2장]`
 
+### 남들은 이 문제를 어떻게 푸나
+
+만들다 보니 궁금해졌다. 이거 나만 겪는 문제인가?
+
+**글자 쪽은 전혀 아니었다.** Photoroom 이 상품 850개로 최신 편집 모델(Nano Banana 2/Pro, GPT Image 2, FLUX.2 Klein)을
+돌려 본 벤치마크에서, 상품을 완전히 그대로 유지한 결과는 **최고 29%** 였다.
+실패 1위가 **로고·글자 왜곡(20.1%)** 이다 [1]. 바코드는 스캔이 안 되고, 성분표는 모델마다 지어낸다 [2].
+그래서 업계의 권장 흐름은 이렇다: **배경·조명·구도만 생성하고, 진짜 라벨은 합성하고, 원본과 비교해 검증한다** [2].
+아래 §2~§5 에서 이 글이 도착한 결론과 같다. 모델 자체를 파인튜닝해 고치는 연구도 있다 [3].
+
+**하자 쪽은 달랐다.** 중고 플랫폼 규정과 판매 가이드는 "얼룩·구멍·보풀은 지우지 마라"고 말한다 [4][5].
+하지만 전부 **사람에게** 하는 말이다. 생성 모델이 하자를 지우지 못하게 막고 확인하는 시스템은 찾지 못했다.
+"defect + diffusion" 으로 찾으면 공장 불량 검출용으로 하자를 **만들어 넣는** 반대 방향 연구만 나온다.
+이유는 짐작이 간다. 상용 서비스의 고객은 새 상품 카탈로그라 하자라는 개념이 없고,
+중고 앱의 보정 기능은 배경만 지워서 물건을 다시 그리지 않는다 — 문제를 **피한다**.
+
+그러니 이 글은 절반은 "모두가 부딪히는 벽"(글자)이고, 절반은 "참고할 정답이 없는 문제"(하자)다.
+
 ---
 
 ## 1. 먼저 구분한다: 하자인가, 인쇄인가
@@ -76,6 +94,7 @@ translate, fix, move, duplicate, or add any text: "OYSTER PERPETUAL DATEJUST" (m
 
 마지막 줄이 중요하다. 메달 안의 賞 을 별도 줄로 읽었더니 모델이 **한 번 더** 그렸다.
 그래서 글자마다 대략 위치(`top-left` 같은)를 같이 넣고, 같은 글자·같은 위치는 한 번만 넣는다.
+글자 편집 연구에서도 같은 현상을 "edit spillover"라고 부른다. 글자 하나를 고치라고 하면 **바꾸지 않을 글자 영역의 94%까지** 같이 변형된다 [6].
 
 읽기 프롬프트에도 규칙을 걸었다.
 
@@ -177,6 +196,7 @@ flowchart TD
 
 - **반려 사유를 넘긴다**: 같은 프롬프트로 다시 돌리면 같은 실수를 한다. "이전 시도에서 이 하자가 사라졌다: '왼쪽 소매 커피 얼룩'" 을 붙인다
 - **배경 교체 모드**가 최후의 보루다. 물건 픽셀을 다시 그리지 않으니 하자·글자 보존이 **구조적으로** 보장된다 (대신 조명·화질은 원본 그대로)
+  — 상품 사진 업계가 라벨을 생성하지 않고 합성하는 것과 같은 이유다 [2]
 - 아예 **생성 전에** 포기하기도 한다 (`plan`): 글자가 12줄 넘게 있는 물건(책 표지, 성분표)이나 하자 검출이 실패한 경우. 지킬 수 없는 걸 알면서 비용을 쓰지 않는다
 - UI 는 **무엇을 보여주는지** 정직하게 표시한다: 생성 / 합성(원본 물건) / 원본 / "검사하지 못했습니다"
 
@@ -223,3 +243,21 @@ flowchart TD
 4. **확인 못 한 것을 통과시키지 마라**
 
 `[TODO: 마무리 한 문단 — 왜 중고 거래에서 "예쁜 사진"보다 "믿을 수 있는 사진"인가]`
+
+---
+
+## 참고
+
+- [1] Photoroom, *How often do top editing image models maintain product details? Only 29% of the time*
+- [2] Lamina, *Can AI product photography generate ecommerce-ready images without changing logos and labels?* (Photoroom 벤치마크 정리 + 권장 흐름)
+- [3] Khanna et al., *ProductConsistency: Improving Product Identity Preservation in Instruction-Based Image Editing via SFT and RL*, arXiv 2606.19103
+- [4] Vintefy, *AI Photos on Vinted: What's Allowed* (2026-08)
+- [5] Snappyit, *How to Photograph Thrifted Clothes for Resale*
+- [6] *Edit Fidelity Field: Semantics-Aware Region Isolation for Training-Free Scene Text Editing*, arXiv 2604.17500
+
+[1]: https://www.photoroom.com/blog/top-editing-image-models-maintain-product-details-only-28-of-the-time
+[2]: https://uselamina.ai/blog/benchmark-can-ai-product-photography-generate-ecommerce-ready-images-without-changing-logos-labe
+[3]: https://arxiv.org/abs/2606.19103
+[4]: https://vintefy.com/en/news/2026/08/vinted-ai-photos
+[5]: https://snappyit.ai/blog/how-to-photograph-thrifted-clothes-for-resale
+[6]: https://arxiv.org/pdf/2604.17500
