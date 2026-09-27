@@ -198,8 +198,8 @@ function rsFilterSort(items) {
     const ins = it.inspect || {};
     if (f === 'gate_fail') return ins.gate_passed === false;
     if (f === 'gate_pass') return ins.gate_passed === true;
-    if (f === 'blocked') return ins.status === 'blocked';
     if (f === 'composite') return (ins.mode || 'generate') !== 'generate';
+    if (f === 'document' || f === 'inside_view') return ins.photo_type === f;
     if (f === 'mine_none') return !fbOf(it).user;
     if (f === 'mine_done') return !!fbOf(it).user;
     return true;
@@ -217,7 +217,6 @@ function rsFilterSort(items) {
 function rsSummary(items) {
   const ins = items.map(it => it.inspect || {});
   const passed = ins.filter(i => i.gate_passed === true).length;
-  const blocked = ins.filter(i => i.status === 'blocked').length;
   const avg = arr => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null);
   const mine = items.map(it => fbOf(it).user?.rating).filter(isNum);
   const agent = items.map(it => fbOf(it).agent?.rating).filter(isNum);
@@ -227,7 +226,6 @@ function rsSummary(items) {
   return [
     chip(`총 ${items.length}장`),
     chip(`게이트 통과 ${passed}/${items.length}`, items.length ? passed === items.length : null),
-    chip(`차단 ${blocked}`, blocked ? false : null),
     chip(`배경 교체 ${ins.filter(i => i.mode === 'composite').length}`),
     chip(`내 피드백 ${mine.length}/${items.length}`),
     chip(`내 평균 ★${fmt(avg(mine), 1)}`),
@@ -246,8 +244,11 @@ function rsCard(it, idx) {
   const chips = [
     chip(ins.item || 'item ?'),
     chip(`게이트 ${ins.gate_passed == null ? '-' : ins.gate_passed ? '통과' : '실패'} (${kept}/${checks.length})`, ins.gate_passed),
-    ins.status === 'blocked' ? chip('가드 차단', false) : '',
-    ins.mode === 'composite' ? chip('배경 교체 모드 (원본 물건 픽셀)') : '',
+    ins.photo_type ? chip(`종류 ${ins.photo_type}`) : '',
+    ins.wear_level ? chip(`하자 ${ins.wear_level}`, ins.wear_level === 'heavy' ? false : null) : '',
+    ins.watermark && ins.watermark !== 'none' ? chip(`워터마크 ${ins.watermark}`) : '',
+    ins.mode === 'composite' ? chip(`배경 교체 (${ins.composite_reason || '?'})`) : '',
+    ins.mode === 'original' ? chip(`원본 그대로 (${ins.composite_reason || '?'})`) : '',
     ins.mode === 'composite_failed' ? chip('배경 교체 실패', false) : '',
     ins.gate_retried ? chip('게이트 재생성 1회') : '',
     j ? chip(`F/R/T ${j.fidelity}/${j.realism}/${j.trust}`, j.fidelity >= 4) : chip('judge 없음'),

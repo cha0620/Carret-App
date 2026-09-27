@@ -20,7 +20,7 @@ Carret은 대충 찍은 중고 물품 사진을 깔끔한 스튜디오 스타일
 | **문제** | 생성형 편집 모델은 배경만 바꿔 달라고 해도 흠집을 "고쳐" 버린다. 중고 거래에서는 이게 곧 허위 매물이다 |
 | **해결** | 생성 전에 사진을 분석해 하자가 많거나 글자를 못 지킬 물건은 원본 물건 픽셀에 배경만 바꾸고, 생성한 결과는 VLM 체크리스트로 로고·글자가 그대로인지 검증한다 |
 | **스택** | FastAPI · LangGraph · fal.ai (FLUX edit) · Gemini (VLM) · DINOv2 · SQLite · S3 · Langfuse · Vanilla JS |
-| **품질** | 유닛 테스트 1476개 (외부 API 호출 없음, CI에서 PR마다 실행) + 실제 API를 호출하는 평가 스위트 (main 브랜치/라벨로 실행) |
+| **품질** | 유닛 테스트 1680개 (외부 API 호출 없음, CI에서 PR마다 실행) + 실제 API를 호출하는 평가 스위트 (main 브랜치/라벨로 실행) |
 
 ---
 
@@ -31,41 +31,49 @@ Carret은 대충 찍은 중고 물품 사진을 깔끔한 스튜디오 스타일
 
 ```mermaid
 flowchart TD
-  L["load<br/>원본 + 프리셋"] --> A["analyze (VLM 1회)<br/>물건 · 로고/글자 마크 · 물건 위치<br/>사진 유형 · 하자 수준 · 워터마크 · 글자 수준<br/>(2회 시도, 실패 시 detect_failed)"]
-  A --> P{"plan<br/>생성해도 되나?"}
-  P -->|"물건 일부·내부<br/>(partial_view)"| O["keep_original<br/>원본 그대로"]
-  P -->|"분석 실패 /<br/>글자 dense / 하자 heavy"| X
-  P -->|"글자 simple"| T["read_text<br/>물건 위 글자 (TEXT_LOCK)<br/>12줄 이상이면 배경 교체"]
+  L["load<br/>원본 + 프리셋"] --> A["analyze · VLM 1회<br/>물건 · 로고/글자 마크 · 물건 위치<br/>사진 종류 · 하자 수준 · 워터마크 · 글자 수준<br/>(2회 시도, 실패 시 detect_failed)"]
+  A --> P{"plan<br/>사진 종류로 먼저 나눈다"}
+
+  P -->|"inside_view<br/>엔진룸 · 뜯은 노트북"| O["keep_original<br/>원본 그대로"]
+  P -->|"document<br/>책 · 음반 · 보증서"| X
+  P -->|"분석 실패 ·<br/>product 인데 글자 dense · 하자 heavy"| X
+  P -->|"product · 글자 simple"| T["read_text<br/>물건 위 글자 → TEXT_LOCK"]
+  P -->|"product · 글자 none"| G
+  T -->|"12줄 이상"| X
   T --> G
-  T -->|text_heavy| X
-  P -->|"글자 none"| G["generate · fal.ai FLUX.2<br/>프리셋 + SECONDHAND_LOCK<br/>+ 원본 글자 목록<br/>(+ 반려 사유 / 바뀐 마크)"]
-  G --> V{"validate_result<br/>구도 잘림·자막 검사<br/>→ 누끼 DINO·패치 비교 (soft)<br/>(OCR 글자 가드는 OCR_GUARD=true 일 때만)"}
-  V -->|"가드 실패 1회차<br/>seed 바꿔 재시도"| G
-  V -->|"구도 불량<br/>재생성 한도 남음"| G
-  V -->|"가드 2회 실패"| X
-  V -->|ok| S["score_similarity<br/>DINOv2 코사인 (가드 값 재사용)"]
-  S --> VR{"verify<br/>로고·마크·주요 글자 보존 + box_2d 좌표<br/>답 수 &lt; 요청 수면 실패"}
-  VR -->|"통과<br/>(또는 합성본)"| I
-  VR -->|"실패 1회차"| R["mark_gate_retry<br/>바뀐 마크를 프롬프트에"]
-  R --> G
-  VR -->|"호출 2회 실패<br/>(verify_failed)"| X
-  VR -->|"실패 2회차"| X["composite · 배경 교체 모드<br/>fal BiRefNet 오리기<br/>(실패 시 로컬 rembg)<br/>+ 프리셋 배경 + 그림자"]
-  X -->|"성공 → 다시 확인"| S
-  X -->|"오리기 실패, 생성 전<br/>(하자 heavy 면 원본 그대로)"| G
-  X -->|"오리기 실패: 생성본 유지<br/>(가드 불합격이면 blocked = 원본)"| I
+
+  subgraph GEN["생성 경로"]
+    G["generate · FLUX.2<br/>프리셋 + SECONDHAND_LOCK<br/>+ 원본 글자 (+ 반려 사유 · 바뀐 마크)"] --> V{"validate_result<br/>구도 잘림 · 자막 검사<br/>+ DINO · 누끼 · 패치 (관측만)"}
+    V -->|"구도 불량 · 한도 남음"| G
+    R["mark_gate_retry<br/>바뀐 마크를 프롬프트에"] --> G
+  end
+
+  V -->|ok| S["score_similarity<br/>DINOv2"]
+  S --> VR{"verify<br/>로고 · 주요 글자 보존?<br/>(생성본만 — 배경 교체본은 바로 통과)"}
+  VR -->|"실패 1회차"| R
+  VR -->|"실패 2회차 · 호출 실패 · 분석 실패"| X["composite · 배경 교체<br/>원본 물건 오리기 + 프리셋 배경<br/>document 는 표지를 정면으로 펴기<br/>(하자 heavy 문서는 펴지 않음)"]
+  VR -->|"통과 · 배경 교체본"| I
+  X -->|성공| S
+  X -->|"오리기 실패 · 생성 전<br/>document · 하자 heavy → 원본 그대로"| I
+  X -->|"오리기 실패 · 생성 전<br/>글자 아직 안 읽음"| T
+  X -->|"오리기 실패 · 생성 전<br/>그 밖"| G
+  X -->|"오리기 실패 · 생성 뒤<br/>생성본 유지"| I
   O --> I
-  I["save_inspect<br/>디버그 JSON (mode, composite_reason, 분석 값)"] --> F["finalize<br/>말풍선"]
-  F -.->|"응답 뒤<br/>(백그라운드)"| J["judge_and_save<br/>fidelity · realism · trust"]
+
+  I["save_inspect<br/>경로 · 이유 · 분석 값"] --> F["finalize<br/>말풍선"]
+  F -.->|"그래프 뒤: DB 기록 ·<br/>응답 뒤 채점 (원본 그대로면 안 함)"| J["judge_and_save<br/>fidelity · realism · trust"]
 ```
 
 1. **analyze** (VLM 1회, 2026-09-27 에 classify + detect 를 합침): 원본에서 물건 종류,
    **물건의 정체를 이루는 마크**(로고·인쇄 글자·그래픽 — 하자는 목록으로 뽑지 않는다), 물건 위치,
-   사진 유형(`scene`: 물건 하나 / 물건 일부·내부 / 여러 개), 하자 수준(`wear_level`: none / light / heavy),
+   사진 종류(`photo_type`: document 책·음반·보증서 / inside_view 물건 일부·내부 / product 상품), 하자 수준(`wear_level`: none / light / heavy),
    워터마크(`watermark`: 없음 / 배경만 / 물건 위), 글자 수준(`text_level`: none / simple / dense)을 받는다.
    `dense`는 잔글씨가 많거나 **물건의 주요 글자를 원본에서도 그대로 옮겨 적을 수 없는** 경우다
    (목 라벨·번호판 같은 작은 글자는 세지 않는다). 2회 모두 실패하면 `detect_failed`
-2. **plan**: 사진이 물건 일부·내부(엔진룸 등)면 생성도 오리기도 하지 않고 **원본 그대로** 둔다
-   (`mode: original`). 분석 실패·글자 `dense`·하자 `heavy`면 생성을 건너뛰고 바로 배경 교체 모드로 —
+2. **plan**: 사진 종류로 먼저 나눈다. 물건 일부·내부(엔진룸·케이스를 뜯은 노트북 회로)면 생성도 오리기도 하지 않고
+   **원본 그대로** 둔다 (`mode: original`). 책·음반·보증서처럼 글자가 곧 물건이면 생성하지 않고
+   **표지 네 모서리를 찾아 정면으로 편 뒤** 배경 위에 놓는다 (`compose_flat`, 못 펴면 일반 배경 교체).
+   분석이 실패했거나, 상품 사진인데 글자 `dense`·하자 `heavy`면 생성을 건너뛰고 바로 배경 교체 모드로 —
    하자를 목록으로 뽑아 "지켜라"고 하면 생성 모델이 하자를 지우거나 **지어냈다**(09-27 실험).
    하자가 넓은 물건은 원본 픽셀을 쓰는 배경 교체만 상태를 그대로 보여준다.
    하자가 없거나 적으면(none / light) 생성한다. 글자가 없으면(`none`) 글자 읽기 없이 바로 생성
@@ -76,11 +84,10 @@ flowchart TD
 5. **generate**: 프리셋(화이트 스튜디오 / 우든 테이블 / 미니멀 그레이)으로
    배경을 교체한다. 모든 프롬프트에 `SECONDHAND_LOCK`(복원·보정 금지)이
    붙는다
-6. **validate_result**: 구도 검사(check_photo)와 출력 가드. OCR 글자 가드(결과 글자를 다시 읽어
-   원본과 비교, hard)는 **기본으로 꺼져 있다** (`OCR_GUARD=true`로 켬) — 폰 사진 6장에서 반려의 대부분이
-   읽기 흔들림("H.M"/"H-M", "00 3060"을 두 줄로 읽기)이라 멀쩡한 생성본을 버렸다. 켜면 hard 실패는
-   seed 를 바꿔 1회 재시도, 그래도 실패면 배경 교체 모드로. 비교는 띄어쓰기·구두점·대소문자를 무시한다.
-   가드를 통과하면 check_photo를 기다리는 동안 원본·결과에서 **물건만 누끼를 따서** 같은 회색 배경에 놓고 DINOv2로 비교한다
+6. **validate_result**: 구도 검사(check_photo)와 관측용 신호. 결과를 막는(hard) 가드는 없다 —
+   결과 글자를 VLM 으로 다시 읽어 원본과 비교하던 OCR 글자 가드는 폰 사진 6장에서 반려의 대부분이
+   읽기 흔들림("H.M"/"H-M", "00 3060"을 두 줄로 읽기)이라 멀쩡한 생성본을 버려서 **없앴다** (09-27).
+   글자는 생성 전 `TEXT_LOCK` 과 verify 의 주요 글자 확인이 맡는다. check_photo를 기다리는 동안 원본·결과에서 **물건만 누끼를 따서** 같은 회색 배경에 놓고 DINOv2로 비교한다
    (`item_dino`, soft — 물건이 통째로 바뀌거나 형태·색·무늬가 달라진 것을 잡는다).
    같은 누끼 쌍을 ECC 로 정렬한 뒤 DINO **패치** 단위로도 비교한다 (`item_patch`, soft —
    물건 안쪽 패치의 하위 1%, 흠집 한 줄처럼 한 군데만 바뀐 것을 보려는 값).
@@ -94,7 +101,8 @@ flowchart TD
    (하자 수준은 analyze → plan 에서만 본다). 좌표는 Gemini가 학습된 형식인
    `box_2d [ymin, xmin, ymax, xmax]`로 받고, VLM이 확인을 요청한 항목보다
    적게 답하면(빈 응답 포함) 게이트를 실패로 본다. verify **호출 자체**가 2회 모두
-   실패하면 "통과"가 아니라 `verify_failed`로 표시하고 바로 배경 교체 모드로 간다
+   실패하면 "통과"가 아니라 `verify_failed`로 표시하고 바로 배경 교체 모드로 간다.
+   **생성본에만** 부른다 — 배경 교체본은 물건 픽셀이 원본이라 확인할 게 없다
 9. **게이트 실패 폴백**: verify 게이트가 실패하면 바뀐 마크 목록을 프롬프트에 붙여
    1회 재생성하고, 그래도 실패하면 **배경 교체 모드**로 넘어간다. 원본 물건을 오려
    (fal BiRefNet, 실패하면 로컬 rembg) 프리셋 배경 위에 합성하므로 물건 픽셀은 원본
@@ -174,7 +182,7 @@ study/      날짜별 개발 로그: 버그 원인, 설계 판단, 뒤집은 결
 
 - 🔒 **정직성 우선 프롬프트**: 모든 프리셋에 `SECONDHAND_LOCK`이 붙어서
   복원·보정을 막는다
-- 🔎 **생성 전 분석**: 사진 유형·하자 수준·글자 수준·워터마크를 먼저 보고, 생성해도 되는 사진만 생성한다
+- 🔎 **생성 전 분석**: 사진 종류·하자 수준·글자 수준·워터마크를 먼저 보고, 생성해도 되는 사진만 생성한다
 - 🛡️ **마크 게이트 (verify)**: 원본의 로고·글자를 결과에서 체크리스트로 다시 검증한다
 - 🔁 **이유를 넘기는 재생성**: 구도 잘림이나 자막 때문에 반려되면 그 사유를
   다음 프롬프트에 넣고, 재시도 횟수에 상한을 둔다
@@ -230,7 +238,7 @@ Langfuse로 트레이싱과 프롬프트 버전을 관리하고, 외부 의존�
 
 **5. 테스트 가능한 구조**
 외부 호출은 `services/ai/`에만 모여 있어서 목(mock)으로 갈아 끼우기 쉽습니다.
-그래서 유닛 테스트 1476개가 네트워크 없이 약 25초 안에 끝납니다
+그래서 유닛 테스트 1680개가 네트워크 없이 약 25초 안에 끝납니다
 (`unit/conftest.py`가 실수로 실제 VLM을 부르는 것도 막습니다). dev 리플레이
 (`run_transform_with_result`)는 생성 단계만 건너뛰고 **프로덕션 노드 함수를
 그대로 호출**합니다. 로직을 복사해 두지 않았기 때문에 테스트와 실제 동작이
@@ -263,7 +271,6 @@ uvicorn main:app --reload   # http://localhost:8000 (프론트 포함)
 | `VLM_THINKING` | 호출별 생각 수준 덮어쓰기, 예: `{"verify": "default", "judge": "low"}` (정수 = 생각 토큰 상한) |
 | `VLM_MEDIA_RESOLUTION` | 호출별 이미지 해상도 덮어쓰기 (`low`/`medium`/`high`/`default`), 예: `{"check_photo": "high"}`. 이미지 토큰은 픽셀 크기가 아니라 이 등급으로 정해진다 |
 | `VLM_MODELS` | 호출별 모델 덮어쓰기 (없으면 `VLM_MODEL`), 예: `{"classify": "gemini-3.5-flash-lite"}` |
-| `OCR_GUARD=true` | 결과 글자를 다시 읽어 원본과 비교하는 hard 가드 (기본 끔, 켜면 생성 1회당 VLM 1회 추가) |
 | `LOCAL_OCR_GUARD=true` | EasyOCR 로 글자 보존을 한 번 더 재는 soft 가드 (eval 용, easyocr 별도 설치) |
 
 ### 테스트
@@ -366,8 +373,13 @@ make docs    # 레포의 .md 를 브라우저로 보기 (http://localhost:8090, 
   수준을 먼저 보고, 물건 일부·내부 사진은 원본 그대로, 하자가 많거나 주요 글자를 못 읽는 물건은 배경 교체
 - **하자 앵커 제거**: 하자를 목록으로 뽑아 지키게 하면 생성 모델이 녹·긁힘을 **지어냈다**(승용차·Braun).
   verify 는 로고·글자만 확인
-- **OCR 글자 가드 기본 끔** (`OCR_GUARD`): 반려의 대부분이 읽기 흔들림. 비교는 띄어쓰기·구두점·대소문자 무시로
+- **OCR 글자 가드 제거**: 반려의 대부분이 읽기 흔들림. 그것 때문에 있던 seed 재시도·blocked 경로도 없앴다
 - 폰 사진 6장: 5장 첫 시도에 생성 통과, 엔진룸은 원본 그대로 (예전: 4장이 글자 가드에 걸려 배경 교체)
+- **사진 종류 셋으로 시작** (`photo_type`): document(책·음반·보증서 — 글자가 곧 물건) / inside_view(엔진룸·
+  뜯은 노트북 — 원본 그대로) / product(생성 경로). 스펙·상태 글자(용량·주행거리)는 판매 정보로 따로 받는다
+- **책 표지 펴기** (`compose_flat`): document 는 생성하지 않고 표지 네 모서리를 찾아 정면으로 편 뒤 배경에 놓는다
+  (원본 픽셀 — 제목이 바뀌지 않는다). 하자 heavy 문서는 펴지 않는다
+- **배경 교체본은 verify 생략** (물건 픽셀이 원본 — VLM 1회 절약), DB `results` 에 경로(mode·이유·사진 종류·하자) 기록
 
 **2026-09-26 (밤)**
 - **기본 VLM 모델 3.5-flash → 3.8-flash**: 진짜 하자 사진 19장에서 진짜 하자는 3.5 만큼 찾고,
@@ -419,10 +431,10 @@ make docs    # 레포의 .md 를 브라우저로 보기 (http://localhost:8090, 
 - [x] 출력 가드(`guards.py`)를 `validate_result`에 연결
 - [x] 말풍선 좌표 전치 수정 (`box_2d`) + verify 게이트 강화
 - [x] VLM 생각 토큰 제어 (호출별 thinking 설정)
-- [x] OCR 가드 입력 연결 (`ocr_match` recall ≥ 0.95 = hard)
+- [x] ~~OCR 가드 입력 연결 (`ocr_match` recall ≥ 0.95 = hard)~~ 09-27 에 제거 (읽기 흔들림)
 - [x] 원본 글자를 생성 프롬프트에 넣기 (`TEXT_LOCK`, 기본 켬)
 - [x] detect / verify 호출 실패를 통과로 치지 않기 (`detect_failed`, `verify_failed`)
-- [x] 생성 전 분석(analyze): 사진 유형·하자 수준·워터마크·글자 수준으로 생성 여부 결정
+- [x] 생성 전 분석(analyze): 사진 종류·하자 수준·워터마크·글자 수준으로 생성 여부 결정
 - [ ] 하자가 적은 물건의 생성본에서 하자가 정돈되는 것을 잡을 방법 (지금은 judge 점수로만 관측)
 - [ ] 워터마크가 물건 위에 있는데 배경 교체로 가는 경우 처리 (지금은 기록만)
 - [ ] eval 로 임계값 검증: `text_heavy` 기준(12줄), composite 비율, analyze 분류 정확도

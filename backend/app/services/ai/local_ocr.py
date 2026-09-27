@@ -1,8 +1,8 @@
 """로컬 OCR (EasyOCR) — VLM 과 독립된 두 번째 글자 읽기. ocr_local 가드(soft) 전용.
 
-ocr_match(hard)는 같은 VLM 이 원본·결과를 두 번 읽어 비교해서, 읽기 흔들림(줄 쪼개기·순서)이
-그대로 점수에 섞인다. 여기는 결정론적 OCR 이라 같은 글자는 같게 읽는다 — 두 신호가 얼마나
-어긋나는지 모아 보고 어느 쪽을 믿을지 정한다 (settings.local_ocr_guard 로 켤 때만).
+VLM 으로 결과 글자를 다시 읽던 hard 가드(ocr_match)는 읽기 흔들림 때문에 09-27 에 없앴다.
+여기는 결정론적 OCR 이라 같은 글자는 같게 읽는다 — 글자 보존을 값으로 모으는 eval 용
+(settings.local_ocr_guard 로 켤 때만).
 
 scripts/run_text_check.py 의 _easyocr_lines 와 같은 읽기 (언어·신뢰도 기준).
 """

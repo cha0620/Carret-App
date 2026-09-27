@@ -2,19 +2,21 @@
 
 스테이지:
   0) load       : 원본 로드
-  1) analyze    : 물건·아이덴티티 마크(앵커)·사진 유형·하자 수준·워터마크·글자 수준·물건 위치
+  1) analyze    : 물건·아이덴티티 마크(앵커)·사진 종류·하자 수준·워터마크·글자 수준·물건 위치
                   (VLM 1회, 예전 classify + detect. 실패는 detect_failed)
-  1.5) plan     : 사진이 물건 일부·내부(partial_view)면 원본 그대로(keep_original),
-       생성해도 못 지킬 게 보이면(분석 실패·글자 dense·하자 heavy) 바로 배경 교체로,
-       글자가 있으면(simple) read_text(원본 글자 읽기) 뒤 생성, 없으면(none) 바로 생성
+  1.5) plan     : 사진 종류(photo_type) 셋으로 먼저 나눈다 —
+         document(책·음반·보증서처럼 글자가 곧 물건) → 표지를 펴서 배경 교체 (생성 안 함)
+         inside_view(엔진룸·뜯은 노트북 회로처럼 물건 일부·내부) → 원본 그대로
+         product → 생성해도 못 지킬 게 보이면(분석 실패·글자 dense·하자 heavy) 배경 교체,
+                   글자가 있으면(simple) read_text(원본 글자 읽기) 뒤 생성, 없으면(none) 바로 생성
   2) generate   : 배경 교체 (생성)
-  2.3) validate_result : ① 출력 가드(guards.py, OCR 글자 비교 포함) — hard fail 이면
-       seed 만 바꿔 1회 재시도, 그래도 fail 이면 배경 교체(composite), 그것도 실패면
-       status="blocked"(원본을 내보냄). ② 구도/자막 검사 — invalid면
-       max_generate_attempts 까지 재생성. ③ 판정 통과 뒤 물건 누끼 비교(item_dino, soft)
-       — ②를 기다리는 동안 별도 풀에서 돈다
+  2.3) validate_result : ① 구도/자막 검사 — invalid면 max_generate_attempts 까지 재생성.
+       ② 관측용(soft) 신호: 이미지 전체 DINO(dino_band), 물건 누끼 비교(item_dino·item_patch)
+       — ①을 기다리는 동안 별도 풀에서 돈다. 결과를 막는(hard) 가드는 없다 — VLM 글자 비교
+       가드는 읽기 흔들림 오반려가 많아 09-27 에 없앴고, 글자는 TEXT_LOCK + verify 가 맡는다
   2.5) score_similarity : 원본 vs 결과 DINOv2 코사인 유사도 (가드 값 재사용)
-  3) verify     : 결과 → 아이덴티티 마크·글자 보존 여부 + 좌표. 실패 → 1회 재생성 → composite
+  3) verify     : 생성본 → 아이덴티티 마크·글자 보존 여부 + 좌표. 실패 → 1회 재생성 → composite
+                  (배경 교체·원본 그대로는 물건 픽셀이 원본이라 부르지 않는다)
                   (하자는 목록으로 확인하지 않는다 — 수준(wear_level)으로 plan 에서만 본다)
   4) finalize   : bubbles + 로깅
   (그래프 밖) judge_and_save : 품질 성적표 — 그래프가 끝난 뒤 한 곳에서만 채점.
@@ -25,7 +27,6 @@
 import contextvars
 import json
 import logging
-import random
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -56,7 +57,7 @@ class State(TypedDict, total=False):
     item: str                 # ⭐ analyze 산출
     considered: list          # ⭐ analyze 산출 (verify 체크리스트 힌트)
     anchors: list              # 아이덴티티 마크 (category="print") — verify 대상
-    scene: str | None          # analyze: single_item | partial_view | multiple_items (실패면 None)
+    photo_type: str | None     # analyze: document | inside_view | product (실패면 None)
     wear_level: str | None     # analyze: none | light | heavy (실패면 None)
     watermark: str | None      # analyze: none | background | on_item (관측만 — 합성 모드는 물건 위 워터마크를 못 지운다)
     detect_failed: bool        # analyze 가 재시도까지 실패 — "지킬 것 없음"과 구분 (검증 불가). 이름은 예전 detect 호환
@@ -67,25 +68,22 @@ class State(TypedDict, total=False):
     gate_retried: bool         # verify 게이트 실패로 재생성을 이미 1회 했나
     gate_note: str             # 그 재생성 때 프롬프트에 붙인 "사라진 하자" 목록
     mode: str                  # "generate" | "composite"(원본 물건 + 배경만 교체) | "composite_failed"
-                               #   | "original"(물건 일부·내부 사진 — 원본 그대로)
-    composite_reason: str | None   # 생성하지 않은 이유: detect_failed | partial_view | text_dense | text_heavy
-                                   #   | wear_heavy | guard_failed | gate_failed | verify_failed
-    guard_failed: bool         # 출력 가드가 seed 재시도까지 hard fail
+                               #   | "original"(원본 그대로 — inside_view 등)
+    composite_reason: str | None   # 생성하지 않은 이유: detect_failed | inside_view | document | text_dense
+                                   #   | text_heavy | wear_heavy | gate_failed | verify_failed
     provided_result: bytes     # dev 그래프: generate 대신 쓸 결과 이미지
     composite_error: str | None
     result: bytes
     result_name: str
     gen_attempts: int          # ⭐ generate 시도 횟수 (재생성 게이트용)
     photo_check: dict          # ⭐ {"valid": bool, "reason": str} - 구도/자막 검사
-    guard_seed: int | None     # 출력 가드 재시도에 쓴 seed (None = 재시도 안 함 = 기회 남음)
-    guard_retry: bool          # validate_result → generate: 이번 generate 가 가드 재시도
-    status: str                # "pass" | "blocked"
-    guard_report: list         # 실패한 가드 목록 (hard/soft) - asdict(GuardResult)
+    guard_report: list         # 기준 밖인 관측 신호 목록 (전부 soft) - asdict(GuardResult)
     visual_similarity: float | None   # ⭐ DINOv2 코사인 유사도 (이미지 전체)
     item_similarity: float | None     # 누끼 딴 물건끼리의 DINOv2 유사도 (item_dino 가드)
     item_patch_similarity: float | None   # 같은 누끼 쌍의 DINO 패치 하위 1% (item_patch 가드)
     ocr_local_recall: float | None    # 로컬 OCR 글자 recall (ocr_local 가드, 설정으로 켤 때만)
     checks: list
+    gate_checks: list          # 배경 교체로 가기 전 생성본 게이트의 checks (무엇이 사라졌나 — 기록용)
     gate_passed: bool | None
     bubbles: list
     prompt_used: str
@@ -149,7 +147,7 @@ def analyze(s: State) -> dict:
             if attempt < ANALYZE_ATTEMPTS:
                 time.sleep(DETECT_RETRY_DELAY_S)
     return {"item": "object", "considered": [], "anchors": [], "detect_failed": True,
-            "text_level": None, "scene": None, "wear_level": None, "watermark": None}
+            "text_level": None, "photo_type": None, "wear_level": None, "watermark": None}
 
 
 def _result_name(s: State) -> str:
@@ -159,13 +157,17 @@ def _result_name(s: State) -> str:
 def _composite_first_reason(s: State) -> str | None:
     """생성 전에 이미 "생성하면 못 지킨다"가 보이는 경우 — FLUX·재생성·verify 비용을
     쓰지 않고 바로 원본 픽셀을 쓰는 배경 교체로 보낸다.
-    partial_view 는 배경 교체도 하지 않는다 — plan 이 원본 그대로(keep_original)로 보낸다."""
+    inside_view 는 배경 교체도 하지 않는다 — plan 이 원본 그대로(keep_original)로 보낸다."""
     if s.get("detect_failed"):
         return "detect_failed"     # 생성해도 확인할 기준(원본 마크 목록)이 없다
-    if s.get("scene") == "partial_view":
-        # 엔진룸·내부처럼 물건 일부만 찍힌 사진 — 생성은 없는 차체를 지어내고(09-27 굴삭기),
+    if s.get("photo_type") == "inside_view":
+        # 엔진룸·뜯은 노트북처럼 물건 일부·내부만 찍힌 사진 — 생성은 없는 차체를 지어내고(09-27 굴삭기),
         # 오리기는 경계가 없어 엉뚱하게 잘린다. 배경을 바꿀 대상이 아니다
-        return "partial_view"
+        return "inside_view"
+    if s.get("photo_type") == "document":
+        # 책·음반·보증서 — 글자·표지가 곧 물건이다. 스펙·상태 글자(용량·주행거리)는 판매 정보로
+        # 따로 받으면 되지만 제목·문서 내용은 대신할 곳이 없고, 한 글자만 바뀌어도 다른 물건이 된다 (09-27)
+        return "document"
     if s.get("text_level") == "dense":
         return "text_dense"        # 잔글씨·라벨·눈금·원본에서도 못 읽는 글자 — 생성 모델이 뭉갠다 (글자 읽기도 생략)
     if s.get("wear_level") == "heavy":
@@ -196,10 +198,10 @@ def _needs_text(s: State) -> bool:
 
 
 def _route_after_plan(s: State) -> str:
-    """원본 그대로(partial_view) | 배경 교체 | 글자 읽기 후 생성 | 바로 생성 (글자 없음).
+    """원본 그대로(inside_view) | 배경 교체 | 글자 읽기 후 생성 | 바로 생성 (글자 없음).
     오리기마저 실패하면 composite 가 mode 를 generate 로 되돌려 그때 생성한다 — dense 로
     갔다가 돌아온 경우는 _route_after_composite 가 read_text 를 거치게 한다."""
-    if s.get("composite_reason") == "partial_view":
+    if s.get("composite_reason") == "inside_view":
         return "keep_original"
     if s.get("composite_reason"):
         return "composite"
@@ -222,8 +224,6 @@ def generate(s: State) -> dict:
     if s.get("gate_note"):
         preset = {**preset, "prompt": preset["prompt"] + s["gate_note"]}
     prior_check = s.get("photo_check")
-    # 가드 재시도는 "동일 파라미터 + seed 만 변경" — prior_check 가 그대로라
-    # 아래 반려 사유 문구도 직전 시도와 똑같이 붙는다.
     if prior_check and not prior_check.get("valid", True):
         # 재시도 — 직전 반려 사유를 프롬프트에 붙여서 "맹목적" 재시도가 되지
         # 않게 한다 (같은 프롬프트를 그대로 다시 던지면 같은 결함이 반복되기 쉬움).
@@ -232,23 +232,15 @@ def generate(s: State) -> dict:
             f"\n\nIMPORTANT: a previous attempt was rejected for this reason: "
             f"\"{note}\". Show the FULL item in frame (no cropping/zoom) and do "
             f"NOT add any caption, subtitle, watermark, or overlaid text.")}
-    # seed 는 가드 재시도 그 1회에만 쓴다 — 이후 photo_check 재생성까지 같은
-    # seed 로 고정되면 변주가 줄어 같은 잘림이 반복되기 쉽다.
-    guard_retry = s.get("guard_retry", False)
-    gen = (_generate_ai(s["original"], preset, seed=s["guard_seed"]) if guard_retry
-           else _generate_ai(s["original"], preset))
+    gen = _generate_ai(s["original"], preset)
     result_name = _result_name(s)
-    # 저장은 validate_result 가 가드 통과 후에 한다 — 여기서 저장하면 가드 전
-    # 이미지가 /storage/result/ 의 예측 가능한 URL 에 노출된다 (재시도 중이거나
-    # 가드/재시도 호출이 예외로 끝난 경우 그대로 남음).
+    # 저장은 validate_result 가 한다 — 검사 도중 예외로 끝난 이미지가 /storage/result/ 의
+    # 예측 가능한 URL 에 남지 않게.
     return {
         "result": gen,
         "result_name": result_name,
         "prompt_used": preset["prompt"],
-        # 가드 재시도는 photo_check 재생성 예산(max_generate_attempts)과 별개의
-        # 1회 — 카운트하지 않아야 서로의 예산을 잡아먹지 않는다.
-        "gen_attempts": s.get("gen_attempts", 0) + (0 if guard_retry else 1),
-        "guard_retry": False,
+        "gen_attempts": s.get("gen_attempts", 0) + 1,
         "visual_similarity": None,   # 새 이미지 — 이전 결과 기준 값은 무효
         "item_similarity": None,
         "item_patch_similarity": None,
@@ -268,39 +260,13 @@ def _item_pair(s: State) -> tuple[bytes, bytes] | None:
         return None
 
 
-def _ocr_pair(s: State) -> tuple[list, list, list]:
-    """OCR 가드 입력 (원본 글자, 결과 글자, 추가 가드 결과).
-
-    원본 글자는 read_text 가 이미 읽어 둔 것 중 _key_texts 로 고른 것, 결과 글자는
-    같은 함수로 결과 이미지를 한 번 더 읽은 전부 (생성 1회당 VLM 1회). 원본에 글자가 없으면(또는
-    TEXT_LOCK 꺼짐) 읽지 않는다 — 빈 목록끼리는 통과.
-    결과 읽기 실패는 fail-open 하지 않는다 (guards.py 원칙: 최소선을 못 재면 통과 아님)."""
-    # verify 와 같은 기준으로 고른 글자만 비교 — 잔글씨·잘린 문장까지 넣으면 두 번의
-    # VLM 읽기 오차만으로 recall 이 떨어져 hard fail(오차단)이 난다.
-    if not settings.ocr_guard:
-        return [], [], []   # 꺼짐(기본) — 결과를 다시 읽지 않는다 (VLM 호출 없음)
-    before = [text for text, _ in _key_texts(s.get("item_texts"))]
-    if not before:
-        return [], [], []
-    try:
-        out = detector.read_item_text(s["result"], s.get("item", "object"), strict=True)
-    except Exception as e:
-        print(f"[guards] 결과 글자 읽기 실패 → hard fail: {e}")
-        return [], [], [guards.GuardResult(name="ocr_read_failed", passed=False,
-                                           value=0.0, threshold=1.0, severity="hard")]
-    return before, [t["text"] for t in out["texts"]], []
-
-
-def _run_guards(s: State) -> tuple[str, list, float | None]:
-    """(판정, 실패한 가드 목록, DINOv2 유사도). 가드 계산 예외는 삼키지 않는다
-    (guards.py 설계: 최소선 gate 가 fail-open 되면 안 됨).
-    유사도는 dino_band 가드가 이미 계산한 값 — score_similarity 가 다시 안 돌게 넘긴다."""
-    before, after, extra = _ocr_pair(s)
-    results = guards.run_output_guards(s["original"], s["result"], before, after,
-                                       ocr=settings.ocr_guard) + extra
-    verdict, _ = guards.decide(results)
-    dino = next((g.value for g in results if g.name == "dino_band"), None)
-    return verdict, [asdict(g) for g in results if not g.passed], dino
+def _dino_band(s: State) -> tuple[list, float | None]:
+    """이미지 전체 DINO (dino_band, soft) → (기준 밖이면 기록, 유사도). 유사도는
+    score_similarity 가 다시 계산하지 않게 넘긴다."""
+    g = guards.dino_band_guard(s["original"], s["result"])
+    if g is None:
+        return [], None
+    return ([] if g.passed else [asdict(g)]), g.value
 
 
 def _item_signals(s: State) -> tuple:
@@ -329,8 +295,8 @@ def _item_check(fut, deadline: float) -> tuple[list, float | None, float | None]
 
 def _local_ocr_lines(s: State) -> tuple[list[str], list[str]]:
     """ocr_local 가드 입력 — 원본은 물건 영역(item_box)만, 결과는 전체 (생성본의 물건 위치는
-    원본과 다르고, 프리셋 배경엔 글자가 없다). EasyOCR 조각(단어 단위) 목록이라 ocr_match 의
-    VLM 줄 목록과 단위가 다르다 — 두 값은 절대값이 아니라 같이 움직이는지를 본다."""
+    원본과 다르고, 프리셋 배경엔 글자가 없다). EasyOCR 조각(단어 단위) 목록이라 read_text(VLM)의
+    줄 목록과 단위가 다르다 — 관측용 값이다."""
     from app.services.ai import local_ocr
     return (local_ocr.read_original(s["original"], s.get("item_box")),
             local_ocr.read_lines(s["result"]))
@@ -374,41 +340,18 @@ def _in_background(fn, *args, pool=None):
 
 
 def validate_result(s: State) -> dict:
-    """① 출력 가드 → ② 결과가 '제대로 된 사진'인지 VLM 으로 확인 (구도가
-    잘렸거나 자막/텍스트가 상품을 가리면 invalid). 라우팅(_route_after_validate)이
-    이 결과를 보고 generate 로 되돌릴지 결정한다.
-
-    ②(check_photo)는 ①의 OCR 읽기와 서로 독립이라 동시에 시작한다 — 생성 1회당 VLM
-    왕복 1회 절약. 대신 가드가 막은 시도에서도 ②가 호출되고 결과는 버려진다
-    (아직 시작 전이면 취소)."""
+    """결과가 '제대로 된 사진'인지 VLM 으로 확인 (구도가 잘렸거나 자막/텍스트가 상품을 가리면
+    invalid) — 라우팅(_route_after_validate)이 보고 generate 로 되돌릴지 정한다.
+    기다리는 동안 관측 신호(dino_band, 누끼 비교, 켜져 있으면 로컬 OCR)를 같이 잰다 — 전부 soft 라
+    결과를 막지 않는다."""
     photo = _in_background(detector.check_photo, s["result"])   # 스스로 예외를 삼킨다
-    try:
-        verdict, report, dino = _run_guards(s)
-    except BaseException:
-        photo.cancel()
-        raise
-    if verdict == "block":
-        photo.cancel()
-        if s.get("guard_seed") is None:
-            seed = random.randint(0, 2**32 - 1)
-            print(f"[guards] hard fail, seed={seed} 로 1회 재시도: "
-                  f"{[g['name'] for g in report]}")
-            return {"guard_retry": True, "guard_seed": seed,
-                    "guard_report": report}
-        # 재시도도 fail → 생성본은 내보내지 않는다. 원본 물건 픽셀을 쓰는 배경 교체로
-        # 보내고, 그마저 실패하면 composite 가 원본 그대로(blocked)로 끝낸다.
-        print(f"[guards] 재시도도 hard fail → 배경 교체: {[g['name'] for g in report]}")
-        return {"guard_retry": False, "guard_failed": True,
-                "composite_reason": "guard_failed", "guard_report": report}
-
-    # ③ 판정이 통과한 뒤에만 누끼 비교 — 막힌 시도엔 오리기 비용을 안 쓰고, hard 판정이
-    # 누끼를 기다리지도 않는다. check_photo 를 기다리는 동안 같이 돈다.
     t0 = time.monotonic()
     item = _in_background(_item_signals, s, pool=_CUTOUT_POOL)
     # 로컬 OCR — 원본에 글자가 있을 때만 (없으면 비교할 게 없다)
     ocr = (_in_background(_local_ocr_lines, s, pool=_OCR_POOL)
            if settings.local_ocr_guard and s.get("item_texts") else None)
     try:
+        report, dino = _dino_band(s)
         storage.save("result", s["result_name"], s["result"])
     except BaseException:
         for f in (photo, item, ocr):
@@ -425,17 +368,12 @@ def validate_result(s: State) -> dict:
     item_fails, item_sim, patch_sim = _item_check(item, t0 + ITEM_WAIT_S)
     ocr_fail, ocr_recall = _local_ocr_check(ocr, t0 + LOCAL_OCR_WAIT_S)
     report = report + item_fails + ([ocr_fail] if ocr_fail else [])
-    return {"photo_check": check, "guard_retry": False, "status": "pass",
-            "guard_report": report, "visual_similarity": dino,
+    return {"photo_check": check, "guard_report": report, "visual_similarity": dino,
             "item_similarity": item_sim, "item_patch_similarity": patch_sim,
             "ocr_local_recall": ocr_recall}
 
 
 def _route_after_validate(s: State) -> str:
-    if s.get("guard_retry"):
-        return "retry"
-    if s.get("guard_failed"):
-        return "composite"
     check = s.get("photo_check") or {"valid": True}
     if check.get("valid", True):
         return "ok"
@@ -450,8 +388,6 @@ def _route_after_validate(s: State) -> str:
 
 def score_similarity(s: State) -> dict:
     """원본 vs 결과 DINOv2 코사인 유사도 — VLM judge와 별개인 로컬 벡터 점수."""
-    if s.get("status") == "blocked":
-        return {"visual_similarity": None}
     if s.get("visual_similarity") is not None:
         # validate_result 의 dino_band 가드가 같은 이미지로 이미 계산함 — 점수만 부착
         score("visual_similarity", s["visual_similarity"], data_type="NUMERIC")
@@ -477,7 +413,7 @@ def _covered_by(key: str, covered: str) -> bool:
 
 
 def _key_texts(item_texts: list, *, covered: str = "") -> list[tuple[str, str]]:
-    """사후검증(verify 체크리스트·OCR 가드)에 걸 글자 고르기 → [(글자, 대략 위치)].
+    """사후검증(verify 체크리스트)에 걸 글자 고르기 → [(글자, 대략 위치)].
     글자 하나하나가 통과 조건이 되므로 읽기 오차에 덜 흔들리는 것만 고른다:
     - 큰 글자(박스 면적순) 위주로 TEXT_VERIFY_MAX 개까지 — 성분표 같은 잔글씨는 제외
     - prompt_safe 가 잘라낸 긴 문장·1글자는 제외 (끊긴 문장·한 글자는 오판이 잦다)
@@ -504,15 +440,13 @@ def _key_texts(item_texts: list, *, covered: str = "") -> list[tuple[str, str]]:
     return out
 
 
-def _verify_targets(s: State, *, include_texts: bool = True) -> list:
+def _verify_targets(s: State) -> list:
     """verify 체크리스트 = detect 앵커 + read_text 가 읽은 글자 (_key_texts 로 고름).
 
     TEXT_LOCK 은 생성 전에 "글자를 지켜라"고 부탁만 한다 — 실제로 지켜졌는지는
     여기서 게이트에 건다 (뭉개지면 preserved:false → 재생성/배경 교체).
     detect 가 같은 글자를 print 앵커로 이미 올렸으면 중복으로 넣지 않는다."""
     targets = list(s.get("anchors") or [])
-    if not include_texts:
-        return targets
     covered = " ".join(a.get("what", "") for a in targets
                        if a.get("category") == "print").lower()
     targets += [{"category": "print", "what": f'text: "{text}"',
@@ -523,16 +457,20 @@ def _verify_targets(s: State, *, include_texts: bool = True) -> list:
 
 def verify(s: State) -> dict:
     checks, gate_passed = [], None
-    if s.get("status") == "blocked":
-        return {"checks": checks, "gate_passed": gate_passed}
-    mode = s.get("mode", "generate")
+    if s.get("mode", "generate") != "generate":
+        # 배경 교체본은 물건 픽셀이 원본이다 — 확인해도 VLM 오판으로 거짓 경고만 붙을 수 있고
+        # 결과를 바꾸지도 않는다 (VLM 1회 절약, 09-27). verify_failed 는 건드리지 않는다 —
+        # "verify 호출 실패 → 배경 교체"면 그 사실이 배지·inspect 에 남아야 한다.
+        # 생성본 게이트에서 떨어진 checks(무엇이 사라졌나)는 gate_checks 로 옮겨 남긴다
+        # (checks 는 말풍선 좌표라 생성본 기준 — 합성본 위에 그리면 안 된다)
+        out = {"checks": checks, "gate_passed": None}
+        if s.get("checks"):
+            out["gate_checks"] = s["checks"]
+        return out
     if s.get("detect_failed"):
-        # 원본 마크 목록이 없으니 보존 여부를 확인할 수 없다. 합성본은 물건 픽셀이
-        # 원본이라 None(검증 안 함), 생성본(합성 실패 후 생성 포함)은 통과로 치지 않는다.
-        return {"checks": checks, "gate_passed": None if mode == "composite" else False}
-    # 합성본은 물건 픽셀이 원본 — 글자 항목까지 걸면 VLM 오판만으로 "보존 안 됨"
-    # 경고가 원본 픽셀 사진에 붙는다. analyze 앵커(마크)만 확인한다.
-    targets = _verify_targets(s, include_texts=(mode == "generate"))
+        # 원본 마크 목록이 없으니 보존 여부를 확인할 수 없다 — 생성본은 통과로 치지 않는다
+        return {"checks": checks, "gate_passed": False, "verify_failed": False}
+    targets = _verify_targets(s)
     if not targets:
         return {"checks": checks, "gate_passed": gate_passed, "verify_failed": False}
     saved = storage.load("result", s["result_name"])
@@ -548,10 +486,8 @@ def verify(s: State) -> dict:
                 break
             if attempt < VERIFY_ATTEMPTS:
                 time.sleep(DETECT_RETRY_DELAY_S)
-    # 호출 실패(타임아웃·429·장애)는 "보존됨"이 아니다 — 예전엔 None 으로 남아 통과됐다.
-    # 생성본은 통과로 치지 않고(→ 배경 교체), 합성본은 물건 픽셀이 원본이라 None.
-    return {"checks": [], "verify_failed": True,
-            "gate_passed": None if mode == "composite" else False}
+    # 호출 실패(타임아웃·429·장애)는 "보존됨"이 아니다 — 통과로 치지 않는다 (→ 배경 교체)
+    return {"checks": [], "verify_failed": True, "gate_passed": False}
 
 
 def _route_after_verify(s: State) -> str:
@@ -576,19 +512,19 @@ def mark_gate_retry(s: State) -> dict:
             ". They MUST remain exactly as in the input image.") if lost else ""
     print(f"[gate] 실패 → 1회 재생성: {lost}")
     return {"gate_retried": True, "gate_note": note,
-            "photo_check": None, "guard_seed": None}
+            "photo_check": None}
 
 
 def _original_as_result(s: State) -> dict:
     """원본을 결과로 내보낼 때 뒷단(save_inspect·finalize·run_transform)이 읽는 값을 한 곳에서 채운다."""
     storage.save("result", s["result_name"], s["original"])
-    return {"result": s["original"], "mode": "original", "status": "pass",
+    return {"result": s["original"], "mode": "original",
             "checks": [], "gate_passed": None, "photo_check": None, "verify_failed": False,
             "guard_report": [], "prompt_used": "ORIGINAL: background not replaced"}
 
 
 def keep_original(s: State) -> dict:
-    """원본 그대로 (plan: partial_view) — 물건 일부·내부 사진은 생성도 오리기도 하지 않는다.
+    """원본 그대로 (plan: inside_view) — 물건 일부·내부 사진은 생성도 오리기도 하지 않는다.
     물건 픽셀도 배경도 원본이라 검사할 것이 없다 (verify·judge 생략)."""
     print("[keep_original] 물건 일부·내부 사진 → 원본 그대로")
     return _original_as_result(s)
@@ -597,7 +533,7 @@ def keep_original(s: State) -> dict:
 def composite(s: State) -> dict:
     """배경 교체 모드: 원본 물건을 오려 프리셋 배경 위에 합성 (물건 픽셀 보존).
 
-    들어오는 길: plan(생성 전 판단) / validate_result(가드 불합격) / verify(게이트 실패)."""
+    들어오는 길: plan(생성 전 판단) / read_text(12줄 이상) / verify(게이트 실패·호출 실패)."""
     reason = s.get("composite_reason") or (
         "detect_failed" if s.get("detect_failed")
         else "verify_failed" if s.get("verify_failed") else "gate_failed")
@@ -605,20 +541,18 @@ def composite(s: State) -> dict:
         if s.get("composite_error"):
             # 이번 실행에서 이미 실패한 오리기 — 같은 입력으로 다시 부르지 않는다
             raise RuntimeError(f"이전 오리기 실패: {s['composite_error']}")
-        out = compositor.compose(s["original"], s["preset"]["bg_color"], s.get("item_box"))
+        # 책·음반·보증서는 표지를 정면으로 펴서 놓는다 (못 펴면 compose_flat 이 일반 배경 교체로).
+        # 하자가 넓은 문서(찢김·접힘)는 펴지 않는다 — 네 모서리에 맞추면 찢어진 모서리가 잘리고
+        # 접힌 자국이 펴져 상태가 좋아 보인다
+        flat = reason == "document" and s.get("wear_level") != "heavy"
+        compose = compositor.compose_flat if flat else compositor.compose
+        out = compose(s["original"], s["preset"]["bg_color"], s.get("item_box"))
     except Exception as e:
-        if s.get("guard_failed"):
-            # 생성본은 가드 불합격, 합성도 불가 → 원본 그대로 내보낸다 (침묵 대신 고지)
-            print(f"[composite] 실패 + 가드 불합격 → blocked(원본): {e}")
-            storage.save("result", s["result_name"], s["original"])
-            return {"mode": "composite_failed", "composite_error": str(e),
-                    "status": "blocked", "result": s["original"], "photo_check": None,
-                    # verify 를 거치지 않고 끝나는 경로 — 뒷단이 읽는 값을 채워 둔다
-                    "checks": [], "gate_passed": None}
-        if s.get("result") is None and reason == "wear_heavy":
-            # 하자가 넓어 "생성하면 지우거나 지어낸다"고 본 사진 — 오리기가 안 되면 생성하지 않고
-            # 원본을 그대로 보여준다 (생성으로 가면 하자 검사 없이 "보존됨" 배지가 붙는다)
-            print(f"[composite] 실패 + 하자 heavy → 원본 그대로: {e}")
+        if s.get("result") is None and reason in ("wear_heavy", "document"):
+            # 하자가 넓어 "생성하면 지우거나 지어낸다"고 본 사진 / 책·음반처럼 한 글자만 바뀌어도
+            # 다른 물건 — 오리기가 안 되면 생성하지 않고 원본을 그대로 보여준다
+            # (생성으로 가면 하자·잔글씨 검사 없이 "보존됨" 배지가 붙는다)
+            print(f"[composite] 실패 + {reason} → 원본 그대로: {e}")
             return {**_original_as_result(s), "composite_error": str(e), "composite_reason": reason}
         if s.get("result") is None:
             # 생성 전에 왔다(plan) — 이제 정상 생성 경로로
@@ -632,9 +566,7 @@ def composite(s: State) -> dict:
     # 합성본은 생성본이 아니다 — 생성본 기준 검사 결과(구도 검사·가드·유사도)를 들고 가지 않는다
     return {"result": out, "mode": "composite", "composite_error": None,
             "composite_reason": reason, "photo_check": None,
-            # 가드 불합격으로 왔으면 어떤 가드가 걸렸는지는 기록으로 남긴다
-            "guard_report": s.get("guard_report", []) if s.get("guard_failed") else [],
-            "status": "pass", "visual_similarity": None, "item_similarity": None,
+            "guard_report": [], "visual_similarity": None, "item_similarity": None,
             "item_patch_similarity": None, "ocr_local_recall": None,
             "prompt_used": "COMPOSITE: original item pixels on preset background"}
 
@@ -643,10 +575,10 @@ def _route_after_composite(s: State) -> str:
     if s.get("mode") == "composite":
         return "ok"
     if s.get("mode") == "original":
-        return "failed"   # 하자 heavy 인데 오리기 실패 → 원본 그대로, 검사할 것 없음 (save_inspect 로)
+        return "failed"   # 하자 heavy·document 인데 오리기 실패 → 원본 그대로, 검사할 것 없음 (save_inspect 로)
     if s.get("mode") == "generate":
         # 생성 전 합성이 실패 — 정상 생성 경로로. dense·detect_failed 로 왔다면 글자를 아직 안
-        # 읽었다: 글자 없이 생성하면 TEXT_LOCK·OCR 가드가 통째로 빠져, 글자가 제일 많은 물건이
+        # 읽었다: 글자 없이 생성하면 TEXT_LOCK·verify 글자 확인이 통째로 빠져, 글자가 제일 많은 물건이
         # 보호를 제일 덜 받는다. 글자가 없다고 확인된(none) 경우만 바로 생성.
         if (settings.text_lock and s.get("text_level") != "none"
                 and "item_texts" not in s):
@@ -664,7 +596,7 @@ def save_inspect(s: State) -> dict:
             "item": s.get("item", "object"),          # ⭐
             "considered": s.get("considered", []),    # ⭐
             "anchors": s["anchors"],
-            "scene": s.get("scene"),
+            "photo_type": s.get("photo_type"),
             "wear_level": s.get("wear_level"),
             "watermark": s.get("watermark"),
             "detect_failed": s.get("detect_failed", False),
@@ -673,10 +605,10 @@ def save_inspect(s: State) -> dict:
             "text_level": s.get("text_level"),
             "mode": s.get("mode", "generate"),
             "composite_reason": s.get("composite_reason"),
-            "guard_failed": s.get("guard_failed", False),
             "gate_retried": s.get("gate_retried", False),
             "composite_error": s.get("composite_error"),
             "checks": s.get("checks", []),
+            "gate_checks": s.get("gate_checks", []),
             "gate_passed": s.get("gate_passed"),
             "visual_similarity": s.get("visual_similarity"),   # ⭐
             "item_similarity": s.get("item_similarity"),
@@ -684,8 +616,6 @@ def save_inspect(s: State) -> dict:
             "ocr_local_recall": s.get("ocr_local_recall"),
             "gen_attempts": s.get("gen_attempts"),             # ⭐
             "photo_check": s.get("photo_check"),               # ⭐
-            "status": s.get("status", "pass"),
-            "guard_seed": s.get("guard_seed"),
             "guard_report": s.get("guard_report", []),
         }, ensure_ascii=False, indent=2).encode("utf-8"),
     )
@@ -714,7 +644,7 @@ def judge_and_save(file_id: str, preset_key: str, *, trace_id: str | None = None
     원본·결과는 storage 에서 읽는다 — 사용자에게 서빙되는 저장본(정규화 후)을 채점
     (예전 그래프 노드는 fal 이 준 정규화 전 바이트를 채점 — 과거 점수와 소폭 차이 가능).
     채점 중에 같은 쌍이 다시 변환되면(결과 이미지가 바뀜) 옛 결과 점수는 버린다.
-    blocked(원본을 내보냄)면 호출부가 부르지 않는다. 실패는 모두 삼킨다 (관측 신호)."""
+    원본을 내보냈으면(mode=original) 호출부가 부르지 않는다. 실패는 모두 삼킨다 (관측 신호)."""
     name = f"{file_id}_{preset_key}"
     try:
         original = storage.load_original(file_id)
@@ -748,21 +678,26 @@ def judge_and_save(file_id: str, preset_key: str, *, trace_id: str | None = None
 
 
 def _record_result_safe(file_id, preset_key, result_name, item, considered,
-                         gate_passed, bubbles, elapsed_s):
+                         gate_passed, bubbles, elapsed_s, route=None):
     """DB 기록은 detect/verify/judge와 같은 원칙 — 실패해도 이미 끝난(비용 든)
-    변환 자체를 실패로 되돌리지 않는다."""
+    변환 자체를 실패로 되돌리지 않는다. route = 결과의 mode·composite_reason·photo_type·wear_level."""
     try:
         store.record_result(file_id, preset_key, result_name, item, considered,
-                             gate_passed, bubbles, elapsed_s=elapsed_s)
+                             gate_passed, bubbles, elapsed_s=elapsed_s, route=route)
     except Exception as e:
         print(f"[record_result] 실패(무시): {e}")
+
+
+def _route_of(out: dict) -> dict:
+    """DB results 에 남길 경로 정보."""
+    return {k: out.get(k) for k in ("mode", "composite_reason", "photo_type", "wear_level")}
 
 
 def finalize(s: State) -> dict:
     checks = s.get("checks", [])
     bubbles = detector.bubbles(checks)
     logger.info(f"[analyze] item={s.get('item')} anchors={len(s['anchors'])} "
-                f"scene={s.get('scene')} wear={s.get('wear_level')} "
+                f"photo_type={s.get('photo_type')} wear={s.get('wear_level')} "
                 f"watermark={s.get('watermark')} text={s.get('text_level')}")
     logger.info(f"[verify] preserved="
                 f"{sum(c['preserved'] for c in checks)}/{len(checks)}")
@@ -819,8 +754,7 @@ def build(*, dev: bool = False):
                                 {"generate": "generate", "composite": "composite"})
         g.add_edge("generate", "validate_result")
         g.add_conditional_edges("validate_result", _route_after_validate,
-                                {"retry": "generate", "ok": "score_similarity",
-                                 "composite": "composite"})
+                                {"retry": "generate", "ok": "score_similarity"})
         g.add_edge("score_similarity", "verify")
         g.add_conditional_edges("verify", _route_after_verify,
                                 {"done": "save_inspect", "regen": "mark_gate_retry",
@@ -838,7 +772,7 @@ def build(*, dev: bool = False):
 GRAPH = build()
 
 # 최악 경로 = 앞 4단계(load·analyze·plan·read_text) + composite(생성 전, 실패)
-# + (generate·validate) × (재생성 한도 + 가드 재시도) × 2(게이트 재생성)
+# + (generate·validate) × 재생성 한도 × 2(게이트 재생성)
 # + score/verify 3회 + composite + 뒷 2노드 ≈ 35. max_generate_attempts=5 여도 넉넉하게.
 # (LangGraph 기본 25 는 기본 설정에서도 경계라, 비용을 다 쓴 뒤 예외로 끝날 수 있었다)
 RECURSION_LIMIT = 80
@@ -862,14 +796,14 @@ def run_transform(file_id: str, preset_key: str, *, defer_judge: bool = False) -
                              None, [], elapsed_s=time.time() - t0)
         return {"result_name": result_name, "prompt_used": "PASS-THROUGH",
                 "checks": [], "bubbles": [], "gate_passed": None, "item": "object", "considered": [],
-                "status": "pass", "guard_report": [], "mode": "generate"}
+                "guard_report": [], "mode": "generate"}
 
     try:
         with observe("transform", as_type="span",
                      input={"file_id": file_id, "preset_key": preset_key},
                      metadata={"pipeline_mode": settings.pipeline_mode}) as obs:
             # 옛 성적표는 시작할 때 지운다 — 파일명이 file_id/preset 뿐이라 남겨 두면
-            # 새 결과에 옛 점수가 붙는다 (blocked·채점 실패 때도)
+            # 새 결과에 옛 점수가 붙는다 (원본 그대로·채점 실패 때도)
             _clear_quality(f"{file_id}_{preset_key}.json")
             out = GRAPH.invoke({"file_id": file_id, "preset_key": preset_key},
                                {"recursion_limit": RECURSION_LIMIT})
@@ -877,8 +811,8 @@ def run_transform(file_id: str, preset_key: str, *, defer_judge: bool = False) -
             # 저장했을 수 있다 — 새 결과가 저장된 뒤 한 번 더 지운다. 이후에 그 채점이
             # 저장하려 하면 judge_and_save 의 재확인(결과 바뀜)이 스스로 지운다.
             _clear_quality(f"{file_id}_{preset_key}.json")
-            # 원본을 내보내면(blocked·partial_view 원본 그대로) 채점 안 함
-            judged = out.get("status", "pass") != "blocked" and out.get("mode") != "original"
+            # 원본을 내보내면(mode=original: inside_view · 오리기 실패한 문서·하자 heavy) 채점 안 함
+            judged = out.get("mode") != "original"
             if judged and not defer_judge:
                 judge_and_save(file_id, preset_key)
 
@@ -894,11 +828,10 @@ def run_transform(file_id: str, preset_key: str, *, defer_judge: bool = False) -
                 "item_similarity": out.get("item_similarity"),
                 "gen_attempts": out.get("gen_attempts"),
                 "photo_check": out.get("photo_check"),
-                "status": out.get("status", "pass"),
                 "guard_report": out.get("guard_report", []),
                 "mode": out.get("mode", "generate"),
                 "composite_reason": out.get("composite_reason"),
-                "scene": out.get("scene"),
+                "photo_type": out.get("photo_type"),
                 "wear_level": out.get("wear_level"),
                 "watermark": out.get("watermark"),
                 "detect_failed": out.get("detect_failed", False),
@@ -919,6 +852,8 @@ def run_transform(file_id: str, preset_key: str, *, defer_judge: bool = False) -
                     "photo_check": result["photo_check"],
                     "mode": result["mode"],
                     "composite_reason": result["composite_reason"],
+                    "photo_type": result["photo_type"],
+                    "wear_level": result["wear_level"],
                     "detect_failed": result["detect_failed"],
                     "verify_failed": result["verify_failed"],
                 })
@@ -930,7 +865,7 @@ def run_transform(file_id: str, preset_key: str, *, defer_judge: bool = False) -
     logger.info(f"total {elapsed_s:.1f}s")
     _record_result_safe(file_id, preset_key, result["result_name"], result["item"],
                          result["considered"], result["gate_passed"], result["bubbles"],
-                         elapsed_s)
+                         elapsed_s, route=_route_of(result))
     return result
 
 
@@ -970,8 +905,7 @@ def run_transform_with_result(file_id: str, preset_key: str, result_bytes: bytes
                 "detect_failed": s.get("detect_failed", False),
                 "verify_failed": s.get("verify_failed", False),
                 "mode": s.get("mode", "generate"),
-                "status": s.get("status", "pass"),
-                "scene": s.get("scene"),
+                "photo_type": s.get("photo_type"),
                 "wear_level": s.get("wear_level"),
                 "watermark": s.get("watermark"),
             }
@@ -989,5 +923,5 @@ def run_transform_with_result(file_id: str, preset_key: str, result_bytes: bytes
     logger.info(f"[test] total {elapsed_s:.1f}s (generate skipped)")
     _record_result_safe(file_id, preset_key, result["result_name"], result["item"],
                          result["considered"], result["gate_passed"], result["bubbles"],
-                         elapsed_s)
+                         elapsed_s, route=_route_of(result))
     return result

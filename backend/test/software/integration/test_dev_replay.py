@@ -9,7 +9,7 @@ def test_verify_replay(client, tmp_storage, monkeypatch, make_png):
     monkeypatch.setattr("app.services.ai.detector.analyze",
                         lambda *a, **k: {"item": "object", "considered": [],
                                          "anchors": ANCHORS, "item_box": None,
-                                         "scene": "single_item", "wear_level": "light",
+                                         "photo_type": "product", "wear_level": "light",
                                          "watermark": "none", "text_level": "simple"})
     monkeypatch.setattr("app.services.ai.detector.verify_and_locate",
                     lambda *a, **k: CHECKS)

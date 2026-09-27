@@ -2,7 +2,7 @@ Output JSON only:
 {"item": str,
  "considered": [str],
  "item_box_2d": [ymin, xmin, ymax, xmax],
- "scene": "single_item" | "partial_view" | "multiple_items",
+ "photo_type": "document" | "inside_view" | "product",
  "wear_level": "none" | "light" | "heavy",
  "watermark": "none" | "background" | "on_item",
  "text_level": "none" | "simple" | "dense",

@@ -94,7 +94,7 @@ def classify(image_bytes: bytes) -> dict:
 
 
 TEXT_LEVELS = ("none", "simple", "dense")
-SCENES = ("single_item", "partial_view", "multiple_items")
+PHOTO_TYPES = ("document", "inside_view", "product")
 WEAR_LEVELS = ("none", "light", "heavy")
 WATERMARKS = ("none", "background", "on_item")
 
@@ -119,12 +119,13 @@ def analyze(image_bytes: bytes) -> dict:
     """파이프라인 첫 단계 (VLM 1회) — 예전 classify + detect 를 합친 것.
 
     반환: {"item", "considered", "anchors"(아이덴티티 마크만, category="print"), "item_box",
-           "scene", "wear_level", "watermark", "text_level"}
+           "photo_type", "wear_level", "watermark", "text_level"}
     하자는 목록으로 뽑지 않고 wear_level 로만 본다 (plan 이 heavy 면 생성 전 배경 교체).
     응답에 marks 목록이 없으면(깨진 JSON → {}) 예외 — 빈 목록을 "지킬 게 없음"으로 읽으면
     검증 없이 통과한다 (detect strict 와 같은 이유). 모르는 분류 값은 보수적인 쪽으로:
-    scene=single_item(예전 동작), wear_level=light(생성은 하되 heavy 로 단정하지 않음),
-    watermark=none, text_level=simple(글자 읽기 후 생성)."""
+    photo_type=product(생성 경로 — 예전 동작. 없는 필드면 로그가 남아 옛 프롬프트가 보인다),
+    wear_level=light(생성은 하되 heavy 로 단정하지 않음), watermark=none,
+    text_level=simple(글자 읽기 후 생성)."""
     data = _call(image_bytes, P.analyze_prompt(), "analyze")
     if isinstance(data, list) and data and isinstance(data[0], dict):
         data = data[0]   # 객체 하나를 목록으로 감싸 주는 응답 (classify 에서 본 적 있음)
@@ -144,7 +145,7 @@ def analyze(image_bytes: bytes) -> dict:
         "considered": [_text(c) for c in considered if _text(c)][:8],
         "anchors": anchors,
         "item_box": _box(item_box) if _has_box(item_box) else None,
-        "scene": _level(data, "scene", SCENES, "single_item"),
+        "photo_type": _level(data, "photo_type", PHOTO_TYPES, "product"),
         "wear_level": _level(data, "wear_level", WEAR_LEVELS, "light"),
         "watermark": _level(data, "watermark", WATERMARKS, "none"),
         "text_level": level,

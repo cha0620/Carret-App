@@ -73,13 +73,16 @@ function renderGate(res) {
     gateBadge.textContent = text;
     gateBadge.style.color = color;
   };
-  if (res.status === 'blocked') {
-    return show('⛔ 변환 결과가 검사를 통과하지 못해 원본 사진을 그대로 보여드려요', '#c0392b');
-  }
   if (res.mode === 'original') {
-    return res.composite_reason === 'wear_heavy'
-      ? show('ℹ️ 사용감이 많은 물건이라 상태를 그대로 보여드리려고 원본 사진을 그대로 두었어요', '#5d6d7e')
-      : show('ℹ️ 물건 일부·내부를 찍은 사진이라 배경을 바꾸지 않고 원본을 그대로 보여드려요', '#5d6d7e');
+    if (res.composite_reason === 'document') {
+      return show('ℹ️ 인쇄된 글자·그림이 곧 상품이라 바뀌지 않게 원본 사진을 그대로 두었어요', '#5d6d7e');
+    }
+    if (res.composite_reason === 'wear_heavy') {
+      return show('ℹ️ 사용감이 많은 물건이라 상태를 그대로 보여드리려고 원본 사진을 그대로 두었어요', '#5d6d7e');
+    }
+    return res.composite_reason === 'inside_view'
+      ? show('ℹ️ 물건 일부·내부를 찍은 사진이라 배경을 바꾸지 않고 원본을 그대로 보여드려요', '#5d6d7e')
+      : show('ℹ️ 배경을 바꾸지 않고 원본 사진을 그대로 보여드려요', '#5d6d7e');
   }
   // 검사 자체를 못 함(원본 분석 실패 / 결과 보존 검사 호출 실패) — 통과도 실패도 아님
   const unchecked = res.detect_failed || res.verify_failed;
@@ -88,7 +91,9 @@ function renderGate(res) {
       ? show(res.detect_failed
           ? '⚠️ 원본 물건 사진에 배경만 바꿨어요 (사진 분석은 하지 못했어요)'
           : '⚠️ 원본 물건 사진에 배경만 바꿨어요 (결과 검사는 하지 못했어요)', '#b9770e')
-      : show('🛡️ 하자·글자를 지키려고 원본 물건 사진에 배경만 바꿨어요', '#2a7f2a');
+      : show(res.composite_reason === 'document'
+          ? '🛡️ 인쇄된 글자·그림이 곧 상품이라 원본 물건 사진에 배경만 바꿨어요'
+          : '🛡️ 하자·글자를 지키려고 원본 물건 사진에 배경만 바꿨어요', '#2a7f2a');
   }
   if (unchecked) {
     return show('⚠️ 보존 검사를 하지 못했습니다 — 생성 이미지에서 로고·글자가 바뀌었을 수 있어요', '#c0392b');

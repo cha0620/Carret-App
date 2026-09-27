@@ -137,10 +137,24 @@ def test_analyze_template_fragment_order():
 
 def test_analyze_template_asks_for_every_field_parsed_by_detector():
     t = P.analyze_template()
-    for word in ("item", "considered", "item_box_2d", "scene", "wear_level", "watermark",
-                 "text_level", "marks", '"single_item"', '"partial_view"', '"multiple_items"',
+    for word in ("item", "considered", "item_box_2d", "photo_type", "wear_level", "watermark",
+                 "text_level", "marks", '"document"', '"inside_view"', '"product"',
                  '"heavy"', '"light"', '"on_item"', '"background"', '"dense"', '"simple"'):
         assert word in t, word
+
+
+def test_analyze_template_photo_type_values_match_detector():
+    """스키마의 photo_type 값 = detector.PHOTO_TYPES (한쪽만 바뀌면 전부 product 로 떨어진다)."""
+    from app.services.ai import detector
+    t = P.analyze_template()
+    for v in detector.PHOTO_TYPES:
+        assert f'"{v}"' in t, v
+
+
+@pytest.mark.parametrize("old", ['"scene"', '"single_item"', '"partial_view"',
+                                 '"multiple_items"', "text_is_product"])
+def test_analyze_template_has_no_old_classification_fields(old):
+    assert old not in P.analyze_template()
 
 
 def test_analyze_template_has_no_unfilled_placeholders():

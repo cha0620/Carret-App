@@ -77,12 +77,12 @@ def test_transform_not_pending_no_background_judge(client, fake_pipeline, extra)
 
 def test_transform_response_new_fields_passthrough(client, fake_pipeline):
     fake_pipeline["out"] = _out(mode="composite", composite_reason="text_heavy",
-                                detect_failed=True, status="pass", judge_pending=True)
+                                detect_failed=True, judge_pending=True)
     body = _post(client).json()
     assert body["mode"] == "composite"
     assert body["composite_reason"] == "text_heavy"
     assert body["detect_failed"] is True
-    assert body["status"] == "pass"
+    assert "status" not in body                  # status 필드는 삭제됨
     assert body["judge_pending"] is True
 
 
@@ -102,16 +102,26 @@ def test_transform_response_new_fields_defaults(client, fake_pipeline):
     assert body["detect_failed"] is False
     assert body["verify_failed"] is False
     assert body["judge_pending"] is False
-    assert body["status"] == "pass"
+    assert "status" not in body
     assert body["mode"] == "generate"
 
 
-def test_transform_blocked_status_in_response(client, fake_pipeline):
-    fake_pipeline["out"] = _out(status="blocked", mode="composite_failed",
-                                composite_reason="guard_failed", judge_pending=False)
+def test_transform_leftover_status_is_not_in_response(client, fake_pipeline):
+    """파이프라인 출력에 옛 status 가 남아 있어도 응답 스키마에 없다 (blocked 경로 삭제)."""
+    fake_pipeline["out"] = _out(status="blocked", mode="composite_failed", judge_pending=False)
     body = _post(client).json()
-    assert body["status"] == "blocked" and body["mode"] == "composite_failed"
+    assert "status" not in body and body["mode"] == "composite_failed"
     assert fake_pipeline["later"] == []
+
+
+def test_transform_response_schema_has_no_status_or_scene():
+    from app.schemas.image import TransformResponse
+    fields = TransformResponse.model_fields
+    assert "status" not in fields and "scene" not in fields
+    assert fields["photo_type"].default is None
+    desc = fields["composite_reason"].description
+    assert "inside_view" in desc and "document" in desc
+    assert "partial_view" not in desc and "guard_failed" not in desc
 
 
 def test_transform_pending_ignores_existing_quality_file(client, fake_pipeline, tmp_storage):
@@ -222,17 +232,31 @@ def test_quality_bad_preset_is_422(client, tmp_storage, preset):
     assert client.get(f"/api/quality/{FID}/{preset}").status_code == 422
 
 
-# ── analyze 분류값 (scene / wear_level / watermark) 이 응답에 실린다 ──
-def test_transform_response_carries_scene_wear_watermark(client, fake_pipeline):
-    fake_pipeline["out"] = _out(mode="original", composite_reason="partial_view",
-                                scene="partial_view", wear_level="heavy", watermark="on_item")
+# ── analyze 분류값 (photo_type / wear_level / watermark) 이 응답에 실린다 ──
+@pytest.mark.parametrize("ptype,mode,reason", [
+    ("inside_view", "original", "inside_view"),
+    ("document", "composite", "document"),
+    ("document", "original", "document"),        # 문서 오리기 실패 → 원본 그대로
+    ("product", "generate", None),
+])
+def test_transform_response_carries_photo_type_wear_watermark(client, fake_pipeline,
+                                                              ptype, mode, reason):
+    fake_pipeline["out"] = _out(mode=mode, composite_reason=reason,
+                                photo_type=ptype, wear_level="heavy", watermark="on_item")
     body = _post(client).json()
-    assert body["mode"] == "original" and body["composite_reason"] == "partial_view"
-    assert (body["scene"], body["wear_level"], body["watermark"]) == (
-        "partial_view", "heavy", "on_item")
+    assert body["mode"] == mode and body["composite_reason"] == reason
+    assert (body["photo_type"], body["wear_level"], body["watermark"]) == (
+        ptype, "heavy", "on_item")
+    assert "scene" not in body
     assert fake_pipeline["later"] == []          # judge_pending 없음 → 채점 예약 안 함
 
 
-def test_transform_response_scene_fields_default_none(client, fake_pipeline):
+def test_transform_response_photo_type_fields_default_none(client, fake_pipeline):
     body = _post(client).json()
-    assert body["scene"] is None and body["wear_level"] is None and body["watermark"] is None
+    assert body["photo_type"] is None and body["wear_level"] is None and body["watermark"] is None
+
+
+def test_transform_response_ignores_leftover_scene(client, fake_pipeline):
+    fake_pipeline["out"] = _out(scene="partial_view")
+    body = _post(client).json()
+    assert "scene" not in body and body["photo_type"] is None

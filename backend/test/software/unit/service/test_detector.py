@@ -828,7 +828,7 @@ def test_classify_accepts_list_wrapped_response(monkeypatch, raw, item):
 _ANALYZE_FULL = {
     "item": "  electric shaver ", "considered": ["logo", " model text ", ""],
     "item_box_2d": [100, 200, 700, 800],
-    "scene": "single_item", "wear_level": "none", "watermark": "background",
+    "photo_type": "product", "wear_level": "none", "watermark": "background",
     "text_level": "simple",
     "marks": [{"what": " BRAUN ", "where": " front "}, {"what": "Series 9", "where": "side"}],
 }
@@ -852,7 +852,7 @@ def test_analyze_parses_full_response(monkeypatch):
                     {"category": "print", "what": "Series 9", "where": "side"}],
         # box_2d = [ymin, xmin, ymax, xmax] → x1=xmin ...
         "item_box": {"x1": 200, "y1": 100, "x2": 800, "y2": 700},
-        "scene": "single_item", "wear_level": "none", "watermark": "background",
+        "photo_type": "product", "wear_level": "none", "watermark": "background",
         "text_level": "simple",
     }
 
@@ -867,7 +867,7 @@ def test_analyze_uses_analyze_prompt(monkeypatch):
 
 
 @pytest.mark.parametrize("key,allowed", [
-    ("scene", ["single_item", "partial_view", "multiple_items"]),
+    ("photo_type", ["document", "inside_view", "product"]),
     ("wear_level", ["none", "light", "heavy"]),
     ("watermark", ["none", "background", "on_item"]),
     ("text_level", ["none", "simple", "dense"]),
@@ -879,7 +879,9 @@ def test_analyze_accepts_every_allowed_value(monkeypatch, key, allowed):
 
 
 @pytest.mark.parametrize("key,raw,expected", [
-    ("scene", " Partial_View ", "partial_view"),   # 대소문자·공백 정규화
+    ("photo_type", " Inside_View ", "inside_view"),   # 대소문자·공백 정규화
+    ("photo_type", "DOCUMENT", "document"),
+    ("photo_type", "\tProduct\n", "product"),
     ("wear_level", "HEAVY", "heavy"),
     ("watermark", "On_Item", "on_item"),
     ("text_level", "Dense ", "dense"),
@@ -891,10 +893,10 @@ def test_analyze_normalizes_case_and_space(monkeypatch, key, raw, expected):
 
 @pytest.mark.parametrize("raw", [None, "", "unknown", "partial", 3, ["heavy"], {"v": 1}, True])
 def test_analyze_unknown_values_fall_back_to_defaults(monkeypatch, raw):
-    resp = {"marks": [], "scene": raw, "wear_level": raw, "watermark": raw, "text_level": raw}
+    resp = {"marks": [], "photo_type": raw, "wear_level": raw, "watermark": raw, "text_level": raw}
     _analyze_with(monkeypatch, resp)
     out = detector.analyze(b"x")
-    assert out["scene"] == "single_item"
+    assert out["photo_type"] == "product"
     assert out["wear_level"] == "light"
     assert out["watermark"] == "none"
     assert out["text_level"] == "simple"
@@ -904,7 +906,7 @@ def test_analyze_missing_keys_all_defaults(monkeypatch):
     _analyze_with(monkeypatch, {"marks": []})
     assert detector.analyze(b"x") == {
         "item": "object", "considered": [], "anchors": [], "item_box": None,
-        "scene": "single_item", "wear_level": "light", "watermark": "none",
+        "photo_type": "product", "wear_level": "light", "watermark": "none",
         "text_level": "simple",
     }
 
@@ -1139,3 +1141,77 @@ def test_verify_and_locate_marks_strict_bad_response_raises(monkeypatch):
     monkeypatch.setattr(detector, "_call", lambda *a, **k: {})
     with pytest.raises(ValueError):
         detector.verify_and_locate(b"x", [{"what": "a", "where": "b"}], strict=True, marks=True)
+
+
+# ── photo_type: document | inside_view | product (없거나 모르면 product + 로그) ──
+def test_photo_types_constant():
+    assert detector.PHOTO_TYPES == ("document", "inside_view", "product")
+    assert not hasattr(detector, "SCENES")
+    assert not hasattr(detector, "_product_flag")
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("document", "document"), ("inside_view", "inside_view"), ("product", "product"),
+    ("Document", "document"), (" INSIDE_VIEW ", "inside_view"), ("PrOdUcT", "product"),
+])
+def test_analyze_photo_type_parses(monkeypatch, raw, expected):
+    _analyze_with(monkeypatch, {"marks": [], "photo_type": raw})
+    assert detector.analyze(b"x")["photo_type"] == expected
+
+
+@pytest.mark.parametrize("raw", [
+    # 예전 scene 값·옛 플래그 이름은 photo_type 으로 인정하지 않는다
+    "partial_view", "single_item", "multiple_items", "text_product",
+    "inside view", "inside-view", "documents", "doc", "unknown", "", " ",
+    None, 0, 1, True, False, ["document"], {"v": "document"},
+])
+def test_analyze_photo_type_unknown_falls_back_to_product_and_logs(monkeypatch, capsys, raw):
+    _analyze_with(monkeypatch, {"marks": [], "photo_type": raw})
+    assert detector.analyze(b"x")["photo_type"] == "product"
+    assert "photo_type 없음/모름" in capsys.readouterr().out
+
+
+def test_analyze_photo_type_missing_field_logs(monkeypatch, capsys):
+    _analyze_with(monkeypatch, {"marks": [], "text_level": "none"})
+    assert detector.analyze(b"x")["photo_type"] == "product"
+    assert "photo_type 없음/모름" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("raw", ["document", "inside_view", "product"])
+def test_analyze_valid_photo_type_does_not_log(monkeypatch, capsys, raw):
+    _analyze_with(monkeypatch, {"marks": [], "photo_type": raw})
+    detector.analyze(b"x")
+    assert "photo_type" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("old", [
+    {"scene": "partial_view"}, {"scene": "multiple_items"},
+    {"text_is_product": True}, {"text_is_product": "true"},
+])
+def test_analyze_old_fields_ignored(monkeypatch, old):
+    """옛 프롬프트 응답(scene·text_is_product)은 photo_type 으로 읽지 않는다 — product."""
+    _analyze_with(monkeypatch, {"marks": [], **old})
+    out = detector.analyze(b"x")
+    assert out["photo_type"] == "product"
+    assert "scene" not in out and "text_is_product" not in out
+
+
+@pytest.mark.parametrize("level", ["none", "simple", "dense"])
+def test_analyze_photo_type_independent_of_text_level(monkeypatch, level):
+    """책 표지처럼 글자가 적어도(none·simple) document — text_level 과 섞이지 않는다."""
+    _analyze_with(monkeypatch, {"marks": [], "text_level": level, "photo_type": "document"})
+    out = detector.analyze(b"x")
+    assert out["photo_type"] == "document" and out["text_level"] == level
+
+
+def test_analyze_photo_type_in_list_wrapped_response(monkeypatch):
+    _analyze_with(monkeypatch, [{"marks": [], "photo_type": "Inside_View"}])
+    assert detector.analyze(b"x")["photo_type"] == "inside_view"
+
+
+def test_analyze_photo_type_does_not_change_other_fields(monkeypatch):
+    _analyze_with(monkeypatch, {**_ANALYZE_FULL, "photo_type": "document"})
+    out = detector.analyze(b"img")
+    assert out["photo_type"] == "document"
+    assert out["text_level"] == "simple" and out["wear_level"] == "none"
+    assert out["watermark"] == "background" and len(out["anchors"]) == 2

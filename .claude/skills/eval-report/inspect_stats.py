@@ -47,12 +47,10 @@ def main():
         print(f"- mode={mode}: {pct(c)}")
     for reason, c in Counter(i.get("composite_reason") for i in ins if i.get("composite_reason")).most_common():
         print(f"  - composite_reason={reason}: {c}")
-    print(f"- status=blocked: {pct(sum(i.get('status') == 'blocked' for i in ins))}")
     print(f"- detect_failed: {pct(sum(bool(i.get('detect_failed')) for i in ins))}")
     print(f"- verify_failed: {pct(sum(bool(i.get('verify_failed')) for i in ins))}")
     print(f"- gate_passed=True: {pct(sum(i.get('gate_passed') is True for i in ins))}")
     print(f"- gate_retried: {pct(sum(bool(i.get('gate_retried')) for i in ins))}")
-    print(f"- guard_failed (seed 재시도 후에도): {pct(sum(bool(i.get('guard_failed')) for i in ins))}")
 
     print("\n## 가드 (guard_report 에 남은 실패)")
     fails = Counter(g["name"] for i in ins for g in i.get("guard_report", []) if not g.get("passed", False))
@@ -65,7 +63,8 @@ def main():
     print(f"- item_patch_similarity (누끼 DINO 패치 하위 1%): {_dist(i.get('item_patch_similarity') for i in ins)}")
     print(f"- ocr_local_recall (EasyOCR): {_dist(i.get('ocr_local_recall') for i in ins)}")
     print(f"- gen_attempts: {Counter(i.get('gen_attempts') for i in ins)}")
-    print(f"- text_level (detect): {Counter(i.get('text_level') for i in ins)}")
+    print(f"- text_level (analyze): {Counter(i.get('text_level') for i in ins)}")
+    print(f"- photo_type: {Counter(i.get('photo_type') for i in ins)}")
 
     judged = [r[3] for r in rows if r[3]]
     print(f"\n## judge ({len(judged)}/{n} 채점됨)")

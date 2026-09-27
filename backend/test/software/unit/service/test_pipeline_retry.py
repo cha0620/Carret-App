@@ -117,7 +117,7 @@ def test_graph_retries_generate_once_when_check_photo_invalid_then_valid(monkeyp
 
     monkeypatch.setattr(pipeline_mod.detector, "analyze",
                          lambda img: {"item": "chair", "considered": [], "anchors": [],
-                                      "item_box": None, "scene": "single_item",
+                                      "item_box": None, "photo_type": "product",
                                       "wear_level": "light", "watermark": "none",
                                       "text_level": "none"})
 
@@ -164,7 +164,7 @@ def test_graph_stops_retrying_after_max_attempts_when_always_invalid(monkeypatch
 
     monkeypatch.setattr(pipeline_mod.detector, "analyze",
                          lambda img: {"item": "chair", "considered": [], "anchors": [],
-                                      "item_box": None, "scene": "single_item",
+                                      "item_box": None, "photo_type": "product",
                                       "wear_level": "light", "watermark": "none",
                                       "text_level": "none"})
 

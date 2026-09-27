@@ -59,19 +59,17 @@ class TransformResponse(BaseModel):
     item: str = "object"
     considered: list[str] = []
     composite_reason: str | None = Field(
-        default=None, description="생성하지 않은 이유: detect_failed | partial_view | text_dense | "
-                                  "text_heavy | wear_heavy | guard_failed | gate_failed | verify_failed")
+        default=None, description="생성하지 않은 이유: detect_failed | inside_view | document | text_dense | "
+                                  "text_heavy | wear_heavy | gate_failed | verify_failed")
     judge_pending: bool = Field(default=False,
                                 description="성적표를 응답 뒤에 채점 중 — GET /api/quality/{file_id}/{preset} 폴링")
-    status: str = Field(default="pass",
-                        description='"pass" | "blocked"(생성본·합성 모두 불가 → 원본 그대로)')
     verify_failed: bool = Field(default=False,
                                 description="결과 보존 검사(verify) 호출 실패 — 보존 여부를 검증하지 못함")
     detect_failed: bool = Field(default=False,
                                 description="원본 분석(analyze) 실패 — 보존 여부를 검증하지 못함")
-    scene: str | None = Field(default=None, description="analyze: single_item | partial_view | multiple_items")
+    photo_type: str | None = Field(default=None, description="analyze: document | inside_view | product")
     wear_level: str | None = Field(default=None, description="analyze: none | light | heavy")
     watermark: str | None = Field(default=None, description="analyze: none | background | on_item")
     mode: str = Field(default="generate",
                       description='"generate" | "composite"(원본 물건 픽셀 + 배경만 교체) | "composite_failed" '
-                                  '| "original"(물건 일부·내부 사진 — 원본 그대로)')
+                                  '| "original"(원본 그대로 — 물건 일부·내부 사진 등)')

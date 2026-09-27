@@ -10,6 +10,9 @@
 8. 고주파 섞기 실험 → 효과 없음 · 원인은 입력 화질
 9. 폰 사진 6장 · 첫 단계를 analyze 로 · 하자 앵커 제거 · OCR 가드 끔 (PR)
 10. 하루 마무리
+11. 글자가 곧 상품인 사진 · 책 표지 펴기 · 파이프라인 다시 정리
+12. 사진 종류 셋으로 시작 · 글자 가드 경로 제거 · 반영 안 된 곳 정리
+13. 이미지 생성을 실제로 쓴 곳들의 경험 (데이터셋 만들기 전에)
 
 ---
 
@@ -359,3 +362,254 @@ UI 생성본 배지에 "흠집·얼룩은 자동 검사하지 않아요, 원본 
 1. **떨어진 결과도 저장해서 본다** — 글자 가드 반려의 대부분이 검사기의 읽기 흔들림이었다. 검사기의 오차가 생성기보다 클 수 있다.
 2. **지켜야 할 것을 목록으로 강조하면 모델은 그것을 그린다** — 하자는 수준으로 보고, 많으면 생성하지 않는다.
 3. **테스트 입력은 실제 입력 화질로** — 400px 데이터로 내린 "생성이 물건을 바꾼다"는 판단은 폰 사진에서 대부분 뒤집혔다.
+
+---
+
+## 11. 글자가 곧 상품인 사진 · 책 표지 펴기 · 파이프라인 다시 정리
+
+마무리(§10) 뒤에 이어서 한 일. 커밋 전, 브랜치 `feat/analyze-step`.
+
+### 11-1. OCR 을 뺀 뒤 글자는 누가 지키나
+
+§9 에서 OCR 글자 가드를 껐다. verify(VLM)는 여전히 **마크와 주요 글자**(브랜드명·모델명)를 본다.
+빠진 건 번호판·목 라벨·작은 인쇄 같은 부수 글자다. 처음 답은 "프론트로 넘기자"였다
+(원본 사진 함께 싣기 · 판매자 확인 체크 · 글자 위치 확대 보기).
+
+그럼 옷 그래픽 말고 글자가 중요한 경우가 언제냐를 따져 봤다:
+
+| 부류 | 예 | 바뀌면 |
+|---|---|---|
+| 글자가 곧 상품 | 책 제목·판, 음반, 게임 타이틀, 티켓·상품권 | 다른 물건을 파는 셈 |
+| 스펙·모델 식별 | 렌즈 "24-70mm f/2.8", "RTX 4070", "256GB", 사이즈 태그 | 가격이 달라지는 정보가 틀림 |
+| 정품 증빙 | 가방 각인·시리얼, 시계 다이얼, 스니커즈 품번 | 가품 의심 · 허위 표시 |
+| 상태 정보 | 주행거리, 배터리 성능, 셔터 카운트, 유통기한 | 상태를 속임 |
+
+**결정 (사용자)**: 스펙·정품·상태는 **판매 정보로 따로 입력받으면 될 일**이지 사진에서 보정할 대상이 아니다.
+사진으로만 전달되는 건 첫 부류뿐 — 책·음반은 생성하지 않고 배경 교체로 간다.
+기준이 "글자가 많냐"(text_level)에서 "틀리면 거래가 달라지냐"로 옮겨 갔다.
+
+### 11-2. `text_is_product` — analyze 필드 하나 + plan 분기
+
+- 프롬프트 `text_level_analyze.md` 8번: 책·잡지·만화·음반 커버와 CD·LP 자체·게임/영화 케이스·트레이딩 카드와 포토카드·포스터·티켓·상품권은 true.
+  전자제품·옷·화장품·상품 포장은 글자가 많아도 false
+- `detector._product_flag`: JSON true 나 `"true"` 만 참. 필드가 없으면 로그 — Langfuse 에 옛 `analyze` 가 남아 있으면 기능이 통째로 꺼지므로
+- `plan` 우선순위: detect_failed → partial_view(원본 그대로) → **text_product** → text_dense → wear_heavy
+- 오리기 실패: 전엔 생성으로 돌아갔다 → 제목이 바뀌어도 "보존됨" 배지. wear_heavy 처럼 **원본 그대로**로 바꿈 (reviewer)
+- UI 배지 두 개 (배경 교체 / 원본 그대로), inspect 에 `text_is_product`, eval-report 에 분포 줄, README 흐름도
+
+### 11-3. 책 표지 펴기 (`compositor.compose_flat`)
+
+사용자가 `phone_img/` 에 책 2장(치과보철학 하드커버, 비닐 포장된 선형대수)과 목표 예시 `answer1.jpg`
+(정면 표지 · 밝은 배경 · 옅은 그림자, 쇼핑몰 표지 컷)를 넣음. "책은 answer1 처럼 깔끔하게".
+
+일반 배경 교체는 비스듬한 책을 비스듬한 채 붙인다. 표지는 평면이니 **원근만 펴면** 된다 — 생성 없이 원본 픽셀.
+
+1. 오리기 알파(fal birefnet) → 가장 큰 윤곽의 볼록 껍질 → 네 점이 될 때까지 `approxPolyDP`
+2. 오리기 면적 / 사각형 면적이 0.93~1.07 밖, 볼록 아님, 짧은 변 32px 미만, 떨어진 덩어리 둘 이상(여러 권) → 일반 배경 교체
+3. `warpPerspective` 로 정면화 → 1024 캔버스 가운데 · 오른쪽 아래로 떨어지는 흐린 그림자
+
+**가로세로 비 — 처음 시도는 틀렸다.** 비스듬히 찍으면 세로가 짧아져 책이 납작해 보여, 한 장으로 직사각형의 실제 비를
+추정하는 Zhang–He 방법을 넣어 봤다. 결과가 두 권 다 **더 넓게** 나왔다:
+
+| 책 | 모서리 길이 그대로 | Zhang–He |
+|---|---|---|
+| 치과보철학 | 0.81 | 0.86 |
+| 선형대수 | 0.87 | 0.95 |
+
+국내 책은 대개 0.7대다. 이 방법은 사진 가운데가 렌즈 중심이라고 가정하는데, 중고나라 사진은 잘리고 줄어서 가정이 깨진다
+(선형대수는 오른쪽이 사진 밖으로 잘리기까지). 모서리 길이 그대로를 쓴다.
+
+실제 파이프라인 결과 (analyze VLM 1회 + fal 오리기, 생성 호출 없음):
+
+| 책 | analyze | 경로 | verify |
+|---|---|---|---|
+| 치과보철학 | book · single_item · 하자 light · text_is_product | text_product → 표지 펴기 | 통과 |
+| 선형대수 | textbook · single_item · 하자 light · text_is_product | text_product → 표지 펴기 | 통과 |
+
+남는 한계: 비닐 반사·구김은 원본 픽셀이라 그대로, 사진 밖으로 잘린 표지는 복원 안 함,
+배경은 프리셋(studio_white 는 옅은 회색) — answer1 처럼 순백으로 할지 미정.
+
+### 11-4. reviewer · tester
+
+| 누가 | 지적 | 조치 |
+|---|---|---|
+| reviewer | text_product 인데 오리기 실패 → 생성으로 가서 "보존됨" 배지 | 원본 그대로 + 전용 배지 |
+| reviewer | inspect 에 필드 없음, `_is_true` 가 조용히 False | inspect 기록 · 필드 없음 로그 |
+| reviewer | 포토카드·디스크 라벨 누락, 상품 포장 경계 | 프롬프트에 추가 |
+| reviewer | 수집품 박스(보드게임·레고)·밴드 티는 false → 생성 | 안 함 — 의도대로 둔다 |
+| reviewer | `_order_corners`(x+y / y−x 로 점마다 고르기)가 45도 근처에서 같은 점을 두 번 고름 | 둘레 순서를 그대로 쓰고 시작점·방향만 맞춤 |
+| reviewer | 짧은 변 0 → warp assertion / 0 나누기, 펴다가 예외 → 원본 그대로 | 짧은 변 검사 + 예외 시 일반 배경 교체 |
+| reviewer | 떨어진 여러 권 → 가장 큰 한 권만 남음 | 둘 이상이면 일반 배경 교체 |
+| reviewer | 사진 가장자리에서 잘린 표지도 사각형으로 통과 | 안 함 — 선형대수가 바로 그 경우이고 결과가 쓸 만했다 |
+| reviewer | 누운 책·90도 돌아간 표지를 돌려세우지 않음, 펼친 책은 휜 면을 평면으로 폄 | 남은 일 |
+| tester | 새 테스트 101개 (파싱 값·우선순위·라우팅·오리기 실패 폴백·그래프 전체) | 단위 1578 passed |
+| (훅) | 기존 compose 헬퍼가 compose_flat 을 안 막아 테스트 1건 실패 | 헬퍼가 둘 다 막음 |
+| tester | 표지 펴기 테스트 36개 (모서리 순서·사각형 판정·펴기·폴백 4종·사유별 compose 분기). 옛 순서 방식이 45도에서 표지 없는 그림을 내는 것도 재현 | 단위 1614 passed. `isContourConvex` 거부 분기만 합성 알파로 못 만들어 미검증 |
+
+### 11-5. 파이프라인 지금 모양
+
+```text
+load → analyze (VLM 1회: 물건·마크·물건 위치·scene·wear·watermark·text_level·text_is_product)
+  → plan
+      partial_view                                   → keep_original (원본 그대로)
+      분석 실패 / 글자가 곧 상품 / 글자 dense / 하자 heavy → composite
+                                                        (text_product 는 표지 펴기)
+      글자 simple → read_text (12줄 이상이면 composite) → generate
+      글자 none                                       → generate
+  generate (FLUX.2) → validate_result (구도·자막 / item_dino soft / OCR 가드는 OCR_GUARD 일 때만)
+      가드 실패 1회 → seed 바꿔 재생성, 2회 → composite
+  → score_similarity → verify (마크·주요 글자, verify_v2)
+      실패 1회 → 바뀐 마크를 프롬프트에 넣어 재생성, 2회 → composite
+  → finalize → (그래프 밖) judge_and_save
+
+composite 오리기 실패:
+  가드 불합격 뒤        → blocked (원본)
+  하자 heavy · 글자가 곧 상품 → 원본 그대로
+  그 밖에 생성 전       → 생성으로
+  생성 뒤               → 생성본 유지
+```
+
+하자는 목록으로 검사하지 않는다 — 수준(wear_level)으로 plan 에서만 본다.
+생성본 배지는 "주요 로고·글자"만 약속하고, 흠집·얼룩은 원본 사진으로 확인하라고 알린다.
+
+### 11-6. 남은 일 (§10-2 에 더해)
+
+- [x] Langfuse `analyze` 재시딩 → §12-4
+- [ ] 책·음반 사진을 더 모아 text_is_product 과민·과소 보기 (포토카드, 앨범 구성품, 보드게임 박스)
+- [ ] 표지 펴기: 누운 책 돌려세우기, 펼친 책 감지, 배경 순백 여부
+- [ ] md-lint 훅이 `.markdownlintignore` 를 안 읽음 (`backend/app/prompts/` 가 무시 목록에 있는데 경고)
+
+---
+
+## 12. 사진 종류 셋으로 시작 · 글자 가드 경로 제거 · 반영 안 된 곳 정리
+
+### 12-1. photo_type — 첫 갈림길을 사진 종류 셋으로
+
+사용자: "품질보증서 같은 글자 많은 애들도 책처럼. 종류가 셋이다 — 글자가 곧 물건, 차·노트북 까본 것처럼 내부, 상품 사진.
+분류할 때 이 셋으로 나눠서 파이프라인을 시작하자."
+
+§11 의 `text_is_product`(bool) 와 §9 의 `scene`(single_item / partial_view / multiple_items) 을 `photo_type` 하나로 합쳤다:
+
+| photo_type | 예 | 경로 |
+|---|---|---|
+| document | 책·음반·카드·티켓·보증서·설명서·영수증 | 표지 펴기 + 배경 (하자 heavy 면 펴지 않고 일반 배경 교체) |
+| inside_view | 엔진룸, 케이스를 뜯은 노트북 보드, 한 곳 클로즈업 | 원본 그대로 |
+| product | 그 밖 전부 (글자 많은 상품 박스·화장품 포함) | 기존: dense·heavy 면 배경 교체, 아니면 생성 |
+
+- 모르는 값·없는 필드 → `product` (+ 로그). `multiple_items` 는 기록만 하고 쓰지 않던 값이라 없앴다
+- `phone_img/` 8장 analyze: 책 2권 document, 굴삭기 엔진룸 inside_view, 나머지 5장 product — 전부 맞음
+
+reviewer:
+
+| 지적 | 조치 |
+|---|---|
+| 하자 heavy 문서(찢김·접힘)를 네 모서리로 펴면 하자가 잘리거나 펴진다 | heavy 면 compose_flat 대신 compose |
+| "opened laptop" 은 화면을 연 평범한 노트북 사진으로 읽힐 수 있다 | "케이스를 뜯어 보드가 보이는" 으로, 화면 연 노트북·프레임에 조금 잘린 상품은 product 로 명시 |
+| 보드게임 박스·화장품 포장 경계 | 다른 상품의 박스는 product 로 명시 |
+| 배지 "표지" 는 영수증·보증서에 안 맞음, 원본 그대로 배지가 이유를 모르면 "일부·내부" 문구로 떨어짐 | "인쇄된 글자·그림이 곧 상품이라", 이유별로 나눔 |
+| Langfuse 에 옛 `analyze` 가 있으면 photo_type 이 없어 전부 product | §12-4 에서 시딩 |
+
+### 12-2. 파이프라인 다시 훑기 — 과한 것 두 개를 지움 (사용자 결정)
+
+1. **OCR 글자 가드와 그것 때문에만 있던 경로**: `OCR_GUARD` 가 꺼진 기본값에선 hard 가드가 하나도 없어
+   seed 재시도 · 가드 실패 → 배경 교체 · blocked(원본 반환)가 **절대 실행되지 않았다**. 설정 `ocr_guard`,
+   `guards._ocr_guards`·`run_output_guards`·`decide`, pipeline 의 `_ocr_pair`·`_run_guards`, State 의
+   `guard_seed`·`guard_retry`·`guard_failed`·`status`, API `status`, UI "⛔ 차단" 배지·dev "가드 차단" 필터를 지웠다.
+   남은 가드는 전부 관측용: `dino_band_guard`(새 함수) · item_dino · item_patch · ocr_local(eval 용, 기본 끔)
+2. **배경 교체본의 verify**: 물건 픽셀이 원본이라 확인할 게 없고 결과도 바꾸지 않는다. VLM 1회 절약, 대신 합성본 말풍선이 없어짐
+
+남겨 둔 것: read_text 의 12줄 안전망(document 가 빠져 거의 안 걸림 — inspect 를 보고 뺄지), 물건 위 워터마크가
+배경 교체로 가면 남는다는 안내 없음, 여러 장 겹친 문서.
+
+### 12-3. 반영 안 된 곳 정리 (사용자: "랭체인·프론트·DB 처럼 반영 안 된 애들 싹 다")
+
+| 어디 | 전 | 후 |
+|---|---|---|
+| DB `results` | 경로 정보 없음 (inspect JSON 에만) | `mode`·`composite_reason`·`photo_type`·`wear_level` 컬럼 + 기존 DB 는 ALTER 마이그레이션 (실제 DB 사본으로 확인) |
+| dev 화면 | 사진 종류·하자·워터마크·이유 안 보임, "배경 교체 모드만" 필터가 원본 그대로도 포함 | 칩 추가, 필터 "생성 안 한 것"·document·inside_view |
+| Langfuse 트레이스 | photo_type 없음 | output 에 photo_type·wear_level |
+| eval-report 스킬 | ocr_match 점수 조회 | item_patch 로 (ocr_match 는 옛 트레이스에만) |
+| README | 흐름도가 덧댄 모양 | mermaid 를 지금 그래프대로 다시 (사진 종류 셋 → 생성 경로 subgraph → 배경 교체 분기) |
+
+### 12-4. Langfuse 시딩
+
+`python scripts/seed_langfuse_prompts.py` (없는 이름만 올리는 기본 모드) → `analyze` v1, `verify_v2` v1 을 production 으로.
+그동안은 호출마다 404 뒤 코드 fallback 으로 돌고 있었다. 조회해 보니 코드 템플릿과 같은 내용이 돌아온다.
+운영 중인 옛 서버는 두 이름을 쓰지 않아서 먼저 올려도 안전하다.
+앞으로 analyze 프롬프트를 고치면 `seed_langfuse_prompts.py analyze` 로 덮어써야 한다 (기본 모드는 있는 이름을 건너뜀).
+
+### 12-5. 두 번째 reviewer · tester
+
+| 누가 | 지적 | 조치 |
+|---|---|---|
+| reviewer · tester | 합성본 verify 생략이 `verify_failed: False` 를 돌려줘, "verify 호출 실패 → 배경 교체" 의 기록을 덮음 (배지가 "결과 검사 못 함" 대신 "🛡️ 지키려고") | verify_failed 를 건드리지 않음. 떨어진 생성본 checks 는 `gate_checks` 로 inspect 에 남김 |
+| reviewer | results·feedbacks ALTER 가 워커 동시 기동에서 "duplicate column" 으로 죽을 수 있음 | `db._add_column` 이 duplicate 만 무시 |
+| reviewer | mermaid 에 composite → read_text 엣지 없음, 분석 실패 시 1회차에도 composite, "finalize 에서 DB 기록"은 틀림 | mermaid 다시 (§12-3 의 것을 한 번 더 고침) |
+| reviewer | 지운 가드를 가리키는 주석·docstring 여러 곳, 로드맵의 `ocr_match` 완료 항목 | 고침 · 취소선 |
+| reviewer | mock 경로는 DB 에 경로를 안 남김, dev 요약 칩과 필터 기준이 다름 | 안 함 — mock 은 개발용 통과 모드, 칩은 이름대로 composite 만 센다 |
+| tester | 테스트 갱신 · 추가 (photo_type, 가드 제거, DB 경로 컬럼 32개) | 단위 1662 passed (수정 전) |
+
+---
+
+## 13. 이미지 생성을 실제로 쓴 곳들의 경험 (데이터셋 만들기 전에)
+
+사용자: "단순 배경 교체 말고 이미지 생성을 쓰는 곳의 경험을 보고 싶다." 데이터셋·평가 설계에 쓸 것 위주로 읽었다.
+
+### 13-1. 곳별 요약
+
+**Pinterest Canvas** — 상품 사진 배경 생성(하루 약 7,500만 노출)·세로 비율 확장
+([arXiv 2603.06453](https://arxiv.org/html/2603.06453v2),
+[엔지니어링 블로그](https://medium.com/pinterest-engineering/building-pinterest-canvas-a-text-to-image-foundation-model-aa34965e84d9))
+
+- **생성이 끝나면 원본 상품 누끼를 다시 덮어 붙인다.** 경계 색은 마스크를 받는 VAE 디코더를 따로 학습해 맞춘다
+- **생성 전 대상 걸러내기**: 사람이 나온 사진, 무늬·글자가 주인 사진 등은 아예 제외
+- **평가**: 상품 996개, 사람 평가자 2명이 정해진 양식(색 변화·상품 늘어남·변형 / 배경 문제)으로 채점
+  - 상품 보존율 Canvas 84.0% · Nano Banana 74.6% · **FLUX.1 Kontext 53.4%**, 결함 없음 전체 47.2%
+- 후보 2장 생성 + 보상 모델로 고르기 → 쓸 수 있는 결과 약 +7% (실행 시간 약 +20%)
+- "비용의 대부분은 연산이 아니라 **사람 검수**"
+- 온라인 A/B: 배경 생성 CTR +18%
+
+**Amazon Ads** — 상품을 생활 장면에 넣는 생성, 상품별 LoRA 파인튜닝 + 합성 학습 데이터
+([arXiv 2503.08729](https://arxiv.org/html/2503.08729))
+
+- **평가**: 가구 100개, 평가자 3명 다수결, 8개 항목 4점 척도
+  - 이미지 단위 통과율 17.4%(기준선 10%) / 상품 단위 45.5% — 같은 상품도 생성할 때마다 크게 흔들린다
+- **자동 지표(CLIP·DINO)와 사람 점수의 상관이 0.4** — 자동 지표만으로는 판정 못 한다
+- 어려운 것: 잔무늬·반사·가림
+
+**Instacart PIXEL** — 사내 이미지 생성 플랫폼 (식품 이미지)
+([글](https://company.instacart.com/how-its-made/introducing-pixel-instacarts-unified-image-generation-platform))
+
+- **VLM 판정**: 프로젝트마다 예/아니오 질문 목록("배경이 따뜻한 중간 톤인가", "식품 아닌 것이 있나")
+  → 떨어지면 LLM 이 프롬프트를 다시 쓰고 재생성
+- 사람 승인율 **20% → 85%**. 최적 모델은 프로젝트마다 달라서 샘플 셋으로 먼저 비교
+
+**eBay** — 판매자 사진 배경 교체 (중고 포함, 도메인이 제일 가깝다)
+([글](https://innovation.ebayinc.com/stories/background-swap-tool-turns-any-photo-into-a-studio-quality-product-image/))
+
+- 배경 제거 → **원본 물건을 SD 인페인팅으로 만든 배경 위에** 놓는다 (물건은 다시 그리지 않음)
+- Responsible AI 팀과 함께: 판매자에게 "정확한지 확인하고 AI 사용을 밝히라"는 안내. 수치 공개 없음
+
+그 밖에: ML6(SAM + SD 인페인팅 + ControlNet Canny 로 윤곽 보존,
+[글](https://www.ml6.eu/en/blog/developing-an-ai-solution-for-product-photography-what-we-learned)),
+Zalando(생성 이미지가 고객에게 가기 전 브랜드 오류·아티팩트 자동 검출기 — 2차 기사만 확인,
+[기사](https://aieranews.com/can-zalandos-generative-ai-reinvent-fashion-shopping/))
+
+### 13-2. Carret 에 주는 것
+
+1. **"물건은 다시 그리지 않는다"가 업계 기본값이다.** Pinterest·eBay 모두 배경만 생성하고 원본 누끼를 덮어 붙인다.
+   Carret 의 generate(FLUX.2 edit)는 물건까지 다시 그리는데, Pinterest 표에서 FLUX.1 Kontext 상품 보존이 53.4% 였다.
+   → **"배경만 생성 + 원본 누끼 덮기"를 생성 경로의 기본 후보로** 실험할 만하다 (지금 composite 는 단색 배경뿐)
+2. **생성 전 걸러내기는 맞는 방향이다.** Pinterest 도 사람·글자가 주인 사진을 뺀다 — §12 의 photo_type 과 같은 생각
+3. **데이터셋·평가 설계**
+   - 평가자 2~3명, 정해진 결함 양식(물건 변화 / 배경 문제), **이미지 단위와 물건 단위 통과율을 둘 다**
+   - 자동 지표(DINO·judge)는 사람 라벨과의 상관부터 잰다 — Amazon 은 0.4 였다
+   - 규모 감: Amazon 100개, Pinterest 996개. 포트폴리오면 30~50장으로 시작해 종류별로 나눠 보고
+4. **VLM 예/아니오 체크리스트 판정은 효과가 검증된 방식이다** (Instacart 20% → 85%) — verify 의 설계와 같다
+5. **후보 여러 장 + 고르기**는 비용이 싸고 효과가 있다 (+7%) — 나중 후보
+
+### 13-3. 남은 일에 더할 것
+
+- [ ] "배경만 생성 + 원본 누끼 덮기" 경로 실험 (경계 조화가 관건 — Pinterest 는 전용 디코더)
+- [ ] 데이터셋 라벨 양식: 물건 변화(색·형태·글자·하자) / 배경 문제 / 통과, 평가자 2명 이상
+- [ ] judge·DINO 와 사람 라벨의 상관 재기

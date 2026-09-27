@@ -27,7 +27,7 @@ from app.services.quality import metric
 
 ROOT = storage.BASE / "text_check"
 EXTS = {".jpg", ".jpeg", ".png", ".webp"}
-OCR_MATCH = 0.95   # guards.OCR_MATCH_THRESHOLD 와 같은 기준
+OCR_MATCH = 0.95   # 옛 ocr_match 가드 기준 (가드는 09-27 에 없앰 — 비교용으로만 남김)
 
 _ocr = None
 
