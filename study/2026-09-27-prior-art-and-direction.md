@@ -7,6 +7,8 @@
 5. 생성 경로 기준선 · gate 를 통과했지만 물건이 바뀐 4건
 6. 방향 전환 논의: 하자 추출 대신 아이덴티티 + 고주파 섞기
 7. 고주파 섞기(detail transfer)의 출처
+8. 고주파 섞기 실험 → 효과 없음 · 원인은 입력 화질
+9. 폰 사진 6장 · 첫 단계를 analyze 로 · 하자 앵커 제거 · OCR 가드 끔 (PR)
 
 ---
 
@@ -242,3 +244,73 @@ FLUX 가 2.5~6배를 키우면서 없는 디테일을 **지어낼 수밖에 없�
 - [ ] 폰으로 찍은 고해상도 테스트 셋 (구도는 엉망, 하자 있는 것 포함) — §6-4 하자 사진 20장과 합친다
 - [ ] 그 셋으로 파이프라인 다시 돌려 gate·judge·정렬 신호 비교 (유료, 장당 FLUX + VLM)
 - [ ] 정렬 신호를 soft 가드로 넣어 값부터 모으기 (item_dino 와 같은 방식)
+
+---
+
+## 9. 폰 사진 6장 · 첫 단계를 analyze 로 · 하자 앵커 제거 · OCR 가드 끔 (PR)
+
+브랜치 `feat/analyze-step` (PR #23 위에 쌓음). 결과 페이지(비공개 artifact) 2~4단계에 사진 전부.
+
+### 9-1. 폰 사진 6장 (중고나라, 750~824px) — 옛 파이프라인
+
+사용자가 `phone_img/` 에 6장(오토바이·승용차·굴삭기 엔진룸·폴로티·축구 유니폼·코트)을 넣음. SOP(약 400px)의 두 배.
+
+- 생성 2장, **합성 4장** — 전부 글자 가드(ocr_match hard) 때문
+- 떨어진 생성본이 저장되지 않아 볼 수 없었다 → 사용자: "실패했을 때의 이미지는 같이 보여줘야지".
+  실험 스크립트에서 `_generate_ai`·`_run_guards`·`_ocr_pair` 를 몽키패치해 시도마다 저장하고 다시 돌림
+
+| 사진 | 떨어진 생성본을 보니 |
+|---|---|
+| 오토바이 | 지난번 0.887 로 떨어졌는데 이번엔 통과 — 같은 사진에서 판정이 갈림 |
+| 승용차 | 1차는 깨끗했는데 녹 앵커 "사라짐" → "반드시 남겨라" 재생성 → **원본보다 큰 녹을 그려 넣음**. 2차 반려는 "17어"→"17에" 읽기 |
+| 굴삭기 | 엔진룸 사진에서 **운전석·차체를 지어냄**, 녹슨 범퍼가 깨끗해짐. 반려는 "00 3060"을 "00"+"3060"으로 쪼개 읽은 것 |
+| 유니폼 | 1차는 워터마크까지 지워진 좋은 결과인데 "H.M"→"H-M" 으로 반려. 2차는 가슴에 "F H.M" 글자를 새로 그림. 최종 합성본엔 워터마크가 남음 |
+
+**알게 된 것**: 글자 가드 반려의 대부분은 **읽기 흔들림**이었다 — 검사기의 오차가 생성기의 오차보다 컸다.
+진짜 문제(하자·물건을 지어냄)는 하자 앵커와 엔진룸 같은 사진 유형에서 나왔다.
+
+### 9-2. 설계 (사용자 제안: "처음 분류를 분석으로 바꾸고 워터마크, 하자·글자 복원 가능성까지 보자" + "OCR 은 빼자")
+
+- **analyze** (VLM 1회, 예전 classify + detect 2회): item · 아이덴티티 마크(로고·글자·그래픽만, 하자 앵커 없음) · item_box ·
+  `scene`(single_item / partial_view / multiple_items) · `wear_level`(none / light / heavy) · `watermark`(none / background / on_item) · `text_level`
+- **plan**: partial_view → `keep_original`(원본 그대로, mode original) / 분석 실패·text dense·wear heavy → 배경 교체 / 나머지 생성.
+  `many_defects`·`composite_first_min_anchors` 삭제
+- **verify**: 마크·주요 글자만. 새 프롬프트 `verify_v2` (옛 `verify` 는 "defects and marks" 전제 — VLM 이 하자 항목을 보태면 게이트가 떨어짐)
+- **OCR 글자 가드**: `OCR_GUARD`(기본 False). 켜면 비교는 띄어쓰기·구두점·대소문자 무시, 2~3줄로 쪼개 읽은 건 정확히 이어질 때만 인정
+- "?"(원본에서도 못 읽음, 전각 포함) 글자는 검사·TEXT_LOCK 모두에서 제외
+- `watermark`·`multiple_items` 는 기록만 (라우팅 없음)
+
+처음 규칙("글자를 그대로 옮겨 적을 수 없으면 dense")은 폴로티 목 라벨·승용차 번호판에 걸려 둘 다 합성으로 갔다 →
+"물건의 **주요** 글자만, 라벨·번호판 제외"로 좁힘.
+
+### 9-3. 새 파이프라인 결과 (같은 6장)
+
+| 사진 | analyze | 결과 | judge (충실·사실·신뢰) |
+|---|---|---|---|
+| 오토바이 | 하자 none · 글자 simple | 생성 1회 | 4 · 4 · 3 |
+| 유니폼 | 워터마크 on_item | 생성 1회 — 워터마크 지워지고 로고·글자 유지 | 4 · 4 · 4 |
+| 코트 | 하자 none | 생성 1회 | 3 · 4 · 4 |
+| 폴로티 | 하자 none | 생성 1회 | 4 · 4 · 4 |
+| 승용차 | 하자 light | 생성 1회 — **하단 얼룩 정돈, 번호판 "17? 5433"→"170 5413"** | 3 · 4 · 3 |
+| 굴삭기 | partial_view · 하자 heavy | 원본 그대로 | — |
+
+승용차가 **하자 검사를 뺀 대가**다. 하자 light 인 물건의 생성본이 하자를 정돈해도 judge 점수로만 보인다 →
+UI 생성본 배지에 "흠집·얼룩은 자동 검사하지 않아요, 원본 사진으로 확인해 주세요"를 붙임. 번호판은 가리는 쪽이 나을 수도.
+
+### 9-4. reviewer · tester
+
+| 누가 | 지적 | 조치 |
+|---|---|---|
+| reviewer | 테스트 460 errors, integration `test_dev_replay` 가 analyze 를 mock 안 해 **실제 Gemini 호출 가능** | tester 가 전부 갱신 + integration 에도 get_client 차단 conftest |
+| reviewer | wear heavy 인데 오리기 실패 → 생성으로 가서 초록 "보존됨" 배지 | 원본 그대로(`_original_as_result`) |
+| reviewer | README·UI 가 "하자 보존 검증"을 약속 | README 한/영, UI 문구("주요 로고·글자", 하자 미검사 안내), dev 화면 라벨 |
+| reviewer | text_match 부분 문자열 구제 → "500"/"1500", "3060"/"13060" 거짓 통과 | 조각을 **정확히** 이을 때만 (순서 무관, 2~3줄) |
+| reviewer | analyze 마크가 prompt_safe 없이 verify 프롬프트로 (사진 속 글자 = 외부 입력) | `_text()` = prompt_safe |
+| reviewer | verify 프롬프트가 하자를 전제 → 하자 항목을 보태 오반려 | `verify_v2` (마크만, 항목 수 그대로, checklist 안 넘김) |
+| reviewer | "?" 글자가 TEXT_LOCK 으로는 들어감 | `presets.unreadable` 로 둘 다 제외 |
+| reviewer | multiple_items 미사용, 분류 fallback 이 조용함 | 안 함 — 기록만 하고 값부터 모은다 (inspect 에 남음) |
+| tester | JSON null → "None" 마크 | `_text()` 가 None → "" |
+| tester | 역순 쪼개 읽기 ["3060","00"] 미구제, 한 글자 새 줄이 added 에서 빠짐 | `_split_match`·`_fragment_of` |
+| tester | dev 결과·API 응답에 scene/wear/watermark 없음 | 추가 |
+
+별도로 **테스트 실패 출력에 AWS 키가 평문으로 찍히는 것**을 발견 → 키 설정을 `SecretStr` 로 (PR #24, `fix/secret-settings`).

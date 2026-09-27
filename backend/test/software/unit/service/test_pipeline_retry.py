@@ -115,11 +115,11 @@ def test_graph_retries_generate_once_when_check_photo_invalid_then_valid(monkeyp
     from app.services.persistence import storage
     storage.save("original", "fid-retry.jpg", make_png())
 
-    monkeypatch.setattr(pipeline_mod.detector, "classify",
-                         lambda img: {"item": "chair", "considered": []})
-    monkeypatch.setattr(pipeline_mod.detector, "detect_full",
-                         lambda img, item, considered, **kw: {     # strict=True 받음
-                             "anchors": [], "text_level": "none", "item_box": None})
+    monkeypatch.setattr(pipeline_mod.detector, "analyze",
+                         lambda img: {"item": "chair", "considered": [], "anchors": [],
+                                      "item_box": None, "scene": "single_item",
+                                      "wear_level": "light", "watermark": "none",
+                                      "text_level": "none"})
 
     gen_calls = {"n": 0}
 
@@ -140,13 +140,14 @@ def test_graph_retries_generate_once_when_check_photo_invalid_then_valid(monkeyp
     monkeypatch.setattr(pipeline_mod.embedder, "cosine_similarity",
                          lambda orig, result: 0.9)
     monkeypatch.setattr(pipeline_mod.detector, "verify_and_locate",
-                         lambda img, anchors, item, considered: [])
+                         lambda img, anchors, item="object", considered=None, **kw: [])
     monkeypatch.setattr(pipeline_mod.judge, "judge",
                          lambda orig, result: {"analysis": "ok", "fidelity": 5,
                                                 "realism": 5, "trust": 5})
 
     out = pipeline_mod.GRAPH.invoke({"file_id": "fid-retry", "preset_key": "studio_white"})
 
+    assert out["detect_failed"] is False and out.get("mode", "generate") == "generate"
     assert gen_calls["n"] == 2
     assert check_calls["n"] == 2
     assert out["gen_attempts"] == 2
@@ -161,11 +162,11 @@ def test_graph_stops_retrying_after_max_attempts_when_always_invalid(monkeypatch
     from app.services.persistence import storage
     storage.save("original", "fid-retry-exhaust.jpg", make_png())
 
-    monkeypatch.setattr(pipeline_mod.detector, "classify",
-                         lambda img: {"item": "chair", "considered": []})
-    monkeypatch.setattr(pipeline_mod.detector, "detect_full",
-                         lambda img, item, considered, **kw: {     # strict=True 받음
-                             "anchors": [], "text_level": "none", "item_box": None})
+    monkeypatch.setattr(pipeline_mod.detector, "analyze",
+                         lambda img: {"item": "chair", "considered": [], "anchors": [],
+                                      "item_box": None, "scene": "single_item",
+                                      "wear_level": "light", "watermark": "none",
+                                      "text_level": "none"})
 
     gen_calls = {"n": 0}
 
@@ -179,13 +180,14 @@ def test_graph_stops_retrying_after_max_attempts_when_always_invalid(monkeypatch
     monkeypatch.setattr(pipeline_mod.embedder, "cosine_similarity",
                          lambda orig, result: 0.9)
     monkeypatch.setattr(pipeline_mod.detector, "verify_and_locate",
-                         lambda img, anchors, item, considered: [])
+                         lambda img, anchors, item="object", considered=None, **kw: [])
     monkeypatch.setattr(pipeline_mod.judge, "judge",
                          lambda orig, result: {"analysis": "ok", "fidelity": 5,
                                                 "realism": 5, "trust": 5})
 
     out = pipeline_mod.GRAPH.invoke({"file_id": "fid-retry-exhaust", "preset_key": "studio_white"})
 
+    assert out["detect_failed"] is False
     assert gen_calls["n"] == settings.max_generate_attempts == 2
     assert out["gen_attempts"] == 2
     assert out["photo_check"] == {"valid": False, "reason": "always cropped"}

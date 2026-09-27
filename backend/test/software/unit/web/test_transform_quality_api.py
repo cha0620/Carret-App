@@ -220,3 +220,19 @@ def test_quality_bad_file_id_is_422(client, tmp_storage, fid):
 @pytest.mark.parametrize("preset", ["unknown", "STUDIO_WHITE", "studio_white_inspect"])
 def test_quality_bad_preset_is_422(client, tmp_storage, preset):
     assert client.get(f"/api/quality/{FID}/{preset}").status_code == 422
+
+
+# ── analyze 분류값 (scene / wear_level / watermark) 이 응답에 실린다 ──
+def test_transform_response_carries_scene_wear_watermark(client, fake_pipeline):
+    fake_pipeline["out"] = _out(mode="original", composite_reason="partial_view",
+                                scene="partial_view", wear_level="heavy", watermark="on_item")
+    body = _post(client).json()
+    assert body["mode"] == "original" and body["composite_reason"] == "partial_view"
+    assert (body["scene"], body["wear_level"], body["watermark"]) == (
+        "partial_view", "heavy", "on_item")
+    assert fake_pipeline["later"] == []          # judge_pending 없음 → 채점 예약 안 함
+
+
+def test_transform_response_scene_fields_default_none(client, fake_pipeline):
+    body = _post(client).json()
+    assert body["scene"] is None and body["wear_level"] is None and body["watermark"] is None

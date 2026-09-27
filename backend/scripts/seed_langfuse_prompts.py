@@ -22,8 +22,8 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from app.core.config import settings
-from app.prompts import (check_photo_template, detect_template, frag,
-                         verify_template)
+from app.prompts import (analyze_template, check_photo_template, detect_template, frag,
+                         verify_marks_template, verify_template)
 from app.prompts.presets import PRESETS
 from app.services.ai.auto_feedback import _SYSTEM_TEMPLATE as AUTO_FEEDBACK_TEMPLATE
 from app.services.ai.judge import _SYSTEM_TEMPLATE
@@ -33,10 +33,12 @@ def prompts_to_seed() -> dict:
     """get_prompt_text() 를 부르는 모든 이름 — 새 프롬프트를 추가하면 여기에도 추가.
     (빠지면 Langfuse 미등록 → 호출마다 404 조회 후 fallback, 콘솔 수정 불가)"""
     seeds = {
+        "analyze": analyze_template(),
         "classify": frag("role_classify"),
         "detect_box": frag("detect_box"),
         "detect_v2": detect_template(),   # 옛 "detect" 는 배포된 옛 서버용으로 그대로 둔다
         "verify": verify_template(),
+        "verify_v2": verify_marks_template(),   # 파이프라인(마크만) — 옛 "verify" 는 eval·dev 리플레이용
         "item_text": frag("item_text"),
         "check_photo": check_photo_template(),
         "match": frag("match"),

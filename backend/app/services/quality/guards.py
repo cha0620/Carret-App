@@ -38,10 +38,7 @@ class GuardResult:
     severity: str  # "hard" | "soft"
 
 
-def run_output_guards(orig: bytes, result: bytes,
-                       ocr_before: list[str], ocr_after: list[str]) -> list[GuardResult]:
-    """hard 판정에 쓰는 가드 전부 (+ 이미지 전체 dino_band). 누끼 비교는 item_guard 로 따로 —
-    판정이 누끼(수 초)를 기다리지 않게."""
+def _ocr_guards(ocr_before: list[str], ocr_after: list[str]) -> list[GuardResult]:
     guards: list[GuardResult] = []
 
     # 줄 단위·순서 무관 비교 — VLM 이 같은 글자를 다른 순서로 읽어도 깎이지 않고,
@@ -59,6 +56,16 @@ def run_output_guards(orig: bytes, result: bytes,
     guards.append(GuardResult(
         name="no_added_text", passed=len(added) == 0,
         value=float(len(added)), threshold=0.0, severity="soft"))
+    return guards
+
+
+def run_output_guards(orig: bytes, result: bytes,
+                       ocr_before: list[str], ocr_after: list[str], *,
+                       ocr: bool = True) -> list[GuardResult]:
+    """hard 판정에 쓰는 가드 전부 (+ 이미지 전체 dino_band). 누끼 비교는 item_guard 로 따로 —
+    판정이 누끼(수 초)를 기다리지 않게. ocr=False(설정 ocr_guard 꺼짐)면 글자 가드를 만들지
+    않는다 — 값 1.0 짜리 "통과"를 남기면 재지 않은 것을 잰 것처럼 보인다."""
+    guards: list[GuardResult] = _ocr_guards(ocr_before, ocr_after) if ocr else []
 
     # dino_band 는 soft(관측용) — 계산 실패(모델 로드/메모리)로 이미 비용 든 변환을
     # 500 으로 날리지 않는다. hard 가드의 "예외는 삼키지 않는다" 원칙은 그대로.

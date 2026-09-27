@@ -76,22 +76,33 @@ function renderGate(res) {
   if (res.status === 'blocked') {
     return show('⛔ 변환 결과가 검사를 통과하지 못해 원본 사진을 그대로 보여드려요', '#c0392b');
   }
-  // 검사 자체를 못 함(원본 하자 검출 실패 / 결과 보존 검사 호출 실패) — 통과도 실패도 아님
+  if (res.mode === 'original') {
+    return res.composite_reason === 'wear_heavy'
+      ? show('ℹ️ 사용감이 많은 물건이라 상태를 그대로 보여드리려고 원본 사진을 그대로 두었어요', '#5d6d7e')
+      : show('ℹ️ 물건 일부·내부를 찍은 사진이라 배경을 바꾸지 않고 원본을 그대로 보여드려요', '#5d6d7e');
+  }
+  // 검사 자체를 못 함(원본 분석 실패 / 결과 보존 검사 호출 실패) — 통과도 실패도 아님
   const unchecked = res.detect_failed || res.verify_failed;
   if (res.mode === 'composite') {
     return unchecked
-      ? show('⚠️ 원본 물건 사진에 배경만 바꿨어요 (하자 검사는 하지 못했어요)', '#b9770e')
+      ? show(res.detect_failed
+          ? '⚠️ 원본 물건 사진에 배경만 바꿨어요 (사진 분석은 하지 못했어요)'
+          : '⚠️ 원본 물건 사진에 배경만 바꿨어요 (결과 검사는 하지 못했어요)', '#b9770e')
       : show('🛡️ 하자·글자를 지키려고 원본 물건 사진에 배경만 바꿨어요', '#2a7f2a');
   }
   if (unchecked) {
-    return show('⚠️ 하자 검사를 하지 못했습니다 — 생성 이미지에서 하자가 지워졌을 수 있어요', '#c0392b');
+    return show('⚠️ 보존 검사를 하지 못했습니다 — 생성 이미지에서 로고·글자가 바뀌었을 수 있어요', '#c0392b');
   }
+  // 생성본: 로고·주요 글자만 검사한다. 흠집·얼룩은 자동으로 검사하지 않는다 — 과장하지 않게 같이 알린다
+  const wearNote = ' · 흠집·얼룩은 자동 검사하지 않아요, 원본 사진으로 확인해 주세요';
   const passed = res.gate_passed;
-  if (passed === null || passed === undefined) { gateBadge.hidden = true; return; }
+  if (passed === null || passed === undefined) {
+    return show('ℹ️ AI가 다시 그린 사진이에요' + wearNote, '#5d6d7e');
+  }
   gateBadge.hidden = false;
-  gateBadge.textContent = passed
-    ? '🛡️ 검출된 하자 모두 보존됨'
-    : '⚠️ 일부 하자가 보존되지 않았을 수 있음 (과잉보정 주의)';
+  gateBadge.textContent = (passed
+    ? '🛡️ 주요 로고·글자 보존됨'
+    : '⚠️ 일부 로고·글자가 달라졌을 수 있음') + wearNote;
   gateBadge.style.color = passed ? '#2a7f2a' : '#c0392b';
 }
 

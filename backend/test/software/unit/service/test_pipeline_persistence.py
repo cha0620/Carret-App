@@ -139,10 +139,9 @@ def test_run_transform_with_result_writes_results_row(monkeypatch, make_png):
     monkeypatch.setattr(pipeline_mod, "load", lambda s: {
         "original": b"ORIGINAL", "preset": {"prompt": "P", "name": "n", "bg_color": "#fff"},
     })
-    monkeypatch.setattr(pipeline_mod, "classify_node", lambda s: {
-        "item": "chair", "considered": ["scratch"],
+    monkeypatch.setattr(pipeline_mod, "analyze", lambda s: {
+        "item": "chair", "considered": ["scratch"], "anchors": [], "detect_failed": False,
     })
-    monkeypatch.setattr(pipeline_mod, "detect", lambda s: {"anchors": []})
     monkeypatch.setattr(pipeline_mod, "score_similarity", lambda s: {"visual_similarity": 0.5})
     monkeypatch.setattr(pipeline_mod, "verify", lambda s: {
         "checks": [{"what": "얼룩", "preserved": True}], "gate_passed": True,

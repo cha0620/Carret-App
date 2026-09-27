@@ -29,6 +29,14 @@ def prompt_safe(text) -> str:
     return t[:TEXT_LOCK_MAX_CHARS]
 
 
+def unreadable(text) -> bool:
+    """원본에서도 못 읽은 글자가 섞였나 — 읽기 프롬프트가 못 읽는 글자를 "?" 로 쓰게 한다
+    (전각 "？" 포함). 이런 글자는 생성 프롬프트(TEXT_LOCK)에도, 사후 검사에도 넣지 않는다:
+    "17? 5433" 을 "letter for letter" 로 그리라고 하면 "?" 를 그리거나 모델이 채워 넣고,
+    검사는 "?" 와 일치할 수 없다 (09-27 번호판). 진짜 "?" 가 들어간 상표도 빠지는 건 감수."""
+    return "?" in str(text) or "？" in str(text)
+
+
 def text_where(t: dict) -> str:
     """0-1000 박스 중심 → "top-left" 같은 대략 위치 (같은 글자를 엉뚱한 곳에 또 그리지 않게)."""
     if not all(k in t for k in ("x1", "y1", "x2", "y2")):
@@ -46,7 +54,9 @@ def text_lock(texts: list[dict]) -> str:
     크게 나아진다 (2026-09-24 실험: book/rolex/graphic). 위치를 같이 줘서
     같은 글자를 다른 곳에 한 번 더 그리는 부작용을 줄인다."""
     lines, seen = [], set()
-    for t in texts[:TEXT_LOCK_MAX_LINES]:
+    # 못 읽은 줄은 자르기 전에 원문으로 거른다 — 80자 뒤의 "?" 도 잡고, 줄 수 상한을 차지하지 않게
+    readable = [t for t in texts if not unreadable(t.get("text", ""))]
+    for t in readable[:TEXT_LOCK_MAX_LINES]:
         text = prompt_safe(t.get("text", ""))
         if not text:
             continue

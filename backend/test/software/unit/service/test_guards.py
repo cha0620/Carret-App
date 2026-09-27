@@ -233,8 +233,10 @@ def test_dino_band_lower_bound(monkeypatch, make_png, value, passed):
 # ── item_dino: 누끼 물건끼리 DINO (soft, 판정과 분리) ─────
 def test_run_output_guards_has_no_product_param_and_no_item_dino(monkeypatch, make_png):
     import inspect
-    assert list(inspect.signature(guards.run_output_guards).parameters) == [
-        "orig", "result", "ocr_before", "ocr_after"]
+    params = inspect.signature(guards.run_output_guards).parameters
+    assert list(params) == ["orig", "result", "ocr_before", "ocr_after", "ocr"]
+    assert params["ocr"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert params["ocr"].default is True     # 직접 부르는 곳(eval 등)은 예전 동작 그대로
     _patch_cosine(monkeypatch, 0.9)
     out = guards.run_output_guards(make_png(), make_png(), [], [])
     assert not any(g.name in ("item_dino", "product_dino") for g in out)
@@ -467,3 +469,52 @@ def test_local_ocr_guard_metric_exception_propagates(monkeypatch):
     monkeypatch.setattr(guards.metric, "text_match", boom)
     with pytest.raises(ValueError):
         guards.local_ocr_guard(["A"], ["A"])
+
+
+# ── ocr 플래그 (settings.ocr_guard 기본 끔 → pipeline 이 ocr=False 로 부른다) ──
+def test_ocr_false_omits_ocr_guards_entirely(monkeypatch, make_png):
+    _patch_cosine(monkeypatch, 0.9)
+    out = guards.run_output_guards(make_png(), make_png(), ["NIKE"], ["ADIDAS", "SALE"], ocr=False)
+    assert [g.name for g in out] == ["dino_band"]     # 1.0 짜리 가짜 "통과"도 남기지 않는다
+    assert guards.decide(out)[0] == "pass"
+
+
+def test_ocr_false_does_not_call_text_match(monkeypatch, make_png):
+    from app.services.quality import metric as metric_mod
+
+    def boom(*a, **k):
+        raise AssertionError("ocr=False 인데 글자 비교를 했다")
+    monkeypatch.setattr(metric_mod, "text_match", boom)
+    _patch_cosine(monkeypatch, 0.9)
+    guards.run_output_guards(make_png(), make_png(), ["a"], ["b"], ocr=False)
+
+
+def test_ocr_false_dino_band_still_soft(monkeypatch, make_png):
+    _patch_cosine(monkeypatch, 0.1)
+    out = guards.run_output_guards(make_png(), make_png(), [], [], ocr=False)
+    assert [(g.name, g.passed, g.severity) for g in out] == [("dino_band", False, "soft")]
+    assert guards.decide(out)[0] == "pass"
+
+
+@pytest.mark.parametrize("kw", [{}, {"ocr": True}])
+def test_ocr_true_or_default_keeps_old_behavior(monkeypatch, make_png, kw):
+    _patch_cosine(monkeypatch, 0.9)
+    out = guards.run_output_guards(make_png(), make_png(), ["NIKE"], ["ADIDAS"], **kw)
+    assert [g.name for g in out] == ["ocr_match", "no_added_text", "dino_band"]
+    assert guards.decide(out)[0] == "block"
+
+
+def test_ocr_flag_is_keyword_only(make_png):
+    with pytest.raises(TypeError):
+        guards.run_output_guards(make_png(), make_png(), [], [], False)
+
+
+def test_ocr_true_punctuation_variants_pass(monkeypatch, make_png):
+    """읽기 흔들림("H.M"/"H-M", 쪼개 읽기)만으로 hard fail 이 나지 않는다 (metric._key)."""
+    _patch_cosine(monkeypatch, 0.9)
+    out = guards.run_output_guards(make_png(), make_png(),
+                                   ["H.M", "00 3060", "OFFICIAL"],
+                                   ["h-m", "00", "3060", "official"])
+    assert guards.decide(out)[0] == "pass"
+    added = next(g for g in out if g.name == "no_added_text")
+    assert added.passed is True

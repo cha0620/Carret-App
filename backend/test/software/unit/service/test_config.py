@@ -54,3 +54,20 @@ def test_langfuse_host_reads_langfuse_base_url_env(monkeypatch):
     monkeypatch.setenv("LANGFUSE_BASE_URL", "https://us.cloud.langfuse.com")
     s = Settings()
     assert s.langfuse_host == "https://us.cloud.langfuse.com"
+
+
+# ── 09-27 앞단 변경 ──
+def test_ocr_guard_default_off():
+    assert Settings.model_fields["ocr_guard"].default is False
+
+
+def test_ocr_guard_env_can_turn_on(monkeypatch):
+    monkeypatch.setenv("OCR_GUARD", "true")
+    assert Settings().ocr_guard is True
+
+
+def test_composite_first_min_anchors_removed_and_old_env_ignored(monkeypatch):
+    """삭제된 설정 — .env 에 옛 키가 남아 있어도 부팅은 되고 값은 무시된다."""
+    assert "composite_first_min_anchors" not in Settings.model_fields
+    monkeypatch.setenv("COMPOSITE_FIRST_MIN_ANCHORS", "3")
+    assert not hasattr(Settings(), "composite_first_min_anchors")

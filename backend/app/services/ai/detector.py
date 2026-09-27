@@ -1,11 +1,11 @@
 """하자 검출기 - VLM 의 손.
 
 라이브 경로:
-  classify         : 이미지 → {item, considered} (루브릭 수립)
-  detect_defects   : 원본 → 의미 앵커 (what/where)
+  analyze          : 원본 → 물건·아이덴티티 마크·사진 유형·하자 수준·워터마크·글자 수준 (VLM 1회)
   verify_and_locate: 결과 → 보존 여부 + 결과 좌표 (말풍선용)
 
 측정 경로 (eval/dev 전용 — 파이프라인과 분리, 절대 삭제 금지):
+  classify / detect_full / detect_defects: 옛 앞단 (하자 앵커 recall·precision eval, run_text_check)
   detect_with_boxes: 좌표付き 검출 (recall/precision 계측)
   match_anchors    : 원본 vs 결과 의미 매칭 → matched/missed/new
 
@@ -21,6 +21,7 @@ from app.core.tracing import observe
 from app.core.vlm import get_client, image_part, thinking
 from app.core.vlm import model as vlm_model
 from app import prompts as P
+from app.prompts.presets import prompt_safe
 
 
 # ── 공통 ─────────────────────────────────────────
@@ -93,6 +94,61 @@ def classify(image_bytes: bytes) -> dict:
 
 
 TEXT_LEVELS = ("none", "simple", "dense")
+SCENES = ("single_item", "partial_view", "multiple_items")
+WEAR_LEVELS = ("none", "light", "heavy")
+WATERMARKS = ("none", "background", "on_item")
+
+
+def _level(data: dict, key: str, allowed: tuple, default: str) -> str:
+    """분류 값 하나 정규화 — 없거나 모르는 값이면 default (로그로 남겨 관측되게)."""
+    v = str(data.get(key) or "").strip().lower()
+    if v not in allowed:
+        print(f"[analyze] {key} 없음/모름({data.get(key)!r}) → {default}")
+        return default
+    return v
+
+
+def _text(v) -> str:
+    """VLM 응답 값 → 프롬프트에 다시 넣어도 되는 문자열. null 은 "" ("None" 문자열이 되면
+    빈 값 제외 규칙을 빠져나간다), 개행·따옴표·길이는 prompt_safe 로 — analyze 의 마크는 사진 속
+    글자를 거의 그대로 옮긴 것이라 verify 프롬프트·gate_note 에 들어갈 때 지시문처럼 읽히면 안 된다."""
+    return "" if v is None else prompt_safe(v)
+
+
+def analyze(image_bytes: bytes) -> dict:
+    """파이프라인 첫 단계 (VLM 1회) — 예전 classify + detect 를 합친 것.
+
+    반환: {"item", "considered", "anchors"(아이덴티티 마크만, category="print"), "item_box",
+           "scene", "wear_level", "watermark", "text_level"}
+    하자는 목록으로 뽑지 않고 wear_level 로만 본다 (plan 이 heavy 면 생성 전 배경 교체).
+    응답에 marks 목록이 없으면(깨진 JSON → {}) 예외 — 빈 목록을 "지킬 게 없음"으로 읽으면
+    검증 없이 통과한다 (detect strict 와 같은 이유). 모르는 분류 값은 보수적인 쪽으로:
+    scene=single_item(예전 동작), wear_level=light(생성은 하되 heavy 로 단정하지 않음),
+    watermark=none, text_level=simple(글자 읽기 후 생성)."""
+    data = _call(image_bytes, P.analyze_prompt(), "analyze")
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        data = data[0]   # 객체 하나를 목록으로 감싸 주는 응답 (classify 에서 본 적 있음)
+    if not isinstance(data, dict) or not isinstance(data.get("marks"), list):
+        raise ValueError(f"analyze: 응답에 marks 목록 없음: {str(data)[:200]}")
+    anchors = [{"category": "print", "what": _text(m.get("what")),
+                "where": _text(m.get("where"))}
+               for m in data["marks"] if isinstance(m, dict)]
+    anchors = [a for a in anchors if a["what"]]
+    level = _level(data, "text_level", TEXT_LEVELS, "simple")
+    if level == "none" and anchors:
+        level = "simple"   # 한 응답 안의 모순 — 마크가 있으면 글자 보호를 끄지 않는다 (detect 와 같음)
+    item_box = _from_box_2d({"box_2d": data.get("item_box_2d")})
+    considered = data.get("considered") if isinstance(data.get("considered"), list) else []
+    return {
+        "item": _text(data.get("item") or None) or "object",   # 0·"" 등 거짓 값도 object (예전 동작)
+        "considered": [_text(c) for c in considered if _text(c)][:8],
+        "anchors": anchors,
+        "item_box": _box(item_box) if _has_box(item_box) else None,
+        "scene": _level(data, "scene", SCENES, "single_item"),
+        "wear_level": _level(data, "wear_level", WEAR_LEVELS, "light"),
+        "watermark": _level(data, "watermark", WATERMARKS, "none"),
+        "text_level": level,
+    }
 
 
 def detect_full(image_bytes: bytes, item: str = "object",
@@ -144,12 +200,13 @@ def _anchors(defects: list) -> list:
 
 
 def verify_and_locate(image_bytes, anchors,
-                      item="object", considered=None, *, strict: bool = False) -> list:
+                      item="object", considered=None, *, strict: bool = False,
+                      marks: bool = False) -> list:
     """결과 → 보존 여부 + 결과 좌표.
     strict=True (파이프라인 게이트): 깨진 응답({})을 "전부 사라짐"(→ 재생성)이 아니라
     호출 실패로 올린다 — 호출부가 "검증 불가"로 다루게."""
     considered = considered or []
-    data = _call(image_bytes, P.verify_prompt(anchors, item, considered), "verify")
+    data = _call(image_bytes, P.verify_prompt(anchors, item, considered, marks=marks), "verify")
     if strict and not (isinstance(data, dict) and isinstance(data.get("checks"), list)):
         raise ValueError(f"verify: 응답에 checks 목록 없음: {str(data)[:200]}")
     raw = data.get("checks", []) if isinstance(data, dict) else []

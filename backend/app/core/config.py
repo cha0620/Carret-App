@@ -38,10 +38,14 @@ class Settings(BaseSettings):              # ⭐ 대문자 클래스
     # 못 지키는 사진에 FLUX·재생성·verify 비용을 쓰지 않기 위함. 경험값 — eval 로 조정.
     #   글자 줄 수: 잔글씨 많은 물건(책·화장품)은 TEXT_LOCK 이 있어도 뭉개지기 쉽다
     composite_first_min_texts: int = Field(default=12, ge=0)
-    #   하자 앵커 수: 기본은 끔 — 하자가 많다고 생성이 꼭 실패하지는 않는다
-    composite_first_min_anchors: int = Field(default=0, ge=0)
+    #   하자는 개수가 아니라 analyze 의 wear_level=heavy 로 본다 (하자 앵커는 09-27 에 없앰)
     # 배경 교체 모드의 물건 오리기: "fal"(BiRefNet, 기본) | "local"(rembg)
     cutout_backend: str = "fal"
+    # OCR 가드(ocr_match hard + no_added_text soft): 결과 글자를 VLM 으로 다시 읽어 원본과 비교.
+    # 기본 끔 (2026-09-27): 폰 사진 6장에서 반려의 대부분이 읽기 흔들림("H.M"/"H-M", "00 3060" 쪼개
+    # 읽기, 같은 사진이 한 번은 0.887·한 번은 통과) — 멀쩡한 생성본을 버렸다. 글자 보존은
+    # TEXT_LOCK(생성 전 부탁) + verify 체크리스트(주요 글자 "보이나")가 맡는다. 켜면 생성 1회당 VLM 1회 추가.
+    ocr_guard: bool = False
     # 로컬 OCR(EasyOCR) 로 글자 보존을 한 번 더 재는 soft 가드 (ocr_local). CPU 수 초·메모리
     # 수백 MB 라 기본은 끔 — eval 돌릴 때만 켠다. easyocr 는 requirements 에 없다 (따로 설치).
     local_ocr_guard: bool = False

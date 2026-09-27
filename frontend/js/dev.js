@@ -274,7 +274,7 @@ function rsCard(it, idx) {
     </div>
     ${guards ? `<div class="tc-head" style="margin-top:8px">${guards}</div>` : ''}
     <div class="tc-texts">
-      <div><h4>하자 체크리스트 (verify)</h4><ul class="rs-checks">${checkList}</ul></div>
+      <div><h4>마크 체크리스트 (verify)</h4><ul class="rs-checks">${checkList}</ul></div>
       <div>
         <h4>judge 분석</h4><div class="tc-summary" style="margin-top:0">${esc(j?.analysis) || '-'}</div>
         <h4 style="margin-top:8px">에이전트 코멘트</h4><div class="tc-summary" style="margin-top:0">${esc(agent?.comment) || '-'}</div>
@@ -363,7 +363,7 @@ function renderResults() {
     ? `<button id="btn-rs-more" class="btn btn-ghost">더 보기 (${items.length - shown.length}장 남음)</button>` : '');
   const more = $('btn-rs-more');
   if (more) more.onclick = () => { rsShown += RS_PAGE; renderResults(); };
-  // 보존된 하자 위치를 결과 위에 초록 박스로 (좌표 있는 것만)
+  // 보존된 마크(로고·글자) 위치를 결과 위에 초록 박스로 (좌표 있는 것만)
   $('rs-list').querySelectorAll('.rs-overlay').forEach(el => {
     const it = shown[+el.dataset.idx];
     drawBoxes(el, (it.inspect?.checks || []).filter(c => c.preserved), '#2ecc71');

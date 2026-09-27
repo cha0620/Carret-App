@@ -31,6 +31,7 @@ DEFAULT_THINKING: dict[str, str | int] = {
     "verify": 2048,
     "item_text": 2048,
     "detect": 4096,
+    "analyze": 4096,              # detect 와 같은 눈(글자 판독·사용감) — 기본 모델·기본 해상도, 폭주 상한만
     "judge": 4096,
     "check_photo": 4096,
     "match": 4096,
