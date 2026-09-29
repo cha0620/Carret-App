@@ -40,7 +40,7 @@ python eval/report.py                 # 가장 최근 실행 집계 → runs/<ru
 | `item` | 짧은 영어 명사 | 참고용 |
 | `photo_type` | `document` / `inside_view` / `product` | 글자·표지가 곧 물건 / 물건 일부·내부만 / 그 밖 |
 | `wear_level` | `none` / `light` / `heavy` | 새것 같음 / 작은 하자 몇 개 / 하자가 보이는 면의 큰 부분 |
-| `text_level` | `none` / `simple` / `dense` | 글자 없음 / 큰 글자 몇 개 / 잔글씨 많음 (번호판·목 라벨은 안 셈) |
+| `text_level` | `none` / `simple` / `dense` | 글자 없음 / 큰 글자 몇 개 / 잔글씨 많음 — 시계 다이얼처럼 눈금·잔글씨가 물건의 일부면 dense (번호판·목 라벨은 안 셈) |
 | `key_texts` | 문자열 목록 | 결과에서 **반드시 그대로여야 할** 글자 (제목·브랜드·모델명) |
 | `note` | 자유 | 채점 때 볼 점 |
 | `labeled_by` | 이름 | `claude-draft` 는 초안 — 사람이 확인하면 이름으로 바꾼다 |
