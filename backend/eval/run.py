@@ -189,6 +189,12 @@ def main() -> int:
         print(f"VLM 호출이 안 된다 — 멈춤: {problem}")
         return 1
 
+    meta = {"run_id": run_id, "full": full, "repeat": reps, "preset": a.preset,
+            "split": a.split or "all", "only": a.only,
+            "created": datetime.now().isoformat(timespec="seconds")}
+    (run_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2))
+    # 한 줄씩 바로 쓴다 — 중간에 멈춰도(Ctrl-C·한도) 끝난 실행은 남는다
+    results = open(run_dir / "results.jsonl", "w", encoding="utf-8")
     rows = []
     streak = 0
     for e in dataset:
@@ -203,6 +209,8 @@ def main() -> int:
             print(f"[{e['file']} r{rep}] {row.get('mode', 'analyze')} "
                   f"{row.get('photo_type')} {row.get('error', '')}", flush=True)
             rows.append(row)
+            results.write(json.dumps(row, ensure_ascii=False) + "\n")
+            results.flush()
             streak = streak + 1 if (row.get("detect_failed") or row.get("error")) else 0
             if streak >= STOP_AFTER_DETECT_FAILED:
                 break
@@ -210,13 +218,7 @@ def main() -> int:
             print(f"analyze 실패가 {streak}번 연속 — 한도 초과·장애로 보고 멈춘다 (지금까지 결과는 저장)")
             break
 
-    meta = {"run_id": run_id, "full": full, "repeat": reps, "preset": a.preset,
-            "split": a.split or "all", "only": a.only,
-            "created": datetime.now().isoformat(timespec="seconds")}
-    (run_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2))
-    with open(run_dir / "results.jsonl", "w", encoding="utf-8") as f:
-        for r in rows:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    results.close()
     if full:
         _write_review(run_id, run_dir, rows, {e["file"]: e for e in dataset})
     print(f"끝: {run_dir} — python eval/report.py {run_id}")
