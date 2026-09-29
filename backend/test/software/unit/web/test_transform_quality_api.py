@@ -38,6 +38,8 @@ def fake_pipeline(monkeypatch):
 
     monkeypatch.setattr("app.services.pipeline.run_transform", run_transform)
     monkeypatch.setattr("app.services.pipeline.judge_and_save", judge_and_save)
+    monkeypatch.setattr("app.services.pipeline.item_signals_and_save",
+                        lambda *a, **kw: rec["later"].append(("items", a, kw)))
     return rec
 
 
@@ -58,6 +60,16 @@ def test_transform_judge_pending_schedules_background_judge(client, fake_pipelin
     # trace_id/parent_span_id 는 키워드 전용 — 위치 인자로 넘기면 TypeError
     assert fake_pipeline["later"] == [
         ((FID, "studio_white"), {"trace_id": "tr-1", "parent_span_id": "sp-1"})]
+
+
+def test_transform_item_signals_run_after_response_before_judge(client, fake_pipeline):
+    """누끼 비교도 응답 뒤 — 사용자가 오리기(3~43초)를 기다리지 않게."""
+    fake_pipeline["out"] = _out(judge_pending=True, item_signals_pending=True,
+                                trace_id="tr-1", trace_span_id="sp-1")
+    assert _post(client).status_code == 200
+    kw = {"trace_id": "tr-1", "parent_span_id": "sp-1"}
+    assert fake_pipeline["later"] == [("items", (FID, "studio_white"), kw),
+                                      ((FID, "studio_white"), kw)]
 
 
 def test_transform_judge_pending_without_trace_ids(client, fake_pipeline):

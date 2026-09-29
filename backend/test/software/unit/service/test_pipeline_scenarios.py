@@ -555,6 +555,15 @@ def test_defer_judge_marks_pending_and_does_not_judge(w):
     assert "judge" not in w.calls and out["judge_pending"] is True and w.quality() is None
 
 
+def test_defer_leaves_item_signals_for_after_response(w):
+    """라우트 경로: 응답 때 누끼 비교는 비어 있고, 응답 뒤 item_signals_and_save 가 채운다."""
+    out = w.run(defer_judge=True)
+    assert out["item_signals_pending"] is True and out["item_similarity"] is None
+    assert w.inspect()["item_similarity"] is None
+    pipeline_mod.item_signals_and_save(FID, PRESET)
+    assert w.inspect()["item_similarity"] == 0.85 and w.inspect()["item_patch_similarity"] == 0.97
+
+
 def test_defer_judge_on_original_is_not_pending(w):
     w.analysis["photo_type"] = "inside_view"
     assert w.run(defer_judge=True)["judge_pending"] is False

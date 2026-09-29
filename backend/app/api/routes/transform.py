@@ -32,7 +32,11 @@ def transform(req: TransformRequest, background: BackgroundTasks):
         logger.exception("변환 실패")              # 서버 로그엔 상세히
         raise HTTPException(status_code=500, detail="변환 중 오류가 발생했습니다")
 
-    # 성적표는 응답을 보낸 뒤 채점 (사용자가 judge 를 기다리지 않게) — 프론트가 폴링
+    # 관측 신호는 응답을 보낸 뒤 (사용자가 기다리지 않게) — 누끼 비교는 inspect 에, 성적표는 프론트가 폴링
+    if out.get("item_signals_pending"):
+        background.add_task(pipeline.item_signals_and_save, req.file_id, req.preset,
+                            trace_id=out.get("trace_id"),
+                            parent_span_id=out.get("trace_span_id"))
     if out.get("judge_pending"):
         background.add_task(pipeline.judge_and_save, req.file_id, req.preset,
                             trace_id=out.get("trace_id"),

@@ -66,8 +66,7 @@ class _Future:
 
 def _background(monkeypatch, **futures):
     """_in_background 가짜 — 제출한 함수 이름으로 Future 를 고른다."""
-    defaults = {"check_photo": {"valid": True, "reason": ""}, "_item_signals": (None, None),
-                "_local_ocr_lines": ([], [])}
+    defaults = {"check_photo": {"valid": True, "reason": ""}, "_local_ocr_lines": ([], [])}
     fs = {name: futures.get(name) or _Future(value) for name, value in defaults.items()}
     submitted = []
 
@@ -90,7 +89,7 @@ def test_validate_result_crash_cancels_started_work_and_saves_nothing(monkeypatc
 
     with pytest.raises(type(exc)):
         pipeline_mod.validate_result(_state(item_texts=[{"text": "NIKE"}]))
-    assert submitted == ["check_photo", "_item_signals"] + (["_local_ocr_lines"] if ocr_on else [])
+    assert submitted == ["check_photo"] + (["_local_ocr_lines"] if ocr_on else [])
     assert all(fs[name].cancelled == 1 for name in submitted)
     assert storage.load("result", "v_p.jpg") is None
 
@@ -130,7 +129,7 @@ def test_validate_result_photo_timeout_counts_as_valid_in_real_pool(monkeypatch)
 
 
 def test_validate_result_deadlines_start_at_submit_not_after_photo(monkeypatch):
-    """누끼·OCR 대기 상한은 작업을 넘긴 시점부터 — check_photo 를 기다린 만큼 줄어든다."""
+    """로컬 OCR 대기 상한은 작업을 넘긴 시점부터 — check_photo 를 기다린 만큼 줄어든다."""
     clock = [100.0]
     monkeypatch.setattr(pipeline_mod, "time", types.SimpleNamespace(
         time=time.time, sleep=lambda s: None, monotonic=lambda: clock[0]))
@@ -141,32 +140,18 @@ def test_validate_result_deadlines_start_at_submit_not_after_photo(monkeypatch):
 
     pipeline_mod.validate_result(_state(item_texts=[{"text": "NIKE"}]))
 
-    assert fs["_item_signals"].timeouts == [pipeline_mod.ITEM_WAIT_S - 12]
     assert fs["_local_ocr_lines"].timeouts == [pipeline_mod.LOCAL_OCR_WAIT_S - 12]
 
 
-def test_validate_result_item_timeout_cancels_and_keeps_verdict(monkeypatch):
-    """늦은 누끼 비교는 취소한다 — 작은 풀(2)을 다음 요청에 돌려준다."""
-    item = _Future(exc=TimeoutError())
-    _background(monkeypatch, _item_signals=item)
+def test_validate_result_does_not_wait_for_cutout(monkeypatch):
+    """누끼 비교는 그래프 밖 — validate_result 는 오리기를 시작하지도 기다리지도 않는다 (09-29: 3~43초)."""
+    def poison(*a, **k):
+        raise AssertionError("validate_result 가 누끼를 오렸다")
+    monkeypatch.setattr(pipeline_mod.compositor, "isolate", poison)
+    _background(monkeypatch)
     monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a: None)
     out = pipeline_mod.validate_result(_state())
-    assert item.cancelled == 1 and out["item_similarity"] is None
-    assert out["photo_check"]["valid"] is True
-
-
-def test_validate_result_late_item_signals_are_dropped_in_real_pool(monkeypatch):
-    release = threading.Event()
-    monkeypatch.setattr(pipeline_mod, "_item_signals", lambda s: release.wait(5) and (None, None))
-    monkeypatch.setattr(pipeline_mod, "ITEM_WAIT_S", 0.05)
-    monkeypatch.setattr(pipeline_mod.detector, "check_photo", lambda img: {"valid": True, "reason": ""})
-    monkeypatch.setattr(pipeline_mod.guards, "dino_band_guard", lambda *a: None)
-    try:
-        out = pipeline_mod.validate_result(_state())
-    finally:
-        release.set()
-    assert out["item_similarity"] is None and out["item_patch_similarity"] is None
-    assert out["photo_check"]["valid"] is True
+    assert "item_similarity" not in out and out["photo_check"]["valid"] is True
 
 
 @pytest.mark.parametrize("make_future,expected_cancel", [
@@ -200,6 +185,87 @@ def test_in_background_copies_context_to_worker(monkeypatch):
     finally:
         var.reset(token)
     assert before == "trace-abc" and thread.startswith("pipeline")
+
+
+# ══ item_signals_and_save: 누끼 비교 (그래프 밖, 응답 뒤) ═══════════════
+@pytest.fixture()
+def items(monkeypatch):
+    """원본·결과·inspect 를 저장하고, 오리기·DINO 를 가짜로."""
+    storage.save("original", "fis.png", ORIG_PNG)
+    storage.save("result", "fis_p.jpg", GEN_PNG)
+    rec = {"isolate": [], "flush": 0, "sim": 0.9, "patch": 0.97}
+
+    def write_inspect(**kw):
+        storage.save("quality", "fis_p_inspect.json", json.dumps(
+            {"mode": "generate", "item_box": {"x1": 1, "y1": 2, "x2": 3, "y2": 4},
+             "item_similarity": None, "guard_report": [{"name": "dino_band"}], **kw}).encode())
+    rec["write_inspect"] = write_inspect
+    write_inspect()
+
+    def isolate(img, box=None, original=False):
+        rec["isolate"].append((original, box))
+        return b"ISO_o" if original else b"ISO_r"
+    monkeypatch.setattr(pipeline_mod.compositor, "isolate", isolate)
+    monkeypatch.setattr(pipeline_mod.guards.embedder, "cosine_similarity",
+                        lambda o, r, name="": rec["sim"])
+    monkeypatch.setattr(pipeline_mod.guards.embedder, "patch_similarity",
+                        lambda o, r, bg=(128, 128, 128): rec["patch"])
+    monkeypatch.setattr(pipeline_mod, "flush", lambda: rec.__setitem__("flush", rec["flush"] + 1))
+    return rec
+
+
+def _inspect():
+    return json.loads(storage.load("quality", "fis_p_inspect.json"))
+
+
+def test_item_signals_fill_inspect_and_append_failed_guards(items):
+    items["sim"] = 0.4                                     # item_dino 기준 밖
+    pipeline_mod.item_signals_and_save("fis", "p")
+    ins = _inspect()
+    assert ins["item_similarity"] == 0.4 and ins["item_patch_similarity"] == 0.97
+    assert [g["name"] for g in ins["guard_report"]] == ["dino_band", "item_dino"]
+    assert items["isolate"] == [(True, {"x1": 1, "y1": 2, "x2": 3, "y2": 4}), (False, None)]
+    assert items["flush"] == 1
+
+
+@pytest.mark.parametrize("mode", ["composite", "original"])
+def test_item_signals_skip_when_result_is_not_generated(items, mode):
+    items["write_inspect"](mode=mode)
+    pipeline_mod.item_signals_and_save("fis", "p")
+    assert items["isolate"] == [] and _inspect()["item_similarity"] is None
+
+
+@pytest.mark.parametrize("what", ["result", "inspect"])
+def test_item_signals_discard_when_retransformed_meanwhile(items, monkeypatch, what):
+    real = pipeline_mod.guards.item_patch_guard
+
+    def retransform(pair):
+        if what == "result":
+            storage.save("result", "fis_p.jpg", NEW_PNG)
+        else:
+            items["write_inspect"](mode="generate", note="new run")
+        return real(pair)
+    monkeypatch.setattr(pipeline_mod.guards, "item_patch_guard", retransform)
+    pipeline_mod.item_signals_and_save("fis", "p")
+    assert _inspect()["item_similarity"] is None
+
+
+def test_item_signals_failure_is_swallowed(items, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("rembg")
+    monkeypatch.setattr(pipeline_mod, "_item_signals", boom)
+    pipeline_mod.item_signals_and_save("fis", "p")
+    assert _inspect()["item_similarity"] is None and items["flush"] == 1
+
+
+def test_run_transform_defers_item_signals_for_generated_results(monkeypatch):
+    monkeypatch.setattr(pipeline_mod, "GRAPH", FakeGraph(_graph_out(mode="generate")))
+    called = []
+    monkeypatch.setattr(pipeline_mod, "item_signals_and_save", lambda *a, **k: called.append(a))
+    out = pipeline_mod.run_transform("f", "p", defer_judge=True)
+    assert out["item_signals_pending"] is True and called == []
+    monkeypatch.setattr(pipeline_mod, "GRAPH", FakeGraph(_graph_out(mode="composite")))
+    assert pipeline_mod.run_transform("f", "p", defer_judge=True)["item_signals_pending"] is False
 
 
 # ══ judge_and_save: 채점 중 재변환 ═══════════════════════════════════
