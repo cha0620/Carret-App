@@ -28,3 +28,10 @@ def no_real_tracing(monkeypatch):
     from app.core import tracing
     monkeypatch.setattr(tracing, "_client", None)
     monkeypatch.setattr(tracing, "_disabled", True)
+
+
+@pytest.fixture(autouse=True)
+def no_model_warmup(monkeypatch):
+    """TestClient 가 startup 이벤트를 부르면 실제 모델 로딩 스레드가 뜬다 — 테스트에선 끈다."""
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "warmup_models", False)

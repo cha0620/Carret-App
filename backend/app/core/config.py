@@ -79,6 +79,7 @@ class Settings(BaseSettings):              # ⭐ 대문자 클래스
     # 기타
     max_bytes: int = 10 * 1024 * 1024
     dev_tools: bool = True
+    warmup_models: bool = True   # 서버 시작 뒤 DINO(·local 이면 rembg)를 미리 올린다 (app/core/warmup.py)
 
     inspect_img: str | None = None
 

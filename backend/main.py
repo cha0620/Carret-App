@@ -25,6 +25,12 @@ app = FastAPI(title="SellerShot API", version="0.1.0")
 
 db.init_db()
 
+
+@app.on_event("startup")
+def _warmup():
+    from app.core.warmup import start_warmup
+    start_warmup()   # 첫 요청이 모델 로딩(20초 안팎)을 기다리지 않게 — 백그라운드
+
 # CORS (프론트 분리용)
 app.add_middleware(
     CORSMiddleware,
