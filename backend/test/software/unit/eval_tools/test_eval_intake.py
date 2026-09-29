@@ -26,7 +26,7 @@ def test_add_moves_files_with_urls_and_splits(intake_mod, capsys):
     (m.INBOX / "urls.txt").write_text(
         "# 주석 줄\n\nnone_a.jpg  https://x/1 \n# doc_b.png https://nope\n", encoding="utf-8")
 
-    assert m.cmd_add(None) == 0
+    assert m.cmd_add(Namespace()) == 0
     entries = {e["file"]: e for e in m.load_dataset()}
     assert set(entries) == {"none_a.jpg", "doc_b.png"}
     assert entries["none_a.jpg"]["url"] == "https://x/1"
@@ -48,7 +48,7 @@ def test_add_is_all_or_nothing_on_any_error(intake_mod, capsys):
     _put(m.INBOX / "none_dup.jpg", b"same")               # 이미 있는 사진과 내용이 같다
     before = m.DATASET.read_text(encoding="utf-8")
 
-    assert m.cmd_add(None) == 1
+    assert m.cmd_add(Namespace()) == 1
     out = capsys.readouterr().out
     assert "cat_x.jpg" in out and "noprefix.jpg" in out
     assert "none_dup.jpg: none_old.jpg 와 같은 사진이다" in out
@@ -196,7 +196,7 @@ def test_cmd_status_counts_and_flags_mismatches(intake_mod, capsys):
     out = capsys.readouterr().out
     assert "| none | 2/25 | 1/5 | 1 | 2 |" in out
     assert "| doc | 0/15 | 0/4 | 1 | 0 |" in out
-    assert "| (층 없음 · 기존 사진) | 0 | 1 | | 1 |" in out
+    assert "| (층 목표 밖 · 기존·파일럿) | 0 | 1 | | 1 |" in out
     assert "이름이 규칙에 안 맞는 inbox 사진: bad.jpg" in out
     assert "사진이 아닌 파일 (jpg · png · webp 만 받는다): notes.txt" in out
     assert "images/ 에 없다: none_3.jpg" in out
@@ -209,7 +209,7 @@ def test_add_keeps_labels_already_filled_in_csv(intake_mod):
     """라벨을 반쯤 달다가 사진을 더 모아 add 해도 채운 칸이 남는다."""
     m = intake_mod
     _put(m.INBOX / "none_a.jpg", b"a")
-    assert m.cmd_add(None) == 0
+    assert m.cmd_add(Namespace()) == 0
     rows = _read_csv(m.LABELS_CSV)
     rows[0].update(photo_type="product", key_texts="SONY")
     with open(m.LABELS_CSV, "w", newline="", encoding="utf-8-sig") as f:
@@ -218,7 +218,7 @@ def test_add_keeps_labels_already_filled_in_csv(intake_mod):
         w.writerows(rows)
     _put(m.INBOX / "none_b.jpg", b"b")
 
-    assert m.cmd_add(None) == 0
+    assert m.cmd_add(Namespace()) == 0
     rows = {r["file"]: r for r in _read_csv(m.LABELS_CSV)}
     assert rows["none_a.jpg"]["photo_type"] == "product" and rows["none_a.jpg"]["key_texts"] == "SONY"
     assert rows["none_b.jpg"]["photo_type"] == ""
@@ -229,12 +229,12 @@ def test_add_refuses_over_quota_and_unsupported_format(intake_mod, capsys):
     m = intake_mod
     m.save_dataset([_entry(f"inside_{i}.jpg", stratum="inside") for i in range(10)])   # inside 목표 8+2
     _put(m.INBOX / "inside_more.jpg", b"m")
-    assert m.cmd_add(None) == 1
+    assert m.cmd_add(Namespace()) == 1
     assert "inside 층 목표(10장)를 넘는다" in capsys.readouterr().out
     (m.INBOX / "inside_more.jpg").unlink()
     _put(m.INBOX / "none_ok.jpg", b"ok")
     _put(m.INBOX / "none_phone.heic", b"h")
-    assert m.cmd_add(None) == 1
+    assert m.cmd_add(Namespace()) == 1
     assert "none_phone.heic" in capsys.readouterr().out and (m.INBOX / "none_ok.jpg").exists()
 
 
@@ -284,3 +284,18 @@ def test_draft_labels_are_exported_for_human_check(intake_mod):
 
 def test_run_label_values_match_intake_enums(intake_mod, run_mod):
     assert run_mod.LABEL_VALUES == intake_mod.ENUMS
+
+
+def test_add_pilot_goes_to_dev_outside_quota(intake_mod):
+    """파일럿은 test 자리를 쓰지 않는다 — 층이 다 찼어도 들어가고, 나중 본 수집의 split 에 영향 없음."""
+    m = intake_mod
+    m.save_dataset([_entry(f"inside_{i}.jpg", stratum="inside") for i in range(10)])   # inside 가득
+    _put(m.INBOX / "inside_p.jpg", b"p")
+    _put(m.INBOX / "none_q.jpg", b"q")
+    assert m.cmd_add(Namespace(pilot=True)) == 0
+    e = {x["file"]: x for x in m.load_dataset()}
+    assert e["inside_p.jpg"]["split"] == "dev" and e["inside_p.jpg"]["stratum"] == ""
+    assert e["inside_p.jpg"]["legacy_stratum"] == "inside" and e["inside_p.jpg"]["pilot"] is True
+    _put(m.INBOX / "none_r.jpg", b"r")
+    assert m.cmd_add(Namespace()) == 0
+    assert m.load_dataset()[-1]["split"] == m.split_slots("none")[0]   # none 층의 첫 자리 그대로

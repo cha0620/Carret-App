@@ -3,6 +3,7 @@
     cd backend
     python eval/intake.py status                              # 층별 현황 · 라벨 남은 수 · 이상한 파일
     python eval/intake.py add                                 # inbox 사진을 dataset.json 에 추가 (dev/test 나눔)
+    python eval/intake.py add --pilot                         # 파일럿: 층 목표에 세지 않고 전부 dev
     python eval/intake.py export                              # 라벨 빈 항목 → images/inbox/labels.csv
     python eval/intake.py merge images/inbox/labels.csv --by 이름   # 채운 라벨을 dataset.json 에
 
@@ -77,7 +78,8 @@ def load_split_log() -> dict[str, str]:
 def append_split_log(new: list[dict]) -> None:
     with open(SPLIT_LOG, "a", encoding="utf-8") as f:
         for e in new:
-            f.write(json.dumps({"file": e["file"], "stratum": e["stratum"], "split": e["split"],
+            f.write(json.dumps({"file": e["file"], "stratum": e["stratum"] or e.get("legacy_stratum", ""),
+                                "split": e["split"],
                                 "at": e["collected_at"]}, ensure_ascii=False) + "\n")
 
 
@@ -159,8 +161,10 @@ def assign_splits(entries: list[dict], new: list[dict]) -> None:
 
 
 def plan_add(photos: list[Path], urls: dict[str, str], entries: list[dict],
-             images_dir: Path) -> tuple[list[dict], list[str]]:
-    """inbox 사진 → (새 항목, 오류). 오류가 하나라도 있으면 아무것도 옮기지 않는다."""
+             images_dir: Path, *, pilot: bool = False) -> tuple[list[dict], list[str]]:
+    """inbox 사진 → (새 항목, 오류). 오류가 하나라도 있으면 아무것도 옮기지 않는다.
+    pilot: 규칙 전에 모았거나 결과를 먼저 볼 사진 — 층 목표에 세지 않고(stratum 빈 값,
+    legacy_stratum 에 층 코드) 전부 dev. test 자리를 쓰지 않는다."""
     errors, new = [], []
     known = {e["file"] for e in entries}
     digests = {_digest(images_dir / e["file"]): e["file"]
@@ -178,19 +182,23 @@ def plan_add(photos: list[Path], urls: dict[str, str], entries: list[dict],
         if d in digests:
             errors.append(f"{p.name}: {digests[d]} 와 같은 사진이다")
             continue
-        count[stratum] += 1
-        if count[stratum] > sum(STRATA[stratum]):
+        count[stratum] += 0 if pilot else 1
+        if not pilot and count[stratum] > sum(STRATA[stratum]):
             errors.append(f"{p.name}: {stratum} 층 목표({sum(STRATA[stratum])}장)를 넘는다 — 이 층은 다 모았다")
             continue
         digests[d] = p.name
-        new.append({"file": p.name, "url": urls.get(p.name, ""), "item": "",
-                    "photo_type": "", "wear_level": "", "text_level": "", "key_texts": [],
-                    "note": "", "labeled_by": "", "stratum": stratum,
-                    "collected_at": date.today().isoformat(), "ambiguous": False})
+        e = {"file": p.name, "url": urls.get(p.name, ""), "item": "",
+             "photo_type": "", "wear_level": "", "text_level": "", "key_texts": [],
+             "note": "", "labeled_by": "", "stratum": stratum,
+             "collected_at": date.today().isoformat(), "ambiguous": False}
+        if pilot:
+            e.update(stratum="", legacy_stratum=stratum, split="dev", pilot=True)
+        new.append(e)
     return new, errors
 
 
-def cmd_add(_a) -> int:
+def cmd_add(a) -> int:
+    pilot = bool(getattr(a, "pilot", False))
     INBOX.mkdir(parents=True, exist_ok=True)
     photos, other = inbox_files(INBOX)
     urls, url_warnings = read_urls(INBOX / "urls.txt")
@@ -205,7 +213,7 @@ def cmd_add(_a) -> int:
         print(f"inbox 가 비었다: {INBOX}")
         return 0
     entries = load_dataset()
-    new, errors = plan_add(photos, urls, entries, IMAGES)
+    new, errors = plan_add(photos, urls, entries, IMAGES, pilot=pilot)
     if errors:
         print("아무것도 옮기지 않았다 — 고친 뒤 다시:")
         for m in errors:
@@ -214,7 +222,7 @@ def cmd_add(_a) -> int:
     stray = sorted(set(urls) - {p.name for p in photos} - {e["file"] for e in entries})
     if stray:
         print(f"경고: urls.txt 에만 있고 inbox 에 없는 이름 — {', '.join(stray)}")
-    assign_splits(entries, new)
+    assign_splits(entries, [e for e in new if not e.get("pilot")])
     # 복사 → 저장 → inbox 원본 삭제. 저장 전에 멈추면 복사본을 지워 원래대로
     copied = []
     try:
@@ -230,7 +238,7 @@ def cmd_add(_a) -> int:
     for e in new:
         (INBOX / e["file"]).unlink(missing_ok=True)
     no_url = [e["file"] for e in new if not e["url"]]
-    print(f"{len(new)}장 추가 (test {sum(e['split'] == 'test' for e in new)} · "
+    print(f"{len(new)}장 추가{' (파일럿 — 층 목표 밖)' if pilot else ''} (test {sum(e['split'] == 'test' for e in new)} · "
           f"dev {sum(e['split'] == 'dev' for e in new)})")
     if no_url:
         print(f"urls.txt 에 주소가 없는 사진 {len(no_url)}장: {', '.join(no_url)}")
@@ -381,7 +389,7 @@ def status_table(entries: list[dict], inbox_names: list[str]) -> str:
         lines.append(f"| {code} | {t}/{tq} | {d}/{dq} | {inbox} | {sum(needs_label(e) for e in es)} |")
     other = [e for e in entries if e.get("stratum") not in STRATA]
     if other:
-        lines.append(f"| (층 없음 · 기존 사진) | {sum(e.get('split') == 'test' for e in other)} | "
+        lines.append(f"| (층 목표 밖 · 기존·파일럿) | {sum(e.get('split') == 'test' for e in other)} | "
                      f"{sum((e.get('split') or 'dev') == 'dev' for e in other)} | | "
                      f"{sum(needs_label(e) for e in other)} |")
     return "\n".join(lines)
@@ -421,7 +429,9 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("status").set_defaults(fn=cmd_status)
-    sub.add_parser("add").set_defaults(fn=cmd_add)
+    p = sub.add_parser("add")
+    p.add_argument("--pilot", action="store_true", help="층 목표에 세지 않고 전부 dev (파일럿)")
+    p.set_defaults(fn=cmd_add)
     p = sub.add_parser("export")
     p.add_argument("--all", action="store_true", help="라벨 단 항목도 포함")
     p.set_defaults(fn=cmd_export)
