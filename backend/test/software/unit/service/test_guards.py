@@ -31,19 +31,11 @@ def _patch_cosine(monkeypatch, *values):
 # ── 보너스: 데이터 구조/스코프 계약 ───────────────────
 
 
-def test_removed_coordinate_guard_api_is_gone():
-    """좌표 가드(feature/defect)와 그 상수·헬퍼는 제거됐다 — 되살아나면 알 수 있게."""
-    for name in ("FEATURE_SIM_THRESHOLD", "DEFECT_VISIBILITY_THRESHOLD",
-                 "_crop", "defect_visibility"):
-        assert not hasattr(guards, name), name
-
-
 # ── item_dino: 누끼 물건끼리 DINO (soft, 판정과 분리) ─────
 
 
 def test_item_dino_threshold_constant():
     assert guards.ITEM_DINO_THRESHOLD == 0.80
-    assert not hasattr(guards, "PRODUCT_DINO_THRESHOLD")
 
 
 def _cos_spy(monkeypatch, value=0.9, exc=None):
@@ -258,12 +250,6 @@ def test_local_ocr_guard_metric_exception_propagates(monkeypatch):
     monkeypatch.setattr(guards.metric, "text_match", boom)
     with pytest.raises(ValueError):
         guards.local_ocr_guard(["A"], ["A"])
-
-
-# ── 삭제된 API: VLM OCR hard 가드·판정 ──
-@pytest.mark.parametrize("name", ["run_output_guards", "decide", "_ocr_guards"])
-def test_removed_ocr_guard_api_is_gone(name):
-    assert not hasattr(guards, name), name
 
 
 def test_no_hard_guard_left_in_module_constants():

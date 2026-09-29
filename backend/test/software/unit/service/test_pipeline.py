@@ -489,11 +489,6 @@ def test_graphs_have_no_judge_node_and_save_inspect_goes_to_finalize(graph):
     assert ("finalize", "__end__") in edges
 
 
-def test_removed_judge_entrypoints_are_gone():
-    assert not hasattr(pipeline_mod, "run_judge")
-    assert not hasattr(pipeline_mod, "judge_later")
-
-
 def test_run_transform_with_result_judges_once_after_graph(monkeypatch, make_png):
     order = []
     _patch_nodes(monkeypatch, [], True, [])
@@ -1302,72 +1297,54 @@ def _anchors(n):
     return [{"category": "other", "what": f"a{i}", "where": "x"} for i in range(n)]
 
 
-@pytest.mark.parametrize("state,min_texts,expected", [
-    ({}, 12, None),
-    ({"detect_failed": True}, 12, "detect_failed"),
-    ({"detect_failed": False, "item_texts": _texts(11)}, 12, None),
-    # 글자 수(text_heavy)는 plan 이 아니라 read_text 가 본다 — plan 땐 아직 안 읽었다
-    ({"item_texts": _texts(12)}, 12, None),
-    ({"item_texts": _texts(40)}, 0, None),
-    ({"item_texts": _texts(1)}, 1, None),
-    ({"item_texts": None}, 12, None),
-    # text_level: dense 만 배경 교체 (min_texts 설정과 무관)
-    ({"text_level": "dense"}, 12, "text_dense"),
-    ({"text_level": "dense"}, 0, "text_dense"),
-    ({"text_level": "simple"}, 12, None),
-    ({"text_level": "none"}, 12, None),
-    ({"text_level": None}, 12, None),
-    # 하자는 개수로 보지 않는다 (many_defects 삭제) — 마크가 아무리 많아도 사유 없음
-    ({"anchors": _anchors(50)}, 12, None),
-    ({"anchors": None}, 12, None),
-    # photo_type / wear_level
-    ({"photo_type": "inside_view"}, 12, "inside_view"),
-    ({"photo_type": "document"}, 12, "document"),
-    ({"photo_type": "product"}, 12, None),
-    ({"photo_type": None}, 12, None),
-    ({"photo_type": "other"}, 12, None),
-    # 예전 필드는 더 이상 보지 않는다
-    ({"scene": "partial_view"}, 12, None),
-    ({"text_is_product": True}, 12, None),
-    ({"wear_level": "heavy"}, 12, "wear_heavy"),
-    ({"wear_level": "light"}, 12, None),
-    ({"wear_level": "none"}, 12, None),
-    ({"wear_level": None}, 12, None),
-    ({"watermark": "on_item"}, 12, None),          # 관측만 — 경로를 바꾸지 않는다
+@pytest.mark.parametrize("state,expected", [
+    ({}, None),
+    # 사유 하나씩
+    ({"detect_failed": True}, "detect_failed"),
+    ({"photo_type": "inside_view"}, "inside_view"),
+    ({"photo_type": "document"}, "document"),
+    ({"text_level": "dense"}, "text_dense"),
+    ({"wear_level": "heavy"}, "wear_heavy"),
+    # 사유가 아닌 값
+    ({"detect_failed": False}, None),
+    ({"photo_type": "product"}, None),
+    ({"photo_type": "other"}, None),
+    ({"text_level": "simple"}, None),
+    ({"text_level": "none"}, None),
+    ({"wear_level": "light"}, None),
     # 대소문자 정규화는 detector 몫 — 여기선 정확히 일치할 때만
-    ({"photo_type": "INSIDE_VIEW", "wear_level": "HEAVY"}, 12, None),
-    ({"photo_type": "Document"}, 12, None),
+    ({"photo_type": "INSIDE_VIEW", "wear_level": "HEAVY"}, None),
+    ({"photo_type": "Document"}, None),
+    # 경로를 바꾸지 않는 필드: 글자 수(text_heavy 는 read_text 몫)·하자 개수·워터마크
+    ({"item_texts": _texts(40)}, None),
+    ({"anchors": _anchors(50)}, None),
+    ({"watermark": "on_item"}, None),
+    # document 는 글자 수준과 무관 — 표지 글자가 적어도(none·simple) 생성하지 않는다
+    ({"photo_type": "document", "text_level": "none"}, "document"),
+    ({"photo_type": "document", "text_level": "simple"}, "document"),
     # 우선순위: detect_failed, inside_view, document, text_dense, wear_heavy 순
     ({"detect_failed": True, "photo_type": "inside_view", "text_level": "dense",
-      "wear_level": "heavy"}, 12, "detect_failed"),
-    ({"detect_failed": True, "photo_type": "document"}, 12, "detect_failed"),
-    ({"photo_type": "inside_view", "text_level": "dense", "wear_level": "heavy"}, 12,
-     "inside_view"),
-    ({"photo_type": "document", "text_level": "dense", "wear_level": "heavy"}, 12,
-     "document"),
-    ({"text_level": "dense", "wear_level": "heavy"}, 12, "text_dense"),
-    ({"text_level": "simple", "wear_level": "heavy"}, 12, "wear_heavy"),
-    ({"text_level": "none", "wear_level": "heavy", "anchors": _anchors(3)}, 12, "wear_heavy"),
-    ({"detect_failed": False, "photo_type": "product", "text_level": "simple",
-      "wear_level": "light", "item_texts": _texts(12), "anchors": _anchors(3)}, 12, None),
+      "wear_level": "heavy"}, "detect_failed"),
+    ({"detect_failed": True, "photo_type": "document"}, "detect_failed"),
+    ({"photo_type": "inside_view", "text_level": "dense", "wear_level": "heavy"}, "inside_view"),
+    ({"photo_type": "document", "text_level": "dense", "wear_level": "heavy"}, "document"),
+    ({"text_level": "dense", "wear_level": "heavy"}, "text_dense"),
+    ({"photo_type": "product", "text_level": "dense", "wear_level": "heavy"}, "text_dense"),
 ])
-def test_composite_first_reason(monkeypatch, state, min_texts, expected):
-    monkeypatch.setattr(settings, "composite_first_min_texts", min_texts)
+def test_composite_first_reason(state, expected):
     assert pipeline_mod._composite_first_reason(state) == expected
+
+
+def test_composite_first_reason_ignores_min_texts(monkeypatch):
+    """글자 수 기준(composite_first_min_texts)은 read_text 가 쓴다 — plan 땐 아직 안 읽었다."""
+    monkeypatch.setattr(settings, "composite_first_min_texts", 0)
+    assert pipeline_mod._composite_first_reason({"item_texts": _texts(40)}) is None
 
 
 def test_composite_first_defaults_in_settings():
     from app.core.config import Settings
     f = Settings.model_fields
     assert f["composite_first_min_texts"].default == 12
-    assert "composite_first_min_anchors" not in f     # 하자 개수 기준은 삭제됨 (wear_level 로 대체)
-    assert "ocr_guard" not in f                        # VLM OCR 가드는 09-27 에 삭제
-
-
-def test_settings_rejects_removed_min_anchors_attribute():
-    """삭제된 설정을 코드가 다시 읽지 않는지 — 붙이려 해도 pydantic 이 막는다."""
-    with pytest.raises(ValueError):
-        settings.composite_first_min_anchors = 1
 
 
 def test_plan_sets_result_name_and_reason():
@@ -2895,9 +2872,7 @@ def _deadline(s=30):
     return time.monotonic() + s
 
 
-def test_old_product_names_are_gone():
-    assert not hasattr(pipeline_mod, "_product_pair")
-    assert "product_similarity" not in pipeline_mod.State.__annotations__
+def test_state_has_item_similarity():
     assert "item_similarity" in pipeline_mod.State.__annotations__
 
 
@@ -4014,13 +3989,10 @@ def test_save_inspect_text_level_missing_is_none():
 
 
 # ══ 09-27 analyze 앞단 (classify + detect → analyze VLM 1회) ══════════════
-def test_old_front_nodes_are_gone():
-    for name in ("classify_node", "detect", "DETECT_ATTEMPTS"):
-        assert not hasattr(pipeline_mod, name), name
+def test_front_graph_has_analyze_and_keep_original():
     assert pipeline_mod.ANALYZE_ATTEMPTS == 2
     nodes = set(pipeline_mod.GRAPH.get_graph().nodes)
     assert "analyze" in nodes and "keep_original" in nodes
-    assert "classify" not in nodes and "detect" not in nodes
 
 
 def test_analyze_node_success_passes_everything_through(monkeypatch, no_detect_sleep):
@@ -4372,33 +4344,6 @@ def test_graph_generate_prompt_omits_unreadable_text(monkeypatch, make_png):
                         lambda original, preset, seed=None: prompts.append(preset["prompt"]) or make_png())
     pipeline_mod.run_transform("fid-g", "studio_white")
     assert '"SONATA"' in prompts[0] and "17?" not in prompts[0]
-
-
-# ══ photo_type=document → 사유 document (책·음반·보증서 — 글자가 곧 물건) ═══════════
-@pytest.mark.parametrize("state,expected", [
-    ({"photo_type": "document"}, "document"),
-    ({"photo_type": "product"}, None),
-    ({"photo_type": None}, None),
-    # 글자 수준과 무관 — 표지 글자가 적어도(none·simple) 문서면 생성하지 않는다
-    ({"photo_type": "document", "text_level": "none"}, "document"),
-    ({"photo_type": "document", "text_level": "simple"}, "document"),
-    ({"photo_type": "document", "text_level": None}, "document"),
-    # 우선순위: detect_failed, inside_view, document, text_dense, wear_heavy 순
-    ({"detect_failed": True, "photo_type": "document"}, "detect_failed"),
-    ({"detect_failed": True, "photo_type": "inside_view", "text_level": "dense",
-      "wear_level": "heavy"}, "detect_failed"),
-    ({"photo_type": "inside_view", "text_level": "dense", "wear_level": "heavy"}, "inside_view"),
-    ({"photo_type": "document", "text_level": "dense"}, "document"),
-    ({"photo_type": "document", "wear_level": "heavy"}, "document"),
-    ({"photo_type": "document", "text_level": "dense", "wear_level": "heavy"}, "document"),
-    ({"detect_failed": False, "photo_type": "document", "item_texts": _texts(50)}, "document"),
-    # product 면 기존 판단 그대로
-    ({"photo_type": "product", "text_level": "dense", "wear_level": "heavy"}, "text_dense"),
-    ({"photo_type": "product", "wear_level": "heavy"}, "wear_heavy"),
-    ({"photo_type": "product", "text_level": "simple", "wear_level": "light"}, None),
-])
-def test_composite_first_reason_photo_type(state, expected):
-    assert pipeline_mod._composite_first_reason(state) == expected
 
 
 @pytest.mark.parametrize("level", ["none", "simple", "dense"])

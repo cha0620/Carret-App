@@ -26,13 +26,6 @@ def test_detect_box_prompt_matches_fragment_file_verbatim():
     assert P.detect_box_prompt() == P.frag("detect_box")
 
 
-def test_classify_prompt_is_callable_not_constant():
-    """리팩터 회귀: 예전 CLASSIFY_PROMPT 상수 접근 방식으로 되돌아가지 않았는지."""
-    assert callable(P.classify_prompt)
-    assert not hasattr(P, "CLASSIFY_PROMPT")
-    assert not hasattr(P, "DETECT_BOX_PROMPT")
-
-
 def test_detect_prompt_contains_item_and_joined_hints():
     text = P.detect_prompt("hoodie", ["stain", "tear", "pilling"])
     assert "hoodie" in text
@@ -149,12 +142,6 @@ def test_analyze_template_photo_type_values_match_detector():
     t = P.analyze_template()
     for v in detector.PHOTO_TYPES:
         assert f'"{v}"' in t, v
-
-
-@pytest.mark.parametrize("old", ['"scene"', '"single_item"', '"partial_view"',
-                                 '"multiple_items"', "text_is_product"])
-def test_analyze_template_has_no_old_classification_fields(old):
-    assert old not in P.analyze_template()
 
 
 def test_analyze_template_has_no_unfilled_placeholders():

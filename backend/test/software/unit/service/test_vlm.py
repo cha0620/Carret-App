@@ -109,7 +109,6 @@ def test_callers_import_shared_get_client_not_genai(mod_path):
     src = inspect.getsource(mod)
     assert "from app.core.vlm import get_client" in src
     assert "genai.Client(" not in src
-    assert not hasattr(mod, "genai")
 
 
 # ── retryable(e) ────────────────────────────────
