@@ -139,3 +139,29 @@ def test_main_returns_1_when_nothing_left(run_mod, tmp_path, monkeypatch, capsys
     out = capsys.readouterr().out
     assert "t_raw.jpg" in out and "돌릴 사진이 없다" in out
     assert calls == []
+
+
+
+def test_main_stops_before_spending_when_vlm_fails(run_mod, monkeypatch, tmp_path, capsys):
+    """한도 초과(429) 같은 실패면 비용을 쓰기 전에 멈춘다."""
+    images = tmp_path / "images"
+    images.mkdir()
+    (images / "a.jpg").write_bytes(b"x")
+    (tmp_path / "dataset.json").write_text(
+        '[{"file": "a.jpg", "photo_type": "product", "wear_level": "none", "text_level": "none"}]',
+        encoding="utf-8")
+    monkeypatch.setattr(run_mod, "HERE", tmp_path)
+    monkeypatch.setattr(run_mod, "IMAGES", images)
+    monkeypatch.setattr(run_mod, "_isolate", lambda d: None)
+    monkeypatch.setattr(run_mod, "_preflight", lambda det, data: "RuntimeError: 429 RESOURCE_EXHAUSTED")
+    monkeypatch.setattr(run_mod.sys, "argv", ["run.py", "--analyze-only", "--yes"])
+    assert run_mod.main() == 1
+    assert "VLM 호출이 안 된다" in capsys.readouterr().out
+
+
+def test_preflight_reports_error(run_mod):
+    import types
+    ok = types.SimpleNamespace(analyze=lambda b: {})
+    bad = types.SimpleNamespace(analyze=lambda b: (_ for _ in ()).throw(RuntimeError("429 RESOURCE_EXHAUSTED")))
+    assert run_mod._preflight(ok, b"x") is None
+    assert "429" in run_mod._preflight(bad, b"x")

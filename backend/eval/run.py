@@ -43,6 +43,19 @@ def _isolate(run_dir: Path) -> None:
     os.environ["DB_PATH"] = str(run_dir / "carret.db")
 
 
+STOP_AFTER_DETECT_FAILED = 3   # 연속으로 이만큼 analyze 가 실패하면 멈춘다 (한도 초과·장애 — 09-29 에 48건을 버렸다)
+
+
+def _preflight(detector, data: bytes) -> str | None:
+    """돌리기 전에 VLM 을 한 번 불러 본다 — 한도 초과(429)·키 문제면 비용 쓰기 전에 멈춘다.
+    문제가 있으면 이유를, 없으면 None."""
+    try:
+        detector.analyze(data)
+    except Exception as e:
+        return f"{type(e).__name__}: {str(e)[:200]}"
+    return None
+
+
 def _confirm(n: int, full: bool, yes: bool) -> bool:
     cost = n * (COST_FULL if full else COST_ANALYZE)
     print(f"사진 {n}번 실행 · 예상 비용 약 ${cost:.2f} ({'전체 파이프라인' if full else 'analyze 만'})")
@@ -171,7 +184,13 @@ def main() -> int:
     from app.services.ai import detector
     db.init_db()
 
+    problem = _preflight(detector, (IMAGES / dataset[0]["file"]).read_bytes())
+    if problem:
+        print(f"VLM 호출이 안 된다 — 멈춤: {problem}")
+        return 1
+
     rows = []
+    streak = 0
     for e in dataset:
         data = (IMAGES / e["file"]).read_bytes()
         for rep in range(1, reps + 1):
@@ -182,8 +201,14 @@ def main() -> int:
             except Exception as ex:
                 row["error"] = f"{type(ex).__name__}: {ex}"
             print(f"[{e['file']} r{rep}] {row.get('mode', 'analyze')} "
-                  f"{row.get('photo_type')} {row.get('error', '')}")
+                  f"{row.get('photo_type')} {row.get('error', '')}", flush=True)
             rows.append(row)
+            streak = streak + 1 if (row.get("detect_failed") or row.get("error")) else 0
+            if streak >= STOP_AFTER_DETECT_FAILED:
+                break
+        if streak >= STOP_AFTER_DETECT_FAILED:
+            print(f"analyze 실패가 {streak}번 연속 — 한도 초과·장애로 보고 멈춘다 (지금까지 결과는 저장)")
+            break
 
     meta = {"run_id": run_id, "full": full, "repeat": reps, "preset": a.preset,
             "split": a.split or "all", "only": a.only,
