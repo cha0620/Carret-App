@@ -93,3 +93,49 @@ def test_confirm_cost_analyze(run_mod, monkeypatch, capsys):
 def test_confirm_input(run_mod, monkeypatch, answer, expected):
     monkeypatch.setattr("builtins.input", lambda *_: answer)
     assert run_mod._confirm(1, False, False) is expected
+
+
+# ── main: --split · 라벨 안 된 사진 건너뛰기 (_confirm 에서 멈춘다) ──
+def _setup_main(run_mod, tmp_path, monkeypatch, entries, argv):
+    import json
+    import sys
+    monkeypatch.setattr(run_mod, "HERE", tmp_path)
+    monkeypatch.setattr(run_mod, "IMAGES", tmp_path / "images")
+    (tmp_path / "images").mkdir()
+    for e in entries:
+        (tmp_path / "images" / e["file"]).write_bytes(b"x")
+    (tmp_path / "dataset.json").write_text(json.dumps(entries), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["run.py", *argv])
+    calls = []
+    monkeypatch.setattr(run_mod, "_confirm", lambda n, full, yes: calls.append((n, full, yes)) or False)
+    return calls
+
+
+def _lab(file, **kw):
+    return {"file": file, "photo_type": "product", "wear_level": "none", "text_level": "none", **kw}
+
+
+def test_main_split_filters_and_skips_unlabeled(run_mod, tmp_path, monkeypatch, capsys):
+    entries = [_lab("t1.jpg", split="test"), _lab("t2.jpg", split="test"),
+               _lab("d1.jpg", split="dev"), _lab("old.jpg"),                 # split 없음 → dev
+               {"file": "t_raw.jpg", "split": "test", "photo_type": "product", "wear_level": "",
+                "text_level": "none"}]
+    calls = _setup_main(run_mod, tmp_path, monkeypatch, entries, ["--split", "test", "--repeat", "3"])
+    assert run_mod.main() == 1                                 # _confirm False 에서 멈춤
+    assert calls == [(2 * 3, True, False)]
+    assert "라벨이 안 된 사진 1장은 건너뛴다: t_raw.jpg" in capsys.readouterr().out
+    assert not (tmp_path / "runs").exists()
+
+    (tmp_path / "b").mkdir()
+    calls = _setup_main(run_mod, tmp_path / "b", monkeypatch, entries, ["--split", "dev", "--analyze-only"])
+    assert run_mod.main() == 1
+    assert calls == [(2, False, False)]                        # d1 + split 없는 old
+
+
+def test_main_returns_1_when_nothing_left(run_mod, tmp_path, monkeypatch, capsys):
+    entries = [_lab("d1.jpg", split="dev"), {"file": "t_raw.jpg", "split": "test"}]
+    calls = _setup_main(run_mod, tmp_path, monkeypatch, entries, ["--split", "test", "--yes"])
+    assert run_mod.main() == 1
+    out = capsys.readouterr().out
+    assert "t_raw.jpg" in out and "돌릴 사진이 없다" in out
+    assert calls == []

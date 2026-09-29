@@ -2,7 +2,7 @@
 
     cd backend && python eval/fetch.py
 
-url 이 비어 있는 항목은 images/ 에 직접 넣은 파일로 본다. 사진은 git 에 올리지 않는다
+url 이 비어 있거나 사진이 아닌 주소(게시글 주소 — COLLECT.md)면 images/ 에 직접 넣은 파일로 본다. 사진은 git 에 올리지 않는다
 (중고 거래 게시물 = 남의 사진, 번호판·얼굴이 찍혀 있을 수 있다).
 """
 import json
@@ -27,7 +27,14 @@ def main() -> int:
             continue
         req = urllib.request.Request(e["url"], headers={"User-Agent": "Mozilla/5.0"})
         try:
-            dst.write_bytes(urllib.request.urlopen(req, timeout=20).read())
+            resp = urllib.request.urlopen(req, timeout=20)
+            ctype = resp.headers.get("Content-Type", "")
+            if not ctype.startswith("image/"):
+                # COLLECT.md 는 게시글 주소를 적는다 — 게시글 HTML 을 사진 이름으로 저장하지 않는다
+                print(f"[없음] {e['file']} — url 이 사진이 아니다({ctype or '?'}), images/ 에 직접 넣어야 한다")
+                missing += 1
+                continue
+            dst.write_bytes(resp.read())
             print(f"[ok]   {e['file']}")
         except Exception as ex:
             print(f"[실패] {e['file']}: {ex}")

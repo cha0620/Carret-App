@@ -10,7 +10,7 @@
 
 ```bash
 cd backend
-python eval/fetch.py                  # dataset.json 의 url → eval/images/
+python eval/fetch.py                  # 사진 주소(url)가 있는 항목만 → eval/images/ (게시글 주소는 건너뜀)
 python eval/run.py --analyze-only     # 분류 정확도만 (싸다)
 python eval/run.py                    # 전체 파이프라인 (생성 포함) → runs/<run_id>/
 #   runs/<run_id>/review.html 을 브라우저로 열고
@@ -24,16 +24,7 @@ python eval/report.py                 # 가장 최근 실행 집계 → runs/<ru
 
 ## 사진 모으기
 
-사진 종류가 고르게 들어가도록 모은다 (목표 30~50장):
-
-| 사진 종류 | 예 | 목표 |
-|---|---|---|
-| document | 책 · 음반 · 카드 · 보증서 · 설명서 | 6~10 |
-| inside_view | 엔진룸 · 케이스 뜯은 노트북 · 한 곳 클로즈업 | 4~6 |
-| product · 하자 none | 새것 같은 상품 | 8~10 |
-| product · 하자 light | 얼룩 하나 · 긁힘 몇 개 | 8~10 |
-| product · 하자 heavy | 녹 · 도장 벗겨짐 · 흠집 많음 | 4~6 |
-| product · 글자 많음 | 화장품 · 전자제품 박스 · 로고 큰 옷 | 4~6 |
+규칙 · 층별 목표(test 100 · dev 25) · 검색어 · 저장 방법은 **`COLLECT.md`**, 정리는 `python eval/intake.py` (status · add · export · merge).
 
 중고나라 게시 사진은 업로드 때 약 750px 로 줄어 있다 — 결과를 쓸 때 "입력: 게시 사진(약 750px)" 으로 밝힌다.
 번호판·얼굴·전화번호가 찍힌 사진은 결과 페이지에 올릴 때 가린다.
@@ -45,7 +36,7 @@ python eval/report.py                 # 가장 최근 실행 집계 → runs/<ru
 | 필드 | 값 | 기준 |
 |---|---|---|
 | `file` | 파일 이름 | `images/` 안의 이름 |
-| `url` | 원본 주소 | 없으면 빈 문자열 (직접 넣은 사진) |
+| `url` | 게시글 주소 | 출처 기록용. 사진 파일은 `images/` 에 직접 (없으면 빈 문자열) |
 | `item` | 짧은 영어 명사 | 참고용 |
 | `photo_type` | `document` / `inside_view` / `product` | 글자·표지가 곧 물건 / 물건 일부·내부만 / 그 밖 |
 | `wear_level` | `none` / `light` / `heavy` | 새것 같음 / 작은 하자 몇 개 / 하자가 보이는 면의 큰 부분 |
@@ -53,6 +44,10 @@ python eval/report.py                 # 가장 최근 실행 집계 → runs/<ru
 | `key_texts` | 문자열 목록 | 결과에서 **반드시 그대로여야 할** 글자 (제목·브랜드·모델명) |
 | `note` | 자유 | 채점 때 볼 점 |
 | `labeled_by` | 이름 | `claude-draft` 는 초안 — 사람이 확인하면 이름으로 바꾼다 |
+| `stratum` | 층 코드 | 모을 때의 의도 (`COLLECT.md`) — 집계는 라벨 기준. 기존 8장은 빈 값(`legacy_stratum` 에 옛 값) |
+| `split` | `dev` / `test` | intake 가 층별로 나눈다. test 는 동결 (결과만 본다) |
+| `collected_at` | 날짜 | 모은 날 |
+| `ambiguous` | true / false | 판단이 애매한 사진 |
 
 ## 사람 채점 (`reviews/<run_id>/<이름>.csv`)
 

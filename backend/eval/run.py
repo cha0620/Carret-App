@@ -4,6 +4,9 @@
     python eval/run.py --analyze-only            # analyze(VLM)만 — 분류 정확도, 사진당 약 $0.005
     python eval/run.py                           # 전체 파이프라인 — 생성 포함, 사진당 약 $0.04
     python eval/run.py --repeat 2 --only book.webp,bike.webp
+    python eval/run.py --split test --repeat 2   # 동결된 test 만 (dev 는 조정용)
+
+라벨(photo_type · wear_level · text_level)이 안 된 사진은 건너뛴다 — 정답 없이 돌리면 집계가 틀린다.
 
 전체 실행이 끝나면 사람 채점용 파일이 생긴다:
   runs/<run_id>/review.html        원본 | 결과를 나란히 (브라우저로 열기)
@@ -26,6 +29,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 IMAGES = HERE / "images"
 COST_ANALYZE, COST_FULL = 0.005, 0.04   # 사진 1장 대략 (09-26 실측 기준)
+LABEL_VALUES = {"photo_type": ("document", "inside_view", "product"),   # intake.ENUMS 와 같게
+                "wear_level": ("none", "light", "heavy"),
+                "text_level": ("none", "simple", "dense")}
 REVIEW_COLS = ["file", "repeat", "mode", "reviewed", "shape_color_changed", "text_changed",
                "wear_changed", "background_issue", "framing_issue", "note"]
 
@@ -126,6 +132,8 @@ def main() -> int:
     ap.add_argument("--repeat", type=int, default=1, help="같은 사진을 몇 번 돌리나 (생성은 매번 다르다)")
     ap.add_argument("--preset", default="studio_white")
     ap.add_argument("--only", default="", help="쉼표로 구분한 파일 이름")
+    ap.add_argument("--split", choices=("dev", "test"), default="",
+                    help="이 split 만 (split 이 없는 옛 항목은 dev)")
     ap.add_argument("--run-id", default="")
     ap.add_argument("--yes", action="store_true", help="비용 확인을 건너뛴다")
     a = ap.parse_args()
@@ -134,6 +142,16 @@ def main() -> int:
     if a.only:
         keep = {s.strip() for s in a.only.split(",")}
         dataset = [e for e in dataset if e["file"] in keep]
+    if a.split:
+        dataset = [e for e in dataset if (e.get("split") or "dev") == a.split]
+    unlabeled = [e["file"] for e in dataset
+                 if not all(e.get(k) in v for k, v in LABEL_VALUES.items())]
+    if unlabeled:
+        print(f"라벨이 안 된 사진 {len(unlabeled)}장은 건너뛴다: {', '.join(unlabeled)}")
+        dataset = [e for e in dataset if e["file"] not in unlabeled]
+    if not dataset:
+        print("돌릴 사진이 없다")
+        return 1
     missing = [e["file"] for e in dataset if not (IMAGES / e["file"]).exists()]
     if missing:
         print(f"images/ 에 없는 사진: {missing} — python eval/fetch.py 먼저")
@@ -168,6 +186,7 @@ def main() -> int:
             rows.append(row)
 
     meta = {"run_id": run_id, "full": full, "repeat": reps, "preset": a.preset,
+            "split": a.split or "all", "only": a.only,
             "created": datetime.now().isoformat(timespec="seconds")}
     (run_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2))
     with open(run_dir / "results.jsonl", "w", encoding="utf-8") as f:

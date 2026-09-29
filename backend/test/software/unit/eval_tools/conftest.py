@@ -27,3 +27,18 @@ def run_mod():
 @pytest.fixture
 def fetch_mod():
     return _load("fetch")
+
+
+@pytest.fixture
+def intake_mod(tmp_path, monkeypatch):
+    """모듈 경로(DATASET·IMAGES·INBOX·LABELS_CSV)를 tmp_path 로 돌려 둔 intake."""
+    mod = _load("intake")
+    images = tmp_path / "images"
+    inbox = images / "inbox"
+    inbox.mkdir(parents=True)
+    monkeypatch.setattr(mod, "IMAGES", images)
+    monkeypatch.setattr(mod, "INBOX", inbox)
+    monkeypatch.setattr(mod, "DATASET", tmp_path / "dataset.json")
+    monkeypatch.setattr(mod, "LABELS_CSV", inbox / "labels.csv")
+    monkeypatch.setattr(mod, "SPLIT_LOG", tmp_path / "splits.jsonl")
+    return mod
