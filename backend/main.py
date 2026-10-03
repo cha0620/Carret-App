@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import feedback
 from app.api.routes import images
+from app.api.routes import items
 from app.api.routes import transform
 from app.core import db
 from app.core.config import settings
@@ -25,6 +26,12 @@ app = FastAPI(title="SellerShot API", version="0.1.0")
 
 db.init_db()
 
+
+@app.on_event("startup")
+def _warmup():
+    from app.core.warmup import start_warmup
+    start_warmup()   # 첫 요청이 모델 로딩(20초 안팎)을 기다리지 않게 — 백그라운드
+
 # CORS (프론트 분리용)
 app.add_middleware(
     CORSMiddleware,
@@ -37,6 +44,7 @@ app.add_middleware(
 app.include_router(images.router, prefix="/api/images", tags=["images"])
 app.include_router(transform.router, prefix="/api", tags=["transform"])
 app.include_router(feedback.router, prefix="/api", tags=["feedback"])
+app.include_router(items.router, prefix="/api", tags=["items"])
 
 # 2) 결과 파일 서빙 — storage 추상화를 거친다 (STORAGE_BACKEND=local/s3 무관하게 동일 URL로 서빙)
 @app.get("/storage/{kind}/{name:path}")

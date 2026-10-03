@@ -1,0 +1,16 @@
+file,repeat,mode,reviewed,shape_color_changed,text_changed,wear_changed,added_content,background_issue,framing_issue,failure_tags,photo_quality,note
+knit1.webp,1,generate,y,,,,,,,,,Claude 1차 (10-02 눈으로) — 문제 안 보임
+knit1.webp,2,generate,y,,,,,,,,,Claude 1차 (10-02 눈으로) — 문제 안 보임
+tshirt.webp,1,composite,,,,,,,,,,
+tshirt.webp,2,generate,y,,,,,,,,,Claude 1차 (10-02 눈으로) — 문제 안 보임
+wind.webp,1,generate,y,1,,,,,,material_changed,,Claude 1차 (10-02 눈으로) — 광택 구김 나일론→무광 매끈
+wind.webp,2,generate,y,1,,,,,,material_changed,,Claude 1차 (10-02 눈으로) — 광택 구김 나일론→무광 매끈
+edge_clothes2.webp,1,generate,y,1,1,,1,,,detail_lost;text_altered;text_added;tag_lost,,"Claude 1차 (10-02 눈으로) — 구멍 메워짐, 행택 사라짐, 목 라벨→JOURNEY, 그림 안에 181 비슷한 글자"
+edge_clothes2.webp,2,generate,y,1,1,,,,,detail_lost;text_altered;tag_lost,,"Claude 1차 (10-02 눈으로) — 구멍 메워짐, 행택 사라짐, 목 라벨→JOURNEY"
+none_clothes1.webp,1,generate,y,,,,,,,,,Claude 1차 (10-02 눈으로) — 문제 안 보임
+none_clothes1.webp,2,generate,y,,,,,,,,,Claude 1차 (10-02 눈으로) — 문제 안 보임
+none_clothes3.webp,1,composite,,,,,,,,,,
+none_clothes3.webp,2,composite,,,,,,,,,,
+none_clothes4.webp,1,composite,,,,,,,,,,
+none_clothes4.webp,2,composite,,,,,,,,,,
+none_shoes1.webp,1,composite,,,,,,,,,,

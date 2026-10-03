@@ -1,0 +1,8 @@
+[
+  {"file": "shoes_front34_1.jpg", "category": "shoes", "composition": "shoes_front34", "view": "front_34", "applies_to": "신발 전부 (스니커즈 · 등산화)", "note": "한 켤레 나란히, 앞코 비스듬히, 흰 배경, 바닥 그림자 약하게"},
+  {"file": "clothing_top_front_1.jpg", "category": "clothing", "composition": "clothing_top_front", "view": "front", "applies_to": "상의 전부 (티셔츠 · 맨투맨 · 폴로 · 유니폼 · 재킷)", "note": "앞판 정면, 펼쳐서 좌우 대칭, 흰 배경, 옷걸이 · 손 없음, 여백 넉넉"},
+  {"file": "watch_front34_1.jpg", "category": "other", "composition": "watch_front34", "view": "front_34", "applies_to": "손목시계", "note": "다이얼이 보이게 비스듬히 세움, 줄이 뒤로 둥글게, 흰 배경"},
+  {"file": "book_cover34_1.jpg", "category": "other", "composition": "book_cover34", "view": "front_34", "applies_to": "책 한 권", "note": "앞표지 + 책등이 보이게 비스듬히 세움, 흰 배경"},
+  {"file": "book_stack_1.jpg", "category": "other", "composition": "book_stack", "view": "side", "applies_to": "책 · 만화 세트 (여러 권)", "note": "책등이 보이게 쌓음 — 배경이 서점이라 구도만 참고"},
+  {"file": "cd_front_1.jpg", "category": "other", "composition": "cd_front", "view": "front", "applies_to": "CD · 음반", "note": "케이스 앞면 정면, 비닐 · 띠지 그대로"}
+]

@@ -36,6 +36,24 @@ _load_lock = threading.Lock()   # rembg 모델 로드 (수 초) — 캐시 조�
 CANVAS = 1024          # 생성 결과와 같은 정사각 크기
 MARGIN = 0.08          # 물건 주변 여백 (캔버스 비율)
 MAX_UPSCALE = 2.5      # 저해상도 원본을 과하게 키워 뭉개지지 않게
+FLAT_MARGIN = 0.15     # 표지 컷 여백 — 0.08 은 표지가 화면을 꽉 채워 스캔본처럼 보였다 (10-01)
+FLAT_DROP = 0.03       # 표지를 가운데보다 살짝 아래로 (캔버스 비율) — 바닥에 놓인 느낌
+
+
+def studio_canvas(bg_color: tuple, size: int = CANVAS) -> Image.Image:
+    """단색 대신 스튜디오 스윕 — 위는 조금 밝고 바닥 쪽은 조금 어둡게, 가장자리는 아주 옅은 비네트.
+    프리셋 색은 화면 가운데 높이 근처에 그대로 남는다 (어두운 무드 색에서도 같은 비율)."""
+    bg = np.array(bg_color, float)
+    top = np.minimum(255, bg + 8)
+    floor = bg * 0.92
+    y = np.linspace(0, 1, size)[:, None]
+    t = np.clip((y - 0.45) / 0.5, 0, 1)
+    t = t * t * (3 - 2 * t)                      # smoothstep
+    col = top * (1 - t) + floor * t              # (size, 3)
+    xx, yy = np.meshgrid(np.linspace(-1, 1, size), np.linspace(-1, 1, size))
+    vig = 1 - 0.05 * np.clip(xx ** 2 + yy ** 2 - 0.4, 0, None)
+    img = col[:, None, :] * vig[..., None]
+    return Image.fromarray(np.clip(img, 0, 255).astype(np.uint8))
 
 
 def _load():
@@ -120,9 +138,26 @@ def original_alpha(image_bytes: bytes, img: Image.Image) -> np.ndarray:
     return alpha
 
 
-def clean_alpha(alpha: np.ndarray, item_box: dict | None = None) -> np.ndarray:
+THIN_FRAC = 0.03   # 가는 돌출부 제거 — 물건 짧은 변의 3% 보다 가는 조각 (최소 5px)
+
+
+def _drop_thin(binary: np.ndarray) -> np.ndarray:
+    """마스크 열기(opening)로 물건 윤곽에 붙은 가는 조각(뒤쪽 막대·다른 케이스 모서리)을 뗀다.
+    책·CD 같은 납작한 인쇄물 전용 — 자전거 살·끈·케이블처럼 원래 가는 부분이 있는 물건엔 쓰지 않는다."""
+    import cv2
+    ys, xs = np.nonzero(binary)
+    if len(xs) == 0:
+        return binary
+    k = max(5, int(round(min(np.ptp(ys), np.ptp(xs)) * THIN_FRAC))) | 1
+    return cv2.morphologyEx(binary, cv2.MORPH_OPEN,
+                            cv2.getStructuringElement(cv2.MORPH_RECT, (k, k)))
+
+
+def clean_alpha(alpha: np.ndarray, item_box: dict | None = None, *, flat: bool = False) -> np.ndarray:
     """오리기 잔여물 정리: 물건 박스 밖은 지우고, 가장 큰 덩어리(와 그 5% 이상인
-    덩어리)만 남긴다 — 어수선한 배경에서 벽 조각이 뿌옇게 남는 문제 대응."""
+    덩어리)만 남긴다 — 어수선한 배경에서 벽 조각이 뿌옇게 남는 문제 대응.
+    flat=True(책·CD): 윤곽에 붙은 가는 조각도 뗀다 (09-29 CD 뒤쪽 은색 막대). 투명 케이스 너머로
+    비치는 배경은 물건의 일부라 여기서 못 지운다 — 알려진 한계."""
     import cv2
     a = alpha.copy()
     h, w = a.shape
@@ -137,9 +172,11 @@ def clean_alpha(alpha: np.ndarray, item_box: dict | None = None) -> np.ndarray:
         box_mask[y1:y2, x1:x2] = 1
         a = a * box_mask
     binary = (a >= 128).astype(np.uint8)
+    if flat:
+        binary = _drop_thin(binary)
     n, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
     if n <= 1:
-        return a
+        return (a * binary).astype(np.uint8) if flat else a
     areas = stats[1:, cv2.CC_STAT_AREA]
     keep = {i + 1 for i, area in enumerate(areas) if area >= areas.max() * 0.05}
     keep_mask = np.isin(labels, list(keep))
@@ -148,10 +185,10 @@ def clean_alpha(alpha: np.ndarray, item_box: dict | None = None) -> np.ndarray:
     return (a * near).astype(np.uint8)
 
 
-def _item_and_mask(img: Image.Image, alpha: np.ndarray,
-                   item_box: dict | None) -> tuple[Image.Image, Image.Image]:
+def _item_and_mask(img: Image.Image, alpha: np.ndarray, item_box: dict | None,
+                   *, flat: bool = False) -> tuple[Image.Image, Image.Image]:
     """알파를 정리하고 물건이 있는 영역만 잘라 (물건, 마스크) 로."""
-    alpha = clean_alpha(alpha, item_box)
+    alpha = clean_alpha(alpha, item_box, flat=flat)
     ys, xs = np.nonzero(alpha >= 128)
     if len(xs) == 0:
         raise ValueError("물건을 찾지 못함 (알파가 비어 있음)")
@@ -206,7 +243,7 @@ def find_cover(alpha: np.ndarray, item_box: dict | None = None) -> np.ndarray | 
     오리기 모양이 사각형과 많이 다르거나, 떨어진 물건이 둘 이상이면(여러 권 — 한 권만 펴면
     나머지가 사라진다) None (호출부가 일반 배경 교체로)."""
     import cv2
-    binary = (clean_alpha(alpha, item_box) >= 128).astype(np.uint8)
+    binary = (clean_alpha(alpha, item_box, flat=True) >= 128).astype(np.uint8)
     cnts, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not cnts:
         return None
@@ -233,6 +270,107 @@ def find_cover(alpha: np.ndarray, item_box: dict | None = None) -> np.ndarray | 
     return q
 
 
+PAGE_BAND = 0.10        # 가장자리에서 이 비율 안쪽까지만 책 배(종이 단면) 띠를 찾는다
+PAGE_MIN_STRIP = 0.012  # 이보다 얇은 띠는 무시 (오리기 경계 흔들림)
+PAGE_MIN_LEN = 0.6      # 표지 경계선은 그 변 길이의 이만큼 이어져야 한다
+PAGE_MAX_TILT = 0.06    # 경계선 기울기 상한 (tan, 약 3.4도)
+PAGE_MAX_SAT = 0.25     # 띠의 평균 채도 상한 — 종이 단면·책 옆면은 무채색. 색 있는 표지 무늬는 자르지 않는다
+
+
+def _side_view(a: np.ndarray, side: str) -> np.ndarray:
+    """편 표지 배열을 돌려 side 가 아래쪽에 오게 (행 = 가장자리에서 안쪽으로)."""
+    return {"bottom": a, "top": a[::-1], "right": np.swapaxes(a, 0, 1),
+            "left": np.swapaxes(a, 0, 1)[::-1]}[side]
+
+
+def _to_unwarp(side: str, x: float, y: float, w: int, h: int) -> tuple[float, float]:
+    """_side_view 좌표 → 편 표지(w×h) 좌표."""
+    if side == "bottom":
+        return x, y
+    if side == "top":
+        return x, h - 1 - y
+    if side == "right":
+        return y, x
+    return w - 1 - y, x      # left
+
+
+def _cover_edge(cover: np.ndarray, side: str) -> tuple[tuple, tuple] | None:
+    """편 표지의 한 변 근처에 '표지 경계선 + 그 바깥 무채색 띠'가 있으면 그 선의 두 끝점(편 표지 좌표).
+    누운 하드커버를 위에서 찍으면 오리기에 표지 아래 책 배·뒤표지 판이 같이 들어온다 (09-29 『모순』)."""
+    import cv2
+    v = _side_view(cover, side)
+    n, m = v.shape[:2]
+    band = max(4, int(n * PAGE_BAND))
+    gray = cv2.cvtColor(np.ascontiguousarray(v[n - band:]), cv2.COLOR_RGB2GRAY)
+    edges = cv2.Canny(cv2.GaussianBlur(gray, (3, 3), 0), 40, 120)
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 360, threshold=int(m * 0.3),
+                            minLineLength=int(m * PAGE_MIN_LEN), maxLineGap=int(m * 0.03) + 1)
+    if lines is None:
+        return None
+    best = None
+    for x1, y1, x2, y2 in np.asarray(lines).reshape(-1, 4):   # OpenCV 버전마다 (N,1,4) · (N,4) 로 달라서
+        if x1 == x2 or abs((y2 - y1) / (x2 - x1)) > PAGE_MAX_TILT:
+            continue
+        slope = (y2 - y1) / (x2 - x1)
+        y_left, y_right = y1 - slope * x1 + n - band, y1 + slope * (m - 1 - x1) + n - band
+        strip = n - max(y_left, y_right)
+        if strip < n * PAGE_MIN_STRIP:
+            continue
+        if best is None or max(y_left, y_right) < max(best):   # 가장 안쪽 선 = 표지 경계
+            best = (y_left, y_right)
+    if best is None:
+        return None
+    top = int(min(best)) + 1
+    hsv = cv2.cvtColor(np.ascontiguousarray(v[top:]), cv2.COLOR_RGB2HSV)
+    if hsv[..., 1].mean() / 255 > PAGE_MAX_SAT:
+        return None
+    h, w = cover.shape[:2]
+    return _to_unwarp(side, 0, best[0], w, h), _to_unwarp(side, m - 1, best[1], w, h)
+
+
+def trim_page_edges(img: Image.Image, q: np.ndarray) -> np.ndarray:
+    """네 모서리 q 를 표지 면만 남게 좁힌다 — 변마다 _cover_edge 가 찾은 선으로 그 변을 옮긴다.
+    못 찾으면 그 변은 그대로. 원본 픽셀은 바꾸지 않고 모서리 좌표만 바꾼다."""
+    import cv2
+    tl, tr, br, bl = q
+    w = int(max(np.linalg.norm(tr - tl), np.linalg.norm(br - bl)))
+    h = int(max(np.linalg.norm(bl - tl), np.linalg.norm(br - tr)))
+    dst = np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], np.float32)
+    m = cv2.getPerspectiveTransform(q.astype(np.float32), dst)
+    cover = cv2.warpPerspective(np.asarray(img), m, (w, h), flags=cv2.INTER_LINEAR,
+                                borderMode=cv2.BORDER_REPLICATE)
+    inv = np.linalg.inv(m)
+
+    def back(pt):
+        x, y, z = inv @ np.array([pt[0], pt[1], 1.0])
+        return np.array([x / z, y / z], np.float32)
+
+    # 편 표지 좌표에서 네 변을 직선(두 점)으로 두고, 찾은 변만 바꾼 뒤 이웃 변과의 교점이 새 모서리
+    sides = {"top": ((0, 0), (w - 1, 0)), "right": ((w - 1, 0), (w - 1, h - 1)),
+             "bottom": ((0, h - 1), (w - 1, h - 1)), "left": ((0, 0), (0, h - 1))}
+    moved = False
+    for side in sides:
+        edge = _cover_edge(cover, side)
+        if edge is not None:
+            sides[side] = edge
+            moved = True
+            logger.info(f"표지 {side} 쪽 책 배·옆면 띠를 뺌")
+    if not moved:
+        return q
+
+    def cross(a, b):
+        (x1, y1), (x2, y2) = a
+        (x3, y3), (x4, y4) = b
+        d = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+        px = ((x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)) / d
+        py = ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) / d
+        return px, py
+
+    corners = [cross(sides["top"], sides["left"]), cross(sides["top"], sides["right"]),
+               cross(sides["bottom"], sides["right"]), cross(sides["bottom"], sides["left"])]
+    return np.array([back(c) for c in corners], np.float32)
+
+
 def _unwarp(img: Image.Image, q: np.ndarray) -> Image.Image:
     """좌상·우상·우하·좌하 네 점 → 정면으로 편 표지. 변 길이는 마주 보는 두 변 중 긴 쪽."""
     import cv2
@@ -255,28 +393,34 @@ def compose_flat(image_bytes: bytes, bg_color: tuple, item_box: dict | None = No
     alpha = original_alpha(image_bytes, img)
     try:
         q = find_cover(alpha, item_box)
-        cover = None if q is None else _unwarp(img, q)
+        cover = None if q is None else _unwarp(img, trim_page_edges(img, q))
     except Exception as e:
         logger.warning(f"표지 펴기 실패: {e}")
         cover = None
     if cover is None:
         logger.info("표지를 펴지 못함 → 일반 배경 교체")
-        return compose(image_bytes, bg_color, item_box, alpha=alpha)
+        return compose(image_bytes, bg_color, item_box, alpha=alpha, flat=True)
     w, h = cover.size
 
-    room = CANVAS * (1 - 2 * MARGIN)
+    room = CANVAS * (1 - 2 * FLAT_MARGIN)
     scale = min(room / w, room / h, MAX_UPSCALE)
     size = (max(1, round(w * scale)), max(1, round(h * scale)))
     cover = cover.resize(size, Image.LANCZOS)
-    x, y = (CANVAS - size[0]) // 2, (CANVAS - size[1]) // 2
-    canvas = Image.new("RGB", (CANVAS, CANVAS), tuple(bg_color))
-    # 오른쪽 아래로 살짝 떨어지는 그림자 — 종이가 바닥에서 떠 보이는 표지 컷
-    off = max(6, size[0] // 60)
-    shadow = Image.new("L", (CANVAS, CANVAS), 0)
-    shadow.paste(110, (x + off, y + off, x + size[0] + off, y + size[1] + off))
-    shadow = shadow.filter(ImageFilter.GaussianBlur(off * 1.5))
-    dark = Image.new("RGB", (CANVAS, CANVAS), tuple(int(c * 0.6) for c in bg_color))
-    canvas = Image.composite(dark, canvas, shadow)
+    x = (CANVAS - size[0]) // 2
+    y = min((CANVAS - size[1]) // 2 + int(CANVAS * FLAT_DROP), CANVAS - size[1] - int(CANVAS * 0.04))
+    canvas = studio_canvas(bg_color)
+    dark = Image.new("RGB", (CANVAS, CANVAS), tuple(int(c * 0.55) for c in bg_color))
+    # 넓고 옅은 그림자(아래로 조금) + 아랫변에 붙은 짙은 접지 그림자 — 표지가 바닥에 서 있는 컷
+    off = max(6, size[0] // 50)
+    ambient = Image.new("L", (CANVAS, CANVAS), 0)
+    ambient.paste(70, (x + off // 2, y + off, x + size[0] + off // 2, y + size[1] + off))
+    ambient = ambient.filter(ImageFilter.GaussianBlur(off * 2.5))
+    canvas = Image.composite(dark, canvas, ambient)
+    contact = Image.new("L", (CANVAS, CANVAS), 0)
+    ch = max(6, size[1] // 40)
+    contact.paste(140, (x + ch, y + size[1] - ch, x + size[0] - ch, y + size[1] + ch // 2))
+    contact = contact.filter(ImageFilter.GaussianBlur(ch))
+    canvas = Image.composite(dark, canvas, contact)
     canvas.paste(cover, (x, y))
     buf = io.BytesIO()
     canvas.save(buf, format="JPEG", quality=95)
@@ -284,13 +428,13 @@ def compose_flat(image_bytes: bytes, bg_color: tuple, item_box: dict | None = No
 
 
 def compose(image_bytes: bytes, bg_color: tuple, item_box: dict | None = None,
-            alpha: np.ndarray | None = None) -> bytes:
+            alpha: np.ndarray | None = None, *, flat: bool = False) -> bytes:
     """원본 → 물건만 오려 CANVAS 정사각 배경 가운데에 놓고 바닥 그림자를 깐 JPEG.
     물건 픽셀은 크기 조정(리샘플링) 외에는 손대지 않는다."""
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     if alpha is None:
         alpha = original_alpha(image_bytes, img)
-    item, mask = _item_and_mask(img, alpha, item_box)
+    item, mask = _item_and_mask(img, alpha, item_box, flat=flat)
 
     room = CANVAS * (1 - 2 * MARGIN)
     scale = min(room / item.width, room / item.height, MAX_UPSCALE)

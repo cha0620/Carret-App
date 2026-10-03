@@ -33,7 +33,6 @@ def prompts_to_seed() -> dict:
     """get_prompt_text() 를 부르는 모든 이름 — 새 프롬프트를 추가하면 여기에도 추가.
     (빠지면 Langfuse 미등록 → 호출마다 404 조회 후 fallback, 콘솔 수정 불가)"""
     seeds = {
-        "analyze": analyze_template(),
         "classify": frag("role_classify"),
         "detect_box": frag("detect_box"),
         "detect_v2": detect_template(),   # 옛 "detect" 는 배포된 옛 서버용으로 그대로 둔다
@@ -42,6 +41,8 @@ def prompts_to_seed() -> dict:
         "item_text": frag("item_text"),
         "check_photo": check_photo_template(),
         "match": frag("match"),
+        "analyze_v2": analyze_template(),   # 10-01 글자(texts)까지 — 옛 "analyze" 는 배포된 옛 서버용으로 그대로 둔다
+        "views": frag("views"),           # {{n}} · {{n_last}} 는 호출 시점에 채워짐 (여러 각도, 10-01)
         "judge_system": _SYSTEM_TEMPLATE,  # {{rubric}} 는 호출 시점에 채워짐
         "auto_feedback_system": AUTO_FEEDBACK_TEMPLATE,
     }

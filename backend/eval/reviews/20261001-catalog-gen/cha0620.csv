@@ -1,0 +1,30 @@
+file,repeat,mode,reviewed,shape_color_changed,text_changed,wear_changed,background_issue,framing_issue,note
+bike.webp,1,generate,,,,,,,
+bike.webp,2,generate,,,,,,,
+car1.webp,1,generate,y,,,,,,이것도 차량은좀 나중에 다시하자
+car1.webp,2,generate,y,,,,,,일단 차량은 조금 성질이 달라서 다음에보자
+knit1.webp,1,generate,y,,,,,,
+knit1.webp,2,generate,y,,,,,,
+tshirt.webp,1,generate,,,,,,,
+tshirt.webp,2,generate,,,,,,,
+wind.webp,1,generate,,,,,,,
+wind.webp,2,generate,y,,,,,,
+edge_clothes2.webp,1,generate,,,,,,,
+edge_clothes2.webp,2,generate,y,,,,,,구멍뚫린거랑 무늬지워진게 반영안된 새거야
+none_car2.webp,1,generate,y,,,,,,
+none_car2.webp,2,generate,,,,,,,
+none_car4.webp,1,generate,y,,,,,,차는좀 나중에 생각하자
+none_car4.webp,2,generate,,,,,,,
+none_clothes1.webp,1,generate,,,,,,,
+none_clothes1.webp,2,generate,y,,,,,,
+none_clothes3.webp,1,generate,y,1,,,,,중간에 W가 달라
+none_clothes3.webp,2,generate,,,,,,,
+none_clothes4.webp,1,generate,,,,,,,
+none_clothes4.webp,2,generate,,,,,,,
+none_shoes1.webp,1,generate,,,,,,,
+none_shoes1.webp,2,generate,y,1,,,,,"이렇게 세워진 구도말고, 가지런히 정리된 구조였으면 좋겠고, 변색이 적용이 안됐어"
+none_shoes2.webp,2,generate,,,,,,,
+none_shoes4.webp,1,generate,,,,,,,
+none_shoes4.webp,2,generate,,,,,,,
+none_watch3.webp,1,generate,y,1,,,,,아예 다른애야
+none_watch3.webp,2,generate,,,,,,,

@@ -8,6 +8,9 @@ from app.core.config import reveal, settings
 from app.core.tracing import observe
 
 
+GEN_STEPS = 8   # flux-2 flash 는 8 이하 (eval/run.py 가 meta 에 남긴다)
+
+
 def _generate_ai(image_bytes: bytes, preset: dict, seed: int | None = None) -> bytes:
     """생성 편집 모델: 프롬프트가 전체 편집을 지시 (마스크 불필요).
     seed=None 이면 fal 기본(랜덤) — 출력 가드 재시도만 seed 를 명시해서 바꾼다."""
@@ -19,7 +22,7 @@ def _generate_ai(image_bytes: bytes, preset: dict, seed: int | None = None) -> b
         "image_urls": [image_url],           # ← 리스트로! (참조 이미지 목록)
         "prompt": preset["prompt"],
         # num_inference_steps: 삭제 (기본값) 또는 8 이하
-        "num_inference_steps": 8,
+        "num_inference_steps": GEN_STEPS,
     }
     if seed is not None:
         arguments["seed"] = seed
@@ -57,6 +60,9 @@ def _download(url: str) -> bytes:
 
 
 def _upload(data: bytes) -> str:
+    """fal 저장소에 올리고 주소를 받는다. 올리기 전에 flush — 안 하면 버퍼(8KB)보다 작은 파일
+    (마스크 PNG 등)은 빈 파일로 올라간다 (09-29 인페인팅 실험에서 발견)."""
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
         f.write(data)
+        f.flush()
         return fal_client.upload_file(f.name)

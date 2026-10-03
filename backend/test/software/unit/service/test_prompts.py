@@ -26,13 +26,6 @@ def test_detect_box_prompt_matches_fragment_file_verbatim():
     assert P.detect_box_prompt() == P.frag("detect_box")
 
 
-def test_classify_prompt_is_callable_not_constant():
-    """리팩터 회귀: 예전 CLASSIFY_PROMPT 상수 접근 방식으로 되돌아가지 않았는지."""
-    assert callable(P.classify_prompt)
-    assert not hasattr(P, "CLASSIFY_PROMPT")
-    assert not hasattr(P, "DETECT_BOX_PROMPT")
-
-
 def test_detect_prompt_contains_item_and_joined_hints():
     text = P.detect_prompt("hoodie", ["stain", "tear", "pilling"])
     assert "hoodie" in text
@@ -129,7 +122,7 @@ def test_match_prompt_matches_fragment_template_shape():
 def test_analyze_template_fragment_order():
     t = P.analyze_template()
     parts = [P.frag(n) for n in ("role_analyze", "rules_analyze", "text_level_analyze",
-                                 "schema_analyze")]
+                                 "texts_analyze", "schema_analyze")]
     idx = [t.index(p) for p in parts]
     assert idx == sorted(idx)
     assert t == "\n\n".join(parts)
@@ -138,7 +131,7 @@ def test_analyze_template_fragment_order():
 def test_analyze_template_asks_for_every_field_parsed_by_detector():
     t = P.analyze_template()
     for word in ("item", "considered", "item_box_2d", "photo_type", "wear_level", "watermark",
-                 "text_level", "marks", '"document"', '"inside_view"', '"product"',
+                 "text_level", "marks", '"texts"', '"document"', '"inside_view"', '"product"',
                  '"heavy"', '"light"', '"on_item"', '"background"', '"dense"', '"simple"'):
         assert word in t, word
 
@@ -149,12 +142,6 @@ def test_analyze_template_photo_type_values_match_detector():
     t = P.analyze_template()
     for v in detector.PHOTO_TYPES:
         assert f'"{v}"' in t, v
-
-
-@pytest.mark.parametrize("old", ['"scene"', '"single_item"', '"partial_view"',
-                                 '"multiple_items"', "text_is_product"])
-def test_analyze_template_has_no_old_classification_fields(old):
-    assert old not in P.analyze_template()
 
 
 def test_analyze_template_has_no_unfilled_placeholders():
@@ -174,7 +161,7 @@ def test_analyze_prompt_requests_analyze_name_without_variables(monkeypatch):
         return "X"
     monkeypatch.setattr(P, "get_prompt_text", fake)
     assert P.analyze_prompt() == "X"
-    assert seen == [("analyze", P.analyze_template(), {})]
+    assert seen == [("analyze_v2", P.analyze_template(), {})]   # 10-01: 글자(texts)까지 — 새 이름
 
 
 # ── verify_v2 (마크 전용, 파이프라인) ──

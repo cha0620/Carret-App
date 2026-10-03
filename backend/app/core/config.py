@@ -18,6 +18,9 @@ class Settings(BaseSettings):              # ⭐ 대문자 클래스
     # 저장소
     storage_dir: str = "./storage"
     max_upload_size_mb: int = 10
+    max_video_size_mb: int = 100          # 여러 각도 업로드의 동영상 한 개 (10-01)
+    max_item_photos: int = 12             # 물건 하나에 모을 사진 상한 (동영상에서 뽑은 장면 포함)
+    keep_attempts: bool = False           # 생성 시도마다 이미지를 attempts/ 에 남긴다 (eval 용 — 게이트에 걸린 생성본도 보려고)
     image_max_side: int = 1600
     image_quality: int = 88
 
@@ -79,6 +82,7 @@ class Settings(BaseSettings):              # ⭐ 대문자 클래스
     # 기타
     max_bytes: int = 10 * 1024 * 1024
     dev_tools: bool = True
+    warmup_models: bool = True   # 서버 시작 뒤 DINO(·local 이면 rembg)를 미리 올린다 (app/core/warmup.py)
 
     inspect_img: str | None = None
 

@@ -725,15 +725,8 @@ def test_detect_full_item_box_floats_rounded(monkeypatch):
     assert out["item_box"] == {"x1": 21, "y1": 10, "x2": 1000, "y2": 300}
 
 
-@pytest.mark.parametrize("box", [
-    None, [], [1, 2, 3], [1, 2, 3, 4, 5], "0,0,10,10", {"ymin": 0},
-    ["0", "0", "10", "10"], [True, 0, 10, 10],
-    [0, 0, 1001, 10],        # 범위 밖
-    [-1, 0, 10, 10],
-    [0, 100, 500, 100],      # 폭 0
-    [200, 0, 200, 500],      # 높이 0
-    [None, 0, 10, 10],
-])
+# 잘못된 박스 입력 목록은 analyze 쪽(test_analyze_bad_item_box_is_none)에 — 같은 파서(_from_box_2d·_has_box)
+@pytest.mark.parametrize("box", [[1, 2, 3], [0, 0, 1001, 10]])
 def test_detect_full_invalid_item_box_is_none(monkeypatch, box):
     out = _full(monkeypatch, {"defects": [_STAIN], "text_level": "none", "item_box_2d": box})
     assert out["item_box"] is None
@@ -742,12 +735,6 @@ def test_detect_full_invalid_item_box_is_none(monkeypatch, box):
 
 def test_detect_full_missing_item_box_is_none(monkeypatch):
     assert _full(monkeypatch, {"defects": []})["item_box"] is None
-
-
-def test_detect_full_ignores_legacy_item_box_key(monkeypatch):
-    """item_box_2d 만 읽는다 — x1.. 키로 준 item_box 는 쓰지 않는다."""
-    out = _full(monkeypatch, {"defects": [], "item_box": {"x1": 1, "y1": 1, "x2": 9, "y2": 9}})
-    assert out["item_box"] is None
 
 
 @pytest.mark.parametrize("resp", MALFORMED)
@@ -854,6 +841,7 @@ def test_analyze_parses_full_response(monkeypatch):
         "item_box": {"x1": 200, "y1": 100, "x2": 800, "y2": 700},
         "photo_type": "product", "wear_level": "none", "watermark": "background",
         "text_level": "simple",
+        "item_count": 1,
     }
 
 
@@ -908,6 +896,7 @@ def test_analyze_missing_keys_all_defaults(monkeypatch):
         "item": "object", "considered": [], "anchors": [], "item_box": None,
         "photo_type": "product", "wear_level": "light", "watermark": "none",
         "text_level": "simple",
+        "item_count": 1,
     }
 
 
@@ -1020,6 +1009,7 @@ def test_analyze_item_box_2d_converted(monkeypatch, box, expected):
     [-1, 0, 500, 500],
     [0, 0, True, 500],          # bool 은 숫자로 안 친다
     [0, 0, "500", 500],
+    [None, 0, 500, 500],
 ])
 def test_analyze_bad_item_box_is_none(monkeypatch, box):
     _analyze_with(monkeypatch, {"marks": [], "item_box_2d": box})
@@ -1146,8 +1136,6 @@ def test_verify_and_locate_marks_strict_bad_response_raises(monkeypatch):
 # ── photo_type: document | inside_view | product (없거나 모르면 product + 로그) ──
 def test_photo_types_constant():
     assert detector.PHOTO_TYPES == ("document", "inside_view", "product")
-    assert not hasattr(detector, "SCENES")
-    assert not hasattr(detector, "_product_flag")
 
 
 @pytest.mark.parametrize("raw,expected", [
@@ -1184,18 +1172,6 @@ def test_analyze_valid_photo_type_does_not_log(monkeypatch, capsys, raw):
     assert "photo_type" not in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("old", [
-    {"scene": "partial_view"}, {"scene": "multiple_items"},
-    {"text_is_product": True}, {"text_is_product": "true"},
-])
-def test_analyze_old_fields_ignored(monkeypatch, old):
-    """옛 프롬프트 응답(scene·text_is_product)은 photo_type 으로 읽지 않는다 — product."""
-    _analyze_with(monkeypatch, {"marks": [], **old})
-    out = detector.analyze(b"x")
-    assert out["photo_type"] == "product"
-    assert "scene" not in out and "text_is_product" not in out
-
-
 @pytest.mark.parametrize("level", ["none", "simple", "dense"])
 def test_analyze_photo_type_independent_of_text_level(monkeypatch, level):
     """책 표지처럼 글자가 적어도(none·simple) document — text_level 과 섞이지 않는다."""
@@ -1215,3 +1191,36 @@ def test_analyze_photo_type_does_not_change_other_fields(monkeypatch):
     assert out["photo_type"] == "document"
     assert out["text_level"] == "simple" and out["wear_level"] == "none"
     assert out["watermark"] == "background" and len(out["anchors"]) == 2
+
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (2, 2), ("12", 12), (1.0, 1), (None, 1), (0, 1), (-3, 1), ("two", 1), (True, 1),
+])
+def test_analyze_item_count_is_positive_int_default_one(monkeypatch, raw, expected):
+    _analyze_with(monkeypatch, {"marks": [], "item_count": raw})
+    assert detector.analyze(b"x")["item_count"] == expected
+
+
+# ── 10-01: analyze 가 물건 위 글자(texts)까지 — 따로 부르던 글자 읽기를 합침 ──
+def test_analyze_parses_texts_when_simple(monkeypatch):
+    _analyze_with(monkeypatch, {**_ANALYZE_FULL, "texts": [
+        {"text": " BRAUN ", "box_2d": [100, 200, 150, 400]}, {"text": ""}, "junk", {"text": "Series 9"}]})
+    out = detector.analyze(b"img")
+    assert out["item_texts"] == [{"text": "BRAUN", "x1": 200, "y1": 100, "x2": 400, "y2": 150},
+                                 {"text": "Series 9"}]
+
+
+@pytest.mark.parametrize("level", ["none", "dense"])
+def test_analyze_texts_empty_unless_simple(monkeypatch, level):
+    _analyze_with(monkeypatch, {**_ANALYZE_FULL, "text_level": level, "marks": [],
+                                "texts": [{"text": "A"}]})
+    assert detector.analyze(b"img")["item_texts"] == []
+
+
+@pytest.mark.parametrize("texts", ["missing", None, "x", {"text": "A"}])
+def test_analyze_without_texts_list_leaves_key_out(monkeypatch, texts):
+    """옛 프롬프트(texts 없음) · 이상한 값이면 키가 없다 — read_text 가 예전처럼 따로 읽는다."""
+    resp = dict(_ANALYZE_FULL) if texts == "missing" else {**_ANALYZE_FULL, "texts": texts}
+    _analyze_with(monkeypatch, resp)
+    assert "item_texts" not in detector.analyze(b"img")

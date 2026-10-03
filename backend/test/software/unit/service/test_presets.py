@@ -121,3 +121,4 @@ def test_get_preset_moves_lock_to_end_when_console_text_appends_after_it(monkeyp
     prompt = get_preset(key)["prompt"]
     assert prompt.endswith(SECONDHAND_LOCK)
     assert prompt.count(SECONDHAND_LOCK) == 1
+

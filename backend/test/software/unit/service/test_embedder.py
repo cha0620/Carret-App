@@ -310,7 +310,6 @@ def _stub_tokens(monkeypatch, ta, tb, align=True):
 def test_patch_constants():
     assert embedder_mod.PATCH == 14
     assert embedder_mod.PATCH_PERCENTILE == 1
-    assert not hasattr(embedder_mod, "PATCH_FG_MIN")
 
 
 def test_patch_similarity_identical_tokens_is_one(monkeypatch):

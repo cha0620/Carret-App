@@ -134,7 +134,7 @@ from app.services.quality.metric import SPLIT_MAX_PARTS, _fragment_of, _split_ma
     (["00 3060"], ["00", "30600"]),        # 조각에 글자가 붙음
     (["00 3060"], ["0", "3060"]),          # 조각에서 글자가 빠짐
 ])
-def test_substring_is_no_longer_rescued(before, after):
+def test_substring_is_not_rescued(before, after):
     assert text_match(before, after)["recall"] < 1.0
 
 

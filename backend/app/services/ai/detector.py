@@ -93,6 +93,48 @@ def classify(image_bytes: bytes) -> dict:
         return {"item": "object", "considered": []}
 
 
+def classify_views(images: list[bytes]) -> dict:
+    """여러 장 → 물건 종류 + 사진마다 각도 · 가림 · 흐림 (VLM 1회, 낮은 해상도).
+
+    반환: {"category", "item", "photos": [{"view", "occluded", "blurry", "item_visible"}]} — photos 는
+    입력 순서와 같은 길이. 답이 빠진 사진은 view=None (각도를 모름 → 빈 면 계산에서 안 센다).
+    호출 자체가 실패하면 예외 (호출부가 "각도를 못 봤다"로 처리)."""
+    from app.services import coverage
+    client = get_client()
+    prompt = P.views_prompt(len(images))
+    parts = []
+    for i, img in enumerate(images):
+        parts += [f"Photo {i}:", image_part(img, "image/jpeg", "views")]
+    with observe("views", as_type="generation", model=vlm_model("views"), input=prompt) as obs:
+        resp = client.models.generate_content(
+            model=vlm_model("views"),
+            contents=[*parts, prompt],
+            config=types.GenerateContentConfig(temperature=0, response_mime_type="application/json",
+                                               thinking_config=thinking("views")),
+        )
+        data = json.loads(resp.text)
+        if obs is not None:
+            obs.update(output=data, usage_details=_usage(resp))
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        data = data[0]
+    if not isinstance(data, dict):
+        raise ValueError(f"views: 응답 형식이 다름: {str(data)[:200]}")
+    by_index = {}
+    for p in data.get("photos") or []:
+        idx = p.get("index") if isinstance(p, dict) else None
+        if isinstance(idx, int) and not isinstance(idx, bool) and 0 <= idx < len(images):   # true 가 1 이 되지 않게
+            by_index.setdefault(p["index"], p)
+    photos = []
+    for i in range(len(images)):
+        p = by_index.get(i, {})
+        photos.append({"view": coverage.norm_view(p.get("view")),
+                       "occluded": p.get("occluded") is True,
+                       "blurry": p.get("blurry") is True,
+                       "item_visible": p.get("item_visible") is not False})
+    return {"category": coverage.norm_category(data.get("category")),
+            "item": _text(data.get("item")) or "object", "photos": photos}
+
+
 TEXT_LEVELS = ("none", "simple", "dense")
 PHOTO_TYPES = ("document", "inside_view", "product")
 WEAR_LEVELS = ("none", "light", "heavy")
@@ -149,7 +191,23 @@ def analyze(image_bytes: bytes) -> dict:
         "wear_level": _level(data, "wear_level", WEAR_LEVELS, "light"),
         "watermark": _level(data, "watermark", WATERMARKS, "none"),
         "text_level": level,
+        "item_count": _count(data.get("item_count")),
+        # 물건 위 글자 (10-01, 글자 읽기 호출을 합침). 응답에 texts 목록이 없으면(옛 프롬프트) 키를 두지
+        # 않는다 — read_text 가 예전처럼 따로 읽는다. 글자 수준이 simple 이 아니면 쓰지 않으니 비운다
+        **({"item_texts": _parse_texts(data["texts"]) if level == "simple" else []}
+           if isinstance(data.get("texts"), list) else {}),
     }
+
+
+def _count(v) -> int:
+    """item_count → 1 이상 정수. 없거나 이상한 값이면 1 (예전 동작 — 한 개로 본다)."""
+    if isinstance(v, bool):
+        return 1
+    try:
+        n = int(float(v))
+    except (TypeError, ValueError):
+        return 1
+    return n if n >= 1 else 1
 
 
 def detect_full(image_bytes: bytes, item: str = "object",
@@ -253,8 +311,13 @@ def read_item_text(image_bytes: bytes, item: str = "object", *, strict: bool = F
         raise ValueError(f"item_text: 응답에 texts 목록 없음: {str(data)[:200]}")
     item_box = _from_box_2d({"box_2d": data.get("item_box_2d")})
     item_box = _box(item_box) if _has_box(item_box) else None
+    return {"item_box": item_box, "texts": _parse_texts(data.get("texts"))}
+
+
+def _parse_texts(raw) -> list[dict]:
+    """[{"text", "box_2d"}] → [{"text", x1..y2(있으면)}]. 빈 글자 · 이상한 항목은 뺀다 (null 도 "글자 없음")."""
     texts = []
-    for t in data.get("texts") or []:     # {"texts": null} 도 "글자 없음"
+    for t in raw or []:
         if not isinstance(t, dict):
             continue
         text = str(t.get("text", "")).strip()
@@ -262,7 +325,7 @@ def read_item_text(image_bytes: bytes, item: str = "object", *, strict: bool = F
             continue
         t = _from_box_2d(t)
         texts.append({"text": text, **(_box(t) if _has_box(t) else {})})
-    return {"item_box": item_box, "texts": texts}
+    return texts
 
 
 def check_photo(image_bytes: bytes) -> dict:

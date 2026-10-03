@@ -18,3 +18,20 @@ def no_real_embedding_or_ocr_model(monkeypatch):
         raise RuntimeError("테스트에서 실제 DINO/EasyOCR 모델 로드 금지")
     monkeypatch.setattr(embedder, "_load", _blocked)
     monkeypatch.setattr(local_ocr, "_load", _blocked)
+
+
+@pytest.fixture(autouse=True)
+def no_real_tracing(monkeypatch):
+    """테스트가 진짜 Langfuse 로 트레이스를 보내지 않게 — .env 에 키가 있으면 get_langfuse() 가
+    실제 클라이언트를 만든다 (09-27~29 에 테스트용 file_id 트레이스가 244개 쌓였다).
+    트레이싱을 검사하는 테스트는 각자 _client/_disabled 를 다시 바꿔 끼운다 (이 픽스처 뒤라 우선)."""
+    from app.core import tracing
+    monkeypatch.setattr(tracing, "_client", None)
+    monkeypatch.setattr(tracing, "_disabled", True)
+
+
+@pytest.fixture(autouse=True)
+def no_model_warmup(monkeypatch):
+    """TestClient 가 startup 이벤트를 부르면 실제 모델 로딩 스레드가 뜬다 — 테스트에선 끈다."""
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "warmup_models", False)
