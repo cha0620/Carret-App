@@ -52,6 +52,7 @@ def analyze_template() -> str:
         frag("role_analyze"),
         frag("rules_analyze"),
         frag("text_level_analyze"),
+        frag("texts_analyze"),
         frag("schema_analyze"),
     ])
 
@@ -87,7 +88,9 @@ def verify_marks_template() -> str:
 
 
 def analyze_prompt() -> str:
-    return get_prompt_text("analyze", fallback=analyze_template())
+    # v2 (10-01): 물건 위 글자(texts)까지 읽는다 — 따로 부르던 글자 읽기(item_text)를 합침.
+    # 옛 "analyze" 는 배포된 옛 서버가 쓰므로 그대로 두고 새 이름으로 (detect_v2 와 같은 방식)
+    return get_prompt_text("analyze_v2", fallback=analyze_template())
 
 
 def verify_prompt(anchors: list, item: str, considered: list, *, marks: bool = False) -> str:
@@ -113,3 +116,9 @@ def check_photo_prompt() -> str:
 
 def match_prompt(orig, result) -> str:
     return get_prompt_text("match", fallback=frag("match"), orig=orig, result=result)
+
+
+def views_prompt(n: int) -> str:
+    """여러 장 각도 분류 — 사진 수를 넣는다 (Langfuse "views" 가 있으면 그 내용)."""
+    text = get_prompt_text("views", fallback=frag("views"))
+    return text.replace("{{n}}", str(n)).replace("{{n_last}}", str(n - 1))

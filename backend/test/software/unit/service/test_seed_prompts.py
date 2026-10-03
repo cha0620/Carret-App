@@ -20,7 +20,7 @@ APP_DIR = BACKEND / "app"
 SEED_SCRIPT = BACKEND / "scripts" / "seed_langfuse_prompts.py"
 
 EXPECTED_STATIC = {
-    "analyze", "classify", "verify_v2", "detect_box", "detect_v2", "verify", "item_text",
+    "analyze_v2", "classify", "verify_v2", "detect_box", "detect_v2", "verify", "item_text", "views",
     "check_photo", "match", "judge_system", "auto_feedback_system",
 }
 
@@ -106,7 +106,7 @@ def test_seed_has_no_names_unused_at_runtime(seeds):
 
 
 def test_seed_templates_match_shared_template_functions(seeds):
-    assert seeds["analyze"] == analyze_template()
+    assert seeds["analyze_v2"] == analyze_template()
     assert seeds["verify_v2"] == verify_marks_template()
     assert seeds["detect_v2"] == detect_template()
     # 옛 이름 "detect" 는 시드하지 않는다 (배포된 옛 서버가 새 응답 형식을 받지 않게)

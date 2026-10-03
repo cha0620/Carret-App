@@ -4,17 +4,73 @@ prompt 필드는 나중에 진짜 AI 모델 연결할 때 그대로 사용된다
 각 프리셋 프롬프트(배경 묘사)는 Langfuse 에 "preset_<key>" 이름으로 등록해두면 그
 내용을 쓰고, 없으면 아래 fallback 문구를 쓴다. SECONDHAND_LOCK 은 어느 쪽이든
 get_preset() 이 코드에서 붙인다 — 콘솔 편집으로 지워질 수 없게."""
+import hashlib
+import re
+
 from app.core.prompt_registry import get_prompt_text
 
 # ⭐ 핵심 정직성 잠금 — 배경만 바꾸고 물건 자체는 절대 복원/보정하지 않도록
 # 모든 프리셋 프롬프트에 공통으로 붙인다. (README "change the background,
 # never the truth" 원칙의 실제 구현 지점. 이게 없으면 편집 모델이 얼룩/흠집을
 # 지워버릴 수 있고, Wear Gate 는 사후에만 잡아낼 뿐 생성 자체를 막지 못한다.)
+# 10-01 사용자 결정: 쇼핑몰 진열 사진처럼 "정리"는 한다 (자세·구김·옷걸이·손) — 상태(하자·포장)는 그대로.
+# 정리와 하자 삭제는 모델에게 같은 동작이라, 하자 쪽 문장을 구체적으로(같은 자리·같은 크기) 적는다.
+# 10-01 저녁: 구도를 다시 연출하게 한 잠금(listing)은 실패로 정리 — 한 장으로 각도를 바꾸면 안 보이던 면을
+# 지어내고(가려진 깔창 로고, 신발 옆면), 종류별 예시를 넣으면 다른 물건을 그렸다(신발 뒤 재킷). 이제 구도는
+# 판매자가 여러 각도로 찍은 사진 중 고른 한 장이 정한다 (api/routes/items.py).
+# 10-01 밤: 각도 유지 · 손 가림 문장은 뺐다 — 빠진 각도와 가려진 사진은 업로드 단계(services/coverage.py)가
+# 다시 찍어 달라고 안내한다. 잠금은 "정리는 하되 없는 걸 더하지 말고, 물건 자체는 그대로" 세 덩어리만.
 SECONDHAND_LOCK = (
+    "Tidy it into a clean listing photo: center it, fill most of the frame, smooth out wrinkles, and "
+    "leave out hangers, hands and props that are not part of the product. "
+    "Do not add anything that is not in the original photo — no other items and no text. "
+    "Keep the product itself exactly as it is: its shape, color, pattern, texture, parts, logos and "
+    "printed text, any packaging or tags, and every stain, scratch, tear, hole, fading and wear mark "
+    "in the same place and at the same size. Do not repair, clean or restore it."
+)
+# 예전 잠금 — Langfuse 에 이 문구가 들어간 옛 프롬프트가 남아 있으면 떼어낸다 ("배경만 바꿔라"가 남아 새 잠금과 부딪치지 않게)
+LEGACY_LOCKS = (
+    # viewpoint (10-01 저녁, 각도 유지 · 손 조건부) — 과하고 넓어서 정리
+    "Keep the camera angle and viewpoint of this photo: do not rotate the product or show it from "
+    "another side. Tidy it into a clean listing photo: center it, fill most of the frame, smooth out "
+    "wrinkles from folding or hanging, and leave out hangers, people, other items and props that are "
+    "not part of the product. Remove a hand only if nothing of the product is hidden behind it; if a "
+    "hand covers part of the product, keep that part as it is rather than inventing what is underneath. "
+    "Show only the product that is in the original photo: do not add any other item, garment, "
+    "mannequin or accessory. Add no captions, titles, size labels or other text anywhere in the image. "
+    "Keep the material's own texture and sheen. "
+    "Do not repair, clean, restore, or hide its condition: keep every stain, scratch, scuff, tear, "
+    "hole (including distressed holes), dent, fading, discoloration, pilling, crack, and wear mark "
+    "exactly as in the original photo, in the same place and at the same size, and keep any "
+    "packaging (such as shrink wrap or tags) as it is. "
+    "Keep the product's shape, color, pattern, parts, and every printed logo and text exactly the same.",
+    # listing (10-01 오후, 구도 다시 연출) — 실패로 정리
+    "Restage the product as a neat listing photo for an online store: place it centered, upright, "
+    "facing the camera and neatly arranged, filling most of the frame. You may change its pose, angle "
+    "and arrangement, smooth out wrinkles from folding or hanging, and leave out hangers, hands, people, "
+    "other items and props that are not part of the product. "
+    "Show only the product that is in the original photo: do not add any other item, garment, "
+    "mannequin or accessory. "
+    "Keep the material's own texture and sheen: do not turn crinkled, glossy or knitted fabric into a "
+    "different finish. Where a part was hidden in the original photo, show it plainly and do not "
+    "invent logos, text, labels or details there. Add no captions, titles, size labels or other text "
+    "anywhere in the image. "
+    "Do not repair, clean, restore, or hide its condition: keep every stain, scratch, scuff, tear, "
+    "hole (including distressed holes), dent, fading, discoloration, pilling, crack, and wear mark "
+    "exactly as in the original photo, in the same place on the product and at the same size, and keep "
+    "any packaging (such as shrink wrap or tags) as it is. "
+    "Keep the product's shape, color, pattern, parts, and every printed logo and text exactly the same.",
+    "Present the product like a clean e-commerce catalog shot: you may straighten its pose, "
+    "smooth out wrinkles and creases from folding or hanging, neaten its silhouette, and leave out "
+    "hangers, hands, and props that are not part of the product. "
+    "Do not repair, clean, restore, or hide its condition: keep every stain, scratch, scuff, tear, "
+    "hole, dent, fading, discoloration, pilling, crack, and wear mark exactly as in the original photo, "
+    "in the same place and at the same size, and keep any packaging (such as shrink wrap or tags) as it is. "
+    "Keep the product's shape, color, pattern, parts, and every printed logo and text exactly the same.",
     "Do not repair, clean, restore, retouch, or smooth the product itself. "
     "Keep every stain, scratch, tear, dent, fading, pilling, crack, and "
     "printed logo/text exactly as in the original photo, pixel-identical. "
-    "Only the background and lighting may change."
+    "Only the background and lighting may change.",
 )
 
 TEXT_LOCK_MAX_LINES = 30
@@ -69,37 +125,100 @@ def text_lock(texts: list[dict]) -> str:
     if not lines:
         return ""
     return ("\n\nText printed on the product — keep each one exactly as in the input image, "
-            "letter for letter, same font, size and position. Do not retype, restyle, "
+            "letter for letter, same font, size and position on the product. Do not retype, restyle, "
             "translate, fix, move, duplicate, or add any text: " + "; ".join(lines) + ".")
 
 
+# 무드 = 배경·조명만. 물건의 색·질감·상태는 SECONDHAND_LOCK 이 지킨다 — 따뜻한 조명이 흰 물건을
+# 누렇게 만들면 정직하지 않다. bg_color 는 생성하지 않는 경로(배경 교체)가 쓰는 단색 — 무드와 가까운 색.
+# 소품은 넣지 않는다 (구성품으로 오해). 키를 바꾸면 저장 파일 이름·DB 키가 바뀐다.
 PRESETS = {
     "studio_white": {
-        "name": "화이트 스튜디오",
+        "name": "화이트 스튜디오", "emoji": "🤍",
         "fallback_prompt": "professional product photography, pure white studio background, soft even lighting, subtle shadow.",
         "bg_color": (245, 245, 245),
     },
-    "warm_wood": {
-        "name": "우든 테이블",
-        "fallback_prompt": "product photo on warm wooden table, cozy natural light, shallow depth of field.",
-        "bg_color": (160, 120, 80),
-    },
     "minimal_gray": {
-        "name": "미니멀 그레이",
+        "name": "소프트 그레이", "emoji": "🩶",
         "fallback_prompt": "minimalist product photography, light gray gradient background, studio lighting.",
         "bg_color": (210, 210, 210),
     },
+    "warm_wood": {
+        "name": "따뜻한 우드", "emoji": "🪵",
+        "fallback_prompt": "product photo on warm wooden table, cozy natural light, shallow depth of field.",
+        "bg_color": (160, 120, 80),
+    },
+    "linen": {
+        "name": "린넨 · 패브릭", "emoji": "🤎",
+        "fallback_prompt": "product photo on natural beige linen fabric, soft diffused daylight, calm and clean.",
+        "bg_color": (225, 215, 200),
+    },
+    "window_light": {
+        "name": "창가 자연광", "emoji": "🪟",
+        "fallback_prompt": "product photo on a light surface by a window, soft natural window light with gentle shadows.",
+        "bg_color": (235, 232, 225),
+    },
+    "dark_mood": {
+        "name": "다크 무드", "emoji": "🖤",
+        "fallback_prompt": "product photo on a dark matte charcoal surface, soft moody side light, clean and minimal.",
+        "bg_color": (45, 45, 48),
+    },
 }
 
+# 어디에 올릴 사진인가 → 먼저 보여줄 무드 (앞이 기본값). 결과를 바꾸지 않고 고르기만 돕는다
+PURPOSES = {
+    "secondhand": {"name": "중고거래 대표사진", "moods": ["studio_white", "minimal_gray", "warm_wood"]},
+    "feed": {"name": "감성 피드", "moods": ["window_light", "linen", "warm_wood", "dark_mood"]},
+    "shop": {"name": "쇼핑몰 스타일", "moods": ["studio_white", "minimal_gray"]},
+}
 
-def get_preset(key: str) -> dict:
-    if key not in PRESETS:
+NOTE_MAX_CHARS = 40
+# 무드 한 줄은 배경 분위기만 — 물건을 바꾸라는 요청(수리·지우기·색·글자·로고·새것)은 받지 않는다
+_NOTE_BLOCK = re.compile(
+    r"새\s*것|새\s*제품|새상품|고쳐|수리|복원|보정|지워|지우|없애|흠집|스크래치|얼룩|색\s*(을|깔)?\s*바꿔|"
+    r"글자|문구|로고|브랜드|워터마크|사람|모델|"
+    r"\b(new|repair|restore|retouch|remove|erase|fix|scratch(es)?|stains?|logos?|brand|text|"
+    r"watermark|person|people|model|hands?|recolou?r)\b", re.I)
+
+
+def clean_note(note) -> str:
+    """사용자가 적은 무드 한 줄 → 프롬프트에 넣을 문구. 비었으면 "". 물건을 바꾸라는 요청이면 ValueError."""
+    t = prompt_safe(note or "")
+    if not t:
+        return ""
+    if len(t) > NOTE_MAX_CHARS:
+        raise ValueError(f"분위기는 {NOTE_MAX_CHARS}자까지 적어 주세요")
+    if _NOTE_BLOCK.search(t):
+        raise ValueError("배경 분위기만 적어 주세요 — 물건을 바꾸거나 지우는 요청은 받지 않아요")
+    return t
+
+
+def style_key(mood: str, note: str = "") -> str:
+    """저장 파일 이름·DB 키에 쓰는 스타일 이름 — 무드만이면 무드 키, 한 줄이 있으면 뒤에 해시 6자리
+    (같은 사진을 다른 분위기로 다시 만들어도 앞 결과를 덮지 않게)."""
+    if mood not in PRESETS:
+        raise KeyError(f"알 수 없는 무드: {mood}")
+    return f"{mood}-{hashlib.sha1(note.encode()).hexdigest()[:6]}" if note else mood
+
+
+def mood_of(key: str) -> str:
+    return key.split("-", 1)[0]
+
+
+def get_preset(key: str, note: str = "") -> dict:
+    """무드(또는 style_key) → 생성 프롬프트·단색. note 는 clean_note 를 거친 한 줄 — 배경에만 적용한다고
+    못박아 넣고, 잠금 문구가 항상 맨 끝에 온다 (한 줄이 잠금을 뒤집지 못하게)."""
+    mood = mood_of(key)
+    if mood not in PRESETS:
         raise KeyError(f"알 수 없는 프리셋: {key}")
-    preset = PRESETS[key]
+    preset = PRESETS[mood]
+    body = get_prompt_text(f"preset_{mood}", fallback=preset["fallback_prompt"])
+    if note:
+        body += (f" Background mood: {note} — apply this to the background and lighting only; "
+                 "the product itself stays exactly as in the input image.")
     return {
         "name": preset["name"],
-        "prompt": with_secondhand_lock(
-            get_prompt_text(f"preset_{key}", fallback=preset["fallback_prompt"])),
+        "prompt": with_secondhand_lock(body),
         "bg_color": preset["bg_color"],
     }
 
@@ -108,5 +227,9 @@ def with_secondhand_lock(prompt: str) -> str:
     """잠금 문구를 항상 맨 끝에 한 번만 붙인다. 이미 들어 있으면 떼어낸 뒤 다시
     붙인다 — Langfuse 에 잠금이 포함된 옛 버전(v1)이 production 으로 남아 있어도
     두 번 붙지 않고, 잠금 뒤에 덧붙은 지시문이 잠금을 뒤집지 못하게 한다."""
-    body = prompt.replace(SECONDHAND_LOCK, "").strip()
+    body = prompt
+    # 긴 문구부터 — 한 잠금이 다른 잠금의 일부면(실험 문구) 짧은 쪽을 먼저 떼면 긴 쪽 조각이 남는다
+    for lock in sorted((SECONDHAND_LOCK, *LEGACY_LOCKS), key=len, reverse=True):
+        body = body.replace(lock, "")
+    body = body.strip()
     return f"{body} {SECONDHAND_LOCK}" if body else SECONDHAND_LOCK

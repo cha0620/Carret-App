@@ -841,6 +841,7 @@ def test_analyze_parses_full_response(monkeypatch):
         "item_box": {"x1": 200, "y1": 100, "x2": 800, "y2": 700},
         "photo_type": "product", "wear_level": "none", "watermark": "background",
         "text_level": "simple",
+        "item_count": 1,
     }
 
 
@@ -895,6 +896,7 @@ def test_analyze_missing_keys_all_defaults(monkeypatch):
         "item": "object", "considered": [], "anchors": [], "item_box": None,
         "photo_type": "product", "wear_level": "light", "watermark": "none",
         "text_level": "simple",
+        "item_count": 1,
     }
 
 
@@ -1189,3 +1191,36 @@ def test_analyze_photo_type_does_not_change_other_fields(monkeypatch):
     assert out["photo_type"] == "document"
     assert out["text_level"] == "simple" and out["wear_level"] == "none"
     assert out["watermark"] == "background" and len(out["anchors"]) == 2
+
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (2, 2), ("12", 12), (1.0, 1), (None, 1), (0, 1), (-3, 1), ("two", 1), (True, 1),
+])
+def test_analyze_item_count_is_positive_int_default_one(monkeypatch, raw, expected):
+    _analyze_with(monkeypatch, {"marks": [], "item_count": raw})
+    assert detector.analyze(b"x")["item_count"] == expected
+
+
+# ── 10-01: analyze 가 물건 위 글자(texts)까지 — 따로 부르던 글자 읽기를 합침 ──
+def test_analyze_parses_texts_when_simple(monkeypatch):
+    _analyze_with(monkeypatch, {**_ANALYZE_FULL, "texts": [
+        {"text": " BRAUN ", "box_2d": [100, 200, 150, 400]}, {"text": ""}, "junk", {"text": "Series 9"}]})
+    out = detector.analyze(b"img")
+    assert out["item_texts"] == [{"text": "BRAUN", "x1": 200, "y1": 100, "x2": 400, "y2": 150},
+                                 {"text": "Series 9"}]
+
+
+@pytest.mark.parametrize("level", ["none", "dense"])
+def test_analyze_texts_empty_unless_simple(monkeypatch, level):
+    _analyze_with(monkeypatch, {**_ANALYZE_FULL, "text_level": level, "marks": [],
+                                "texts": [{"text": "A"}]})
+    assert detector.analyze(b"img")["item_texts"] == []
+
+
+@pytest.mark.parametrize("texts", ["missing", None, "x", {"text": "A"}])
+def test_analyze_without_texts_list_leaves_key_out(monkeypatch, texts):
+    """옛 프롬프트(texts 없음) · 이상한 값이면 키가 없다 — read_text 가 예전처럼 따로 읽는다."""
+    resp = dict(_ANALYZE_FULL) if texts == "missing" else {**_ANALYZE_FULL, "texts": texts}
+    _analyze_with(monkeypatch, resp)
+    assert "item_texts" not in detector.analyze(b"img")

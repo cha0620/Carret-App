@@ -5,7 +5,9 @@
 **Turn casual secondhand photos into honest product photos.**
 
 Carret is an AI pipeline that turns roughly shot photos of used items into
-clean, studio-style product photos. It **keeps the item's identity** (logos, printed
+clean, studio-style product photos. Sellers upload **photos from several angles or a video**;
+Carret points out the sides that are missing, and the seller picks the shot whose composition they want,
+which is then tidied **without changing its angle**. It **keeps the item's identity** (logos, printed
 text) exactly as in the original, and for **heavily worn items it doesn't generate at all**:
 it cuts out the original item and only swaps the background. In secondhand commerce,
 a photo buyers can trust matters more than a pretty one.
@@ -19,15 +21,55 @@ a photo buyers can trust matters more than a pretty one.
 | | |
 |---|---|
 | **Problem** | Generative edit models "fix" scratches even when you only ask them to swap the background. In secondhand listings, that turns the photo into a misleading one |
-| **Solution** | Before generation, the photo is analyzed: heavily worn items, or items whose main text can't be kept, get only a background swap on the original pixels. Generated results are checked with a VLM checklist that logos and text are unchanged |
-| **Stack** | FastAPI · LangGraph · fal.ai (FLUX edit) · Gemini (VLM) · DINOv2 · SQLite · S3 · Langfuse · Vanilla JS |
-| **Quality** | 1680 unit tests that make no external API calls and run on every PR, plus an eval suite that calls the real APIs (runs on main or a PR label) |
+| **Solution** | The model never redraws the composition: the seller picks it from their own shots, and missing sides are flagged at upload. Before generation, the photo is analyzed: heavily worn items, or items whose main text can't be kept, get only a background swap on the original pixels. Generated results are checked with a VLM checklist that logos and text are unchanged |
+| **Stack** | FastAPI · LangGraph · fal.ai (FLUX edit) · Gemini (VLM) · DINOv2 · OpenCV · SQLite · S3 · Langfuse · Vanilla JS |
+| **Quality** | 1644 unit tests that make no external API calls and run on every PR, plus an eval suite that calls the real APIs (runs on main or a PR label) |
+
+---
+
+## 🧭 User Flow
+
+```mermaid
+flowchart TD
+  U["upload<br/>several photos · video"] --> F["video: pick scenes<br/>OpenCV · server CPU"]
+  F --> W["angle labels + missing sides<br/>one Gemini call · low res"]
+  W -->|"missing sides · photos to retake"| U
+  W --> S["seller picks the composition<br/>one photo from the wanted angle"]
+  S --> T["transform (How It Works below)<br/>tidy, same angle"]
+```
+
+1. **Upload** (`POST /api/items`, add more with `/api/items/{id}/files`): photos (jpg · png · webp) and videos
+   (mp4 · mov · webm, up to 90 s / 100 MB), up to 12 per item. Phone photos are rotated upright from EXIF on save
+2. **Pick scenes from a video** (`services/video.py`, no model): 40 evenly spaced candidates → drop blurry ones →
+   drop near-duplicates of the last kept scene → up to 8
+3. **Angle labels + missing sides** (`detector.classify_views` + `services/coverage.py`): one VLM call over all photos
+   returns the kind (shoes · clothing · bag · electronics · vehicle · other) and, per photo, the angle, occlusion and blur.
+   **Which sides are required is decided in code** per kind, so the same item always gets the same advice.
+   Occluded or blurry photos don't count and are flagged for a retake
+4. **Pick the composition**: the seller taps the photo with the angle they want
+5. **Transform** (`POST /api/transform`): the pipeline below. The generator is **never asked to change the angle**:
+   asking it to re-pose a single photo made it invent sides it had never seen (2026-10-01, see Failures & Lessons)
+
+**Models · cost · time per step** (one item, one cover photo generated)
+
+| Step | Model | Cost | Time |
+|---|---|---|---|
+| Video scene picking | OpenCV (local) | 0 | ~2.5 s for a 10 s 1080p clip |
+| Angle labels | Gemini 3.8-flash, low (268 tokens per photo) | ~$0.001 (estimate) | a few seconds (estimate) |
+| analyze (incl. text) · mark gate · report card | Gemini 3.8-flash, high | ~$0.012 VLM total on the generate path | |
+| Framing/caption check | Gemini 3.5-flash-lite, low | (included above) | 2–3 s |
+| Generation | fal `flux-2/flash/edit`, 8 steps | ~$0.010 × 1.38 attempts on average | 6–50 s incl. queue |
+| Background swap (fallback) | rembg / fal BiRefNet + solid color | ~$0.007 for the whole path | ~22 s |
+| Cutout comparison (after the response) | rembg + DINOv2 (local) | 0 | user doesn't wait |
+| **Total (generate path)** | | **~$0.03** | **transform 35–60 s** |
+
+Costs and times are Langfuse medians from 2026-09-29 (33 transforms) and the 2026-10-01 eval runs. For angle labels only the token count was measured.
 
 ---
 
 ## 🏗️ How It Works
 
-The transform pipeline is a [LangGraph](https://github.com/langchain-ai/langgraph)
+The transform pipeline for the chosen photo is a [LangGraph](https://github.com/langchain-ai/langgraph)
 `StateGraph` (`backend/app/services/pipeline.py`).
 
 ```mermaid
@@ -66,13 +108,16 @@ Finer branches (reading text, cutout failures, retry limits) are in the step lis
    swap, which uses the original pixels, shows the real condition. Items with no or light wear are
    generated; with no text (`none`) it generates without reading text
 3. (the old classify / detect stages are merged into analyze; the eval-only functions remain in `detector.py`)
-4. **read_text** (`TEXT_LOCK`, on by default, only for `simple`): reads the text **on the
-   item** in the original and adds it, with rough positions, to the generate prompt (so the
-   generator garbles small text and Korean less). If it reads 12+ lines, it goes to
-   background-swap mode (safety net)
+4. **read_text** (`TEXT_LOCK`, on by default, only for `simple`): adds the text **on the
+   item** in the original, with rough positions, to the generate prompt (so the
+   generator garbles small text and Korean less). The text is **read by analyze** (2026-10-01, Langfuse
+   `analyze_v2`): the separate text-reading call (21% of VLM cost) is gone, and a broken response now goes
+   through analyze's retry and `detect_failed` instead of silently becoming "no text". Only an older saved
+   analysis without text is read separately. With 12+ lines it goes to background-swap mode (safety net)
 5. **generate**: replaces the background with a preset (studio white, warm
-   wood or minimal gray). Every prompt carries `SECONDHAND_LOCK`, which
-   forbids restoration
+   wood or minimal gray). Every prompt carries `SECONDHAND_LOCK`: it **keeps the camera angle**, allows only
+   centering, filling the frame and tidying wrinkles or hangers, and forbids adding other items or captions as
+   well as restoration. A hand is removed only when nothing of the item is hidden behind it
 6. **validate_result**: the framing check (check_photo) plus observe-only signals. No guard blocks
    the result: the OCR text guard (re-read the result's text with the VLM and compare with the
    original) was **removed** on 09-27, because on 6 phone photos most of its rejections were reading
@@ -119,15 +164,18 @@ backend/
 └── app/
     ├── api/routes/             # HTTP boundary (thin; the work happens in services)
     │   ├── images.py           #   upload (file / URL)
+    │   ├── items.py            #   multi-angle upload (photos · video → angles · missing sides)
     │   ├── transform.py        #   POST /api/transform → pipeline
     │   ├── feedback.py         #   rating/comment upsert + fetch
     │   └── dev.py              #   dev tooling (registered only when DEV_TOOLS=true)
     ├── services/
     │   ├── pipeline.py         # ⭐ LangGraph pipeline (read this first)
     │   ├── ingest.py           #   one original → pipeline → auto feedback (single entry point)
+    │   ├── video.py            #   video → sharp, distinct scenes (OpenCV)
+    │   ├── coverage.py         #   required sides per kind · missing sides · retakes
     │   ├── ai/                 # all external / model calls
     │   │   ├── generator.py    #   fal.ai background swap
-    │   │   ├── detector.py     #   Gemini: analyze / verify / check_photo (+ eval-only classify·detect)
+    │   │   ├── detector.py     #   Gemini: analyze / verify / check_photo / classify_views (+ eval-only classify·detect)
     │   │   ├── judge.py        #   report card (fidelity · realism · trust)
     │   │   ├── embedder.py     #   DINOv2 embeddings (local, lazy singleton)
     │   │   └── auto_feedback.py#   "how would a seller rate this?" VLM agent
@@ -172,8 +220,10 @@ that knows the disk layout.
 
 ## ✨ Key Features
 
+- 📸 **Multi-angle upload**: takes several photos or a video, labels each angle, and points out missing sides
+  and photos to retake (occluded, blurry). The composition is picked from the seller's own shots
 - 🔒 **Honesty-first prompts**: `SECONDHAND_LOCK` is attached to every
-  preset and forbids restoration or retouching
+  preset and forbids changing the angle, restoration or retouching
 - 🔎 **Analysis before generation**: photo type, wear level, text level and watermarks decide whether a
   photo is generated at all
 - 🛡️ **Mark gate (verify)**: the original's logos and text are checked again in the result, one by one
@@ -239,7 +289,7 @@ that still boot when `.env` contains unknown keys.
 
 **5. Built to be testable.**
 External calls live only in `services/ai/`, which makes them easy to mock.
-That's why 1680 unit tests finish in about 25 seconds with no network
+That's why 1644 unit tests finish in about 25 seconds with no network
 (and `unit/conftest.py` blocks any accidental real VLM call). The
 dev replay (`run_transform_with_result`) skips only the generation step and
 **calls the production node functions directly**. The logic is never
@@ -274,6 +324,8 @@ uvicorn main:app --reload   # http://localhost:8000 (frontend included)
 | `VLM_MEDIA_RESOLUTION` | Per-call image resolution override (`low`/`medium`/`high`/`default`), e.g. `{"check_photo": "high"}`. Image tokens depend on this level, not on pixel size |
 | `VLM_MODELS` | Per-call model override (falls back to `VLM_MODEL`), e.g. `{"classify": "gemini-3.5-flash-lite"}` |
 | `LOCAL_OCR_GUARD=true` | Soft guard that re-checks text with EasyOCR (for eval; install easyocr separately) |
+| `MAX_VIDEO_SIZE_MB` | Size cap for one video in a multi-angle upload (default 100) |
+| `MAX_ITEM_PHOTOS` | Photos per item, including scenes taken from videos (default 12) |
 
 ### Tests
 
@@ -367,10 +419,23 @@ make docs    # browse the repo's .md files (http://localhost:8090, renders merma
 | Most text-guard rejections were **reading noise** ("H.M"/"H-M", "00 3060" read as two lines) that threw away good results | The checker's error can be larger than the generator's. Save rejected results and look at them |
 | Concluded "generation changes the item" from a 400px dataset | Small inputs make the model invent detail. Re-measured at real input quality (phone photos), most results were fine |
 | In the model comparison, 3.8-flash failed item classification 17/17 | Not the model: it rejects our `thinking_level="minimal"`. Changing models means changing per-call settings too |
+| Asked to "restage as a listing photo" from one shot, the model invented a hidden insole logo, watch-dial text and a sleeve logo | A side the camera never saw can't be protected by a prompt. Have the seller shoot the angle; generation only tidies the same angle |
+| Per-kind examples in the lock (lay clothes flat, shoes side by side) made it draw a jacket and a shirt into shoe photos | Examples read as instructions. Attach a per-kind sentence only for that kind |
+| The gate passed **added** things like that jacket or a caption | A checklist gate only asks "is it still there". Additions need their own measure (`added_content` in the rating sheet) |
 
 ---
 
 ## 📝 Recent Changes
+
+**2026-10-01**
+- **Workflow redesigned around multi-angle upload**: photos or a video → angle labels (one low-res VLM call) → missing
+  sides and retakes → the seller picks the composition → that photo is tidied at the same angle. The single-photo
+  re-posing experiments (catalog · listing) are recorded as failures
+- **Video → photos**: OpenCV picks up to 8 sharp, distinct scenes (magic-byte check, FFmpeg limited to local files,
+  resolution / duration / time caps)
+- **EXIF rotation**: phone photos are rotated upright on save (`img_util.normalize`), with a pixel cap against decompression bombs
+- **Eval tools**: `added_content` (something new appeared) and `photo_quality` (1–5) in the rating sheet, "usable as is"
+  (preserved + quality ≥ 4) in the report, model · steps · lock hash · commit in `meta.json`. One card per photo in the grading page
 
 **2026-09-27**
 - **analyze as the first stage**: classify + detect (2 VLM calls) → analyze (1). Photo type, wear level,
@@ -462,7 +527,11 @@ make docs    # browse the repo's .md files (http://localhost:8090, renders merma
   (patch-level comparison is in as the soft `item_patch`; threshold from eval)
 - [x] VLM cost control: per-call resolution, model and thinking caps; default model 3.8-flash
 - [x] Skip text reading / go straight to background swap by `text_level`
-- [ ] Background-swap quality: reframe to catalog-style composition, non-generative upscaling
+- [x] Multi-angle upload · video · missing-side advice · composition picking (composition comes from the seller's shots, not the model)
+- [ ] Paired comparison on a multi-angle dataset: "one photo + re-posing" vs "picked angle + tidy only", plus angle-label accuracy
+- [ ] Tidy the other photos too with a background swap, in one go
+- [ ] A gate check for **added** things (result text minus original text, items that weren't there)
+- [ ] Background-swap quality: non-generative upscaling
 - [ ] Run the judge on a sample or in batch mode (now the most expensive VLM call)
 - [ ] Korean text damage check: line-crop comparison or a Korean-specialized OCR (local EasyOCR/PaddleOCR were inaccurate or unstable)
 - [ ] Match verify answers to marks by id (today the gate only checks the count)

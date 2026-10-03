@@ -122,7 +122,7 @@ def test_match_prompt_matches_fragment_template_shape():
 def test_analyze_template_fragment_order():
     t = P.analyze_template()
     parts = [P.frag(n) for n in ("role_analyze", "rules_analyze", "text_level_analyze",
-                                 "schema_analyze")]
+                                 "texts_analyze", "schema_analyze")]
     idx = [t.index(p) for p in parts]
     assert idx == sorted(idx)
     assert t == "\n\n".join(parts)
@@ -131,7 +131,7 @@ def test_analyze_template_fragment_order():
 def test_analyze_template_asks_for_every_field_parsed_by_detector():
     t = P.analyze_template()
     for word in ("item", "considered", "item_box_2d", "photo_type", "wear_level", "watermark",
-                 "text_level", "marks", '"document"', '"inside_view"', '"product"',
+                 "text_level", "marks", '"texts"', '"document"', '"inside_view"', '"product"',
                  '"heavy"', '"light"', '"on_item"', '"background"', '"dense"', '"simple"'):
         assert word in t, word
 
@@ -161,7 +161,7 @@ def test_analyze_prompt_requests_analyze_name_without_variables(monkeypatch):
         return "X"
     monkeypatch.setattr(P, "get_prompt_text", fake)
     assert P.analyze_prompt() == "X"
-    assert seen == [("analyze", P.analyze_template(), {})]
+    assert seen == [("analyze_v2", P.analyze_template(), {})]   # 10-01: 글자(texts)까지 — 새 이름
 
 
 # ── verify_v2 (마크 전용, 파이프라인) ──

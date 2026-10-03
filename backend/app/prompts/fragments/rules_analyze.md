@@ -1,6 +1,9 @@
 Report:
 
 1. item — the product as a short common noun (e.g. "hoodie", "motorcycle", "kettle")
+   item_count — how many separate items for sale are in the photo: two CDs side by side = 2,
+   a stack of 12 comics = 12, a pair of shoes = 1, one product with its box or accessories = 1.
+   Things in the background that are not for sale do not count.
 
 2. considered — 3~8 inspection terms for THIS item, most likely first
    (e.g. clothing: stain, tear, pilling; phone: scratch, crack, display line).

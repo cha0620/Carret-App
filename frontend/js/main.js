@@ -27,44 +27,121 @@ let currentRating = 0;
 let resetZoomScale = null;   // initZoom() 이 채움 — render.js 의 resetZoom() 에서 호출
 
 // ---- 업로드: 파일 ----
-dropzone.onclick = () => fileInput.click();
-fileInput.onchange = () => handleFile(fileInput.files[0]);
+dropzone.onclick = () => { if (!busy) fileInput.click(); };
+fileInput.onchange = () => handleFiles([...fileInput.files]);
 dropzone.ondragover  = e => { e.preventDefault(); dropzone.classList.add('over'); };
 dropzone.ondragleave = () => dropzone.classList.remove('over');
 dropzone.ondrop = e => {
   e.preventDefault();
   dropzone.classList.remove('over');
-  handleFile(e.dataTransfer.files[0]);
+  handleFiles([...e.dataTransfer.files]);
 };
 
-async function handleFile(file) {
-  if (!file) return;
-  statusEl.textContent = '업로드 중...';
-  beforeImg.src = URL.createObjectURL(file);
+// ---- 업로드: 사진 여러 장 · 동영상 → 물건 묶음 ----
+let item = null;                 // 지금 물건 묶음 (/api/items 응답)
+const addBtn = document.getElementById('item-add');
+const addInput = document.getElementById('item-add-file');
+
+let busy = false;                // 업로드·변환 중 — 다른 동작이 섞이지 않게 (10-01 리뷰)
+let uploadToken = 0;             // 늦게 도착한 업로드 응답을 버리기 위한 세대
+
+function setBusy(on) {
+  busy = on;
+  for (const el of [dropzone, addBtn, urlBtn]) {
+    el.classList.toggle('disabled', on);
+    if ('disabled' in el) el.disabled = on;
+  }
+  document.getElementById('item-photos').classList.toggle('locked', on);
+  runBtn.disabled = on || !fileId;
+}
+
+let composition = null;          // 고른 정석 구도 키 (신발만 — 없으면 null)
+
+function compOfPhoto(fid) {
+  const c = (item?.compositions || []).find(c => c.photo_ids.includes(fid));
+  return c ? c.key : null;
+}
+
+function pickComp(c) {
+  if (busy) return;
+  if (!c.available) {                    // 그 각도 사진이 없음 → 찍어 올리게
+    statusEl.textContent = c.hint;
+    addInput.click();
+    return;
+  }
+  const p = item.photos.find(p => p.file_id === c.photo_ids[0]);
+  selectPhoto(p, c.key);
+}
+
+function selectPhoto(p, comp) {
+  if (busy) return;
+  composition = comp !== undefined ? comp : compOfPhoto(p.file_id);
+  fileId = p.file_id;
+  beforeImg.src = p.url;
   beforeImg.hidden = false;
   afterImg.hidden = true;
   clearResults();
-  urlInput.value = '';
+  renderItem(item, fileId, p => selectPhoto(p));
+  renderComps(item, composition, pickComp);
+  runBtn.disabled = false;
+  statusEl.textContent = '이 구도로 변환하려면 변환하기를 누르세요';
+}
 
+function firstGoodPhoto(it) {
+  // 대표컷 구도에 맞는 사진이 있으면 그것부터 (구도 목록의 첫 번째가 대표컷)
+  const first = (it.compositions || []).find(c => c.available);
+  if (first) return it.photos.find(p => p.file_id === first.photo_ids[0]);
+  const bad = new Set(it.retake.map(r => r.file_id));
+  return it.photos.find(p => !bad.has(p.file_id)) || it.photos[0];
+}
+
+async function handleFiles(files, append = false) {
+  files = files.filter(Boolean);
+  if (!files.length || busy) return;
+  const token = ++uploadToken;
+  const hasVideo = files.some(f => f.type.startsWith('video/'));
+  statusEl.textContent = hasVideo ? '동영상에서 장면 고르는 중... (조금 걸려요)' : '업로드하고 각도 확인 중...';
+  if (!append) {
+    fileId = null; item = null; composition = null; clearResults(); hideItem();
+    afterImg.hidden = true; beforeImg.hidden = true;
+  }
+  urlInput.value = '';
+  setBusy(true);
   try {
-    const data = await uploadFile(file);
-    fileId = data.file_id;
-    statusEl.textContent = '업로드 완료! 변환하기를 누르세요';
-    runBtn.disabled = false;
+    const res = await uploadItem(files, append && item ? item.item_id : null);
+    if (token !== uploadToken) return;            // 그사이 다른 업로드가 시작됨
+    item = res;
+    const keep = append && item.photos.find(p => p.file_id === fileId);
+    setBusy(false);
+    selectPhoto(keep || firstGoodPhoto(item));
+    if (item.missing.length || item.retake.length) {
+      statusEl.textContent = '구도를 고르세요 — 빠진 면이나 다시 찍을 사진이 있으면 더 올려도 돼요';
+    }
   } catch (e) {
-    statusEl.textContent = e.message;
+    if (token === uploadToken) statusEl.textContent = e.message;
+  } finally {
+    if (token === uploadToken) setBusy(false);
+    fileInput.value = '';
+    addInput.value = '';
   }
 }
+
+addBtn.onclick = () => { if (!busy) addInput.click(); };
+addInput.onchange = () => handleFiles([...addInput.files], true);
 
 // ---- 업로드: URL ----
 urlBtn.onclick = async () => {
   const url = urlInput.value.trim();
-  if (!url) return;
+  if (!url || busy) return;
+  ++uploadToken;                 // 진행 중이던 묶음 업로드 응답은 버린다
   urlBtn.disabled = true;
   statusEl.textContent = 'URL 다운로드 중...';
   try {
     const data = await uploadUrl(url);
     fileId = data.file_id;
+    item = null;
+    composition = null;
+    hideItem();
     beforeImg.src = url;
     beforeImg.hidden = false;
     afterImg.hidden = true;
@@ -81,11 +158,13 @@ urlBtn.onclick = async () => {
 
 // ---- 변환 ----
 runBtn.onclick = async () => {
-  if (!fileId) return;
-  runBtn.disabled = true;
+  if (!fileId || busy) return;
+  const fileId_ = fileId;        // 변환 중 사진을 바꿔도 이 결과 · 성적표 · 피드백은 이 사진에
+  const comp_ = composition;
+  setBusy(true);
   statusEl.textContent = '변환 중... (몇 초 걸려요)';
   try {
-    const data = await requestTransform(fileId, PRESET);
+    const data = await requestTransform(fileId_, PRESET, comp_);
 
     // 이전 결과의 말풍선이 새 이미지 로드 전까지 잘못 남아있지 않도록 즉시 비움
     overlay.innerHTML = '';
@@ -104,7 +183,7 @@ runBtn.onclick = async () => {
     renderQuality(data.quality ?? null);
     stopQualityPoll();
     if (!data.quality && data.judge_pending) {
-      const qUrl = `/api/quality/${fileId}/${PRESET}`;
+      const qUrl = `/api/quality/${fileId_}/${PRESET}`;
       const token = qualityToken;
       let tries = 0;
       qualityPoll = setInterval(async () => {
@@ -126,7 +205,7 @@ runBtn.onclick = async () => {
     currentRating = 0;
     resetFeedbackBox();
     try {
-      const fb = await fetchFeedback(fileId, PRESET);
+      const fb = await fetchFeedback(fileId_, PRESET);
       if (fb && fb.source === 'user') {
         // source가 'agent'(합성 피드백)인 건 "내가 남긴 피드백"으로 보여주면 안 됨
         currentRating = fb.rating;
@@ -141,7 +220,7 @@ runBtn.onclick = async () => {
     stopQualityPoll();
     statusEl.textContent = '변환 실패: ' + e.message;
   } finally {
-    runBtn.disabled = false;
+    setBusy(false);
   }
 };
 

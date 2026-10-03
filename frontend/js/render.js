@@ -175,3 +175,87 @@ function renderMetaChips(res) {
     document.getElementById("meta-considered-wrap").style.display = "none";
   }
 }
+
+
+// ===== 여러 각도: 사진 목록 · 빠진 면 =====
+function renderComps(item, selectedKey, onPick) {
+  const wrap = document.getElementById('comp-wrap');
+  const box = document.getElementById('item-comps');
+  wrap.classList.toggle('hidden', !item.compositions.length);
+  box.innerHTML = '';
+  for (const c of item.compositions) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'comp' + (c.key === selectedKey ? ' selected' : '') + (c.available ? '' : ' missing');
+    b.setAttribute('role', 'radio');
+    b.setAttribute('aria-checked', c.key === selectedKey ? 'true' : 'false');
+    const img = document.createElement('img');
+    img.src = c.image;
+    img.alt = '';
+    const name = document.createElement('span');
+    name.className = 'comp-label';
+    name.textContent = c.label;
+    const desc = document.createElement('span');
+    desc.className = 'comp-desc';
+    desc.textContent = c.available ? c.desc : c.hint;
+    b.append(img, name, desc);
+    b.onclick = () => onPick(c);
+    box.append(b);
+  }
+}
+
+function renderItem(item, selectedId, onSelect) {
+  const box = document.getElementById('item-box');
+  const list = document.getElementById('item-photos');
+  const miss = document.getElementById('item-missing');
+  const summary = document.getElementById('item-summary');
+  box.classList.remove('hidden');
+  const retake = new Map(item.retake.map(r => [r.file_id, r.reason]));
+
+  summary.textContent = item.views_failed
+    ? `사진 ${item.photos.length}장 — 각도를 확인하지 못했어요`
+    : `${item.item} · 사진 ${item.photos.length}장` + (item.complete ? ' — 필요한 면이 다 있어요 👍' : '');
+
+  list.innerHTML = '';
+  for (const p of item.photos) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'item-photo' + (p.file_id === selectedId ? ' selected' : '') + (retake.has(p.file_id) ? ' warn' : '');
+    b.setAttribute('role', 'radio');
+    b.setAttribute('aria-checked', p.file_id === selectedId ? 'true' : 'false');
+    const img = document.createElement('img');
+    img.src = p.url;
+    img.alt = p.view_label || '사진';
+    const tag = document.createElement('span');
+    tag.className = 'item-view';
+    tag.textContent = (p.view_label || '각도 모름') + (p.source === 'video' ? ' · 🎞' : '');
+    b.append(img, tag);
+    if (retake.has(p.file_id)) {
+      const w = document.createElement('span');
+      w.className = 'item-retake';
+      w.textContent = '⚠ ' + retake.get(p.file_id);
+      b.append(w);
+    }
+    b.onclick = () => onSelect(p);
+    list.append(b);
+  }
+
+  miss.innerHTML = '';
+  miss.classList.toggle('hidden', !item.missing.length);
+  if (item.missing.length) {
+    const t = document.createElement('p');
+    t.className = 'item-missing-title';
+    t.textContent = '이 면이 없어요 — 더 찍어 올리면 구매자가 믿고 사요';
+    const ul = document.createElement('ul');
+    for (const m of item.missing) {
+      const li = document.createElement('li');
+      li.textContent = `${m.label}: ${m.hint}`;
+      ul.append(li);
+    }
+    miss.append(t, ul);
+  }
+}
+
+function hideItem() {
+  document.getElementById('item-box').classList.add('hidden');
+}

@@ -8,6 +8,21 @@ async function uploadFile(file) {
   return res.json();
 }
 
+// 여러 각도 — 사진 여러 장 · 동영상 → 물건 묶음 (각도 · 빠진 면)
+async function uploadItem(files, itemId = null) {
+  const fd = new FormData();
+  for (const f of files) fd.append('files', f);
+  const url = itemId ? `/api/items/${itemId}/files` : '/api/items';
+  const res = await fetch(url, { method: 'POST', body: fd });
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}));
+    // 422 는 detail 이 목록 — 그대로 문자열로 만들면 "[object Object]"
+    const msg = typeof e.detail === 'string' ? e.detail : `업로드 실패 (${res.status})`;
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
 async function uploadUrl(url) {
   const res = await fetch('/api/images/upload-url', {
     method: 'POST',
@@ -18,12 +33,12 @@ async function uploadUrl(url) {
   return res.json();
 }
 
-async function requestTransform(fileId, preset) {
+async function requestTransform(fileId, preset, composition = null) {
   // 1) fetch → Response 객체 받기
   const resp = await fetch("/api/transform", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({ file_id: fileId, preset: preset }),
+    body: JSON.stringify({ file_id: fileId, preset: preset, composition }),
   });
 
   // 2) 실패면 throw (Response 상태에서)

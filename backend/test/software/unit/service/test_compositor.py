@@ -798,21 +798,23 @@ def test_compose_flat_rectifies_tilted_cover(monkeypatch):
     assert out.format == "JPEG" and out.size == (compositor.CANVAS, compositor.CANVAS)
     assert seen == [(400, 400)]
     arr = np.asarray(out.convert("RGB")).astype(int)
-    assert np.abs(arr[5, 5] - bg).max() <= 3        # 모서리 = 배경색
-    assert np.abs(arr[-5, 5] - bg).max() <= 3
+    c = compositor.CANVAS
+    # 모서리 = 배경(스튜디오 스윕 — 프리셋 색 근처, 위는 밝고 아래는 어둡다)
+    assert np.abs(arr[5, 5] - bg).max() <= 20 and np.abs(arr[-5, 5] - bg).max() <= 50
+    assert arr[5, c // 2].mean() > arr[-5, c // 2].mean()
     blue = (arr[:, :, 2] > 150) & (arr[:, :, 0] < 90) & (arr[:, :, 1] < 110)
     ys, xs = np.where(blue)
     x1, x2, y1, y2 = xs.min(), xs.max(), ys.min(), ys.max()
     # 원근이 펴져 축에 평행한 직사각형 — bbox 를 거의 꽉 채운다
     assert blue[y1:y2 + 1, x1:x2 + 1].mean() > 0.97
-    # 가운데 (좌우·상하 여백이 같다)
-    c = compositor.CANVAS
-    assert abs(x1 - (c - 1 - x2)) <= 4 and abs(y1 - (c - 1 - y2)) <= 4
+    # 좌우 가운데, 세로는 가운데보다 FLAT_DROP 만큼 아래 (바닥에 놓인 느낌)
+    assert abs(x1 - (c - 1 - x2)) <= 4
+    assert abs((y1 + y2) / 2 - (c / 2 + c * compositor.FLAT_DROP)) <= 4
     # 크기 = 모서리 길이 × min(여백 안, MAX_UPSCALE)
     t = TILTED.astype(float)
     w = int(max(np.linalg.norm(t[1] - t[0]), np.linalg.norm(t[2] - t[3])))
     h = int(max(np.linalg.norm(t[3] - t[0]), np.linalg.norm(t[2] - t[1])))
-    scale = min(c * (1 - 2 * compositor.MARGIN) / max(w, h), compositor.MAX_UPSCALE)
+    scale = min(c * (1 - 2 * compositor.FLAT_MARGIN) / max(w, h), compositor.MAX_UPSCALE)
     assert abs((x2 - x1 + 1) - w * scale) <= 4 and abs((y2 - y1 + 1) - h * scale) <= 4
     # 세로가 더 긴 표지 → 결과도 세로가 길다
     assert (y2 - y1) > (x2 - x1)
@@ -834,14 +836,15 @@ def test_compose_flat_falls_back_to_compose_with_alpha(monkeypatch):
     _patch_alpha(monkeypatch, a)
     calls = []
     monkeypatch.setattr(compositor, "compose",
-                        lambda b, bg, box=None, alpha=None: calls.append((b, bg, box, alpha)) or b"FALLBACK")
+                        lambda b, bg, box=None, alpha=None, flat=False: calls.append((b, bg, box, alpha, flat)) or b"FALLBACK")
     img = _cover_img()
     box = {"x1": 0, "y1": 0, "x2": 1000, "y2": 1000}
     assert compositor.compose_flat(img, (1, 2, 3), box) == b"FALLBACK"
     assert len(calls) == 1
-    b, bg, got_box, got_alpha = calls[0]
+    b, bg, got_box, got_alpha, flat = calls[0]
     assert b == img and bg == (1, 2, 3) and got_box == box
     assert got_alpha is a                            # 다시 오리지 않게 알파를 넘긴다
+    assert flat is True                              # 펴지 못해도 납작한 인쇄물 — 가는 조각을 뗀다
 
 
 @pytest.mark.parametrize("target", ["_unwarp", "find_cover"])
@@ -854,7 +857,7 @@ def test_compose_flat_exception_while_flattening_falls_back_to_compose(monkeypat
     monkeypatch.setattr(compositor, target, boom)
     calls = []
     monkeypatch.setattr(compositor, "compose",
-                        lambda b, bg, box=None, alpha=None: calls.append(alpha) or b"FALLBACK")
+                        lambda b, bg, box=None, alpha=None, flat=False: calls.append(alpha) or b"FALLBACK")
     assert compositor.compose_flat(_cover_img(), (9, 9, 9)) == b"FALLBACK"
     assert len(calls) == 1 and calls[0] is a
 
@@ -878,7 +881,7 @@ def test_compose_flat_two_books_falls_back_to_compose(monkeypatch):
     _patch_alpha(monkeypatch, a)
     calls = []
     monkeypatch.setattr(compositor, "compose",
-                        lambda b, bg, box=None, alpha=None: calls.append(alpha) or b"FALLBACK")
+                        lambda b, bg, box=None, alpha=None, flat=False: calls.append(alpha) or b"FALLBACK")
     assert compositor.compose_flat(_cover_img(h=400, w=600), (1, 1, 1)) == b"FALLBACK"
     assert calls[0] is a
 
@@ -898,3 +901,56 @@ def test_compose_flat_does_not_upscale_beyond_cap(monkeypatch):
     blue = (arr[:, :, 2] > 150) & (arr[:, :, 0] < 90)
     ys, _ = np.where(blue)
     assert ys.max() - ys.min() + 1 <= 50 * compositor.MAX_UPSCALE + 3
+
+
+
+def test_clean_alpha_flat_drops_thin_attachment_but_keeps_item():
+    """책·CD: 윤곽에 붙은 가는 막대(뒤쪽 물건)는 떼고 물건 본체는 그대로 (09-29 CD)."""
+    a = np.zeros((400, 400), np.uint8)
+    a[100:350, 50:350] = 255                         # 케이스
+    a[20:100, 180:184] = 255                         # 위로 붙은 4px 막대
+    kept = compositor.clean_alpha(a, flat=False)
+    flat = compositor.clean_alpha(a, flat=True)
+    assert (kept[20:100, 180:184] >= 128).all()      # 기본은 그대로 (자전거 살·끈을 지키려고)
+    assert (flat[20:95, 180:184] < 128).all()
+    assert (flat[100:350, 50:350] >= 128).mean() > 0.99
+
+
+# ══ trim_page_edges: 누운 책의 책 배·옆면 띠 빼기 ══════════════
+def _book_with_strip(strip_rgb, strip_h=30, lined=True):
+    """회색 표지(300×400) 아래에 strip_h 높이 띠 — 표지 경계에 어두운 선, 띠에는 가는 줄."""
+    img = np.full((400 + strip_h, 300, 3), 120, np.uint8)
+    img[:, :, 2] = 140
+    img[400:] = strip_rgb
+    img[399:401] = 60                                  # 표지 아랫변 그림자 선
+    if lined:
+        img[402::4, :] = np.array(strip_rgb) * 0.85    # 종이 단면 줄
+    q = np.array([[0, 0], [299, 0], [299, 399 + strip_h], [0, 399 + strip_h]], np.float32)
+    return Image.fromarray(img), q
+
+
+def test_trim_page_edges_drops_paper_strip_below_cover():
+    img, q = _book_with_strip((225, 220, 210))
+    out = compositor.trim_page_edges(img, q)
+    assert abs(out[2][1] - 400) <= 4 and abs(out[3][1] - 400) <= 4   # 아랫변이 표지 경계로
+    assert np.abs(out[:2] - q[:2]).max() <= 1                        # 윗변은 그대로
+
+
+def test_trim_page_edges_keeps_colored_band():
+    img, q = _book_with_strip((200, 40, 40))           # 채도 높은 띠 = 표지 무늬
+    assert np.array_equal(compositor.trim_page_edges(img, q), q)
+
+
+def test_trim_page_edges_no_line_keeps_quad():
+    img = Image.fromarray(np.full((400, 300, 3), 150, np.uint8))
+    q = np.array([[0, 0], [299, 0], [299, 399], [0, 399]], np.float32)
+    assert np.array_equal(compositor.trim_page_edges(img, q), q)
+
+
+def test_trim_page_edges_works_on_each_side():
+    img, q = _book_with_strip((225, 220, 210))
+    rot = Image.fromarray(np.rot90(np.asarray(img)).copy())      # 띠가 오른쪽으로
+    w, h = rot.size
+    qr = np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], np.float32)
+    out = compositor.trim_page_edges(rot, qr)
+    assert abs(out[1][0] - 400) <= 4 and abs(out[2][0] - 400) <= 4

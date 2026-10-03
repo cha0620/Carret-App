@@ -20,9 +20,10 @@
   <section class="upload-card">
     <div id="dropzone">
       <span class="dropzone-icon">📷</span>
-      <span>이미지를 드래그하거나 클릭해서 선택</span>
+      <span>사진 여러 장이나 동영상을 드래그하거나 클릭해서 선택</span>
+      <span class="dropzone-help">여러 각도로 찍을수록 좋아요 — 동영상이면 한 바퀴 돌려 찍어 주세요</span>
     </div>
-    <input type="file" id="file" accept="image/*" hidden>
+    <input type="file" id="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,.jpg,.jpeg,.png,.webp,.mp4,.mov,.m4v,.webm" multiple hidden>
 
     <div class="or-divider"><span>또는</span></div>
 
@@ -31,6 +32,29 @@
       <button id="url-run" class="btn btn-ghost">URL 업로드</button>
     </div>
 
+    <div id="item-box" class="item-box hidden">
+      <p id="item-summary" class="item-summary"></p>
+      <div id="comp-wrap" class="hidden">
+        <p class="step-label">구도 고르기</p>
+        <div id="item-comps" class="item-comps" role="radiogroup" aria-label="구도"></div>
+      </div>
+      <p class="step-label">내 사진 <span class="step-sub">— 구도에 맞는 사진이 자동으로 골라져요. 직접 눌러도 돼요</span></p>
+      <div id="item-photos" class="item-photos" role="radiogroup" aria-label="사진"></div>
+      <div id="item-missing" class="item-missing hidden"></div>
+      <button id="item-add" type="button" class="btn btn-ghost">사진 · 동영상 더 올리기</button>
+      <input type="file" id="item-add-file" accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,.jpg,.jpeg,.png,.webp,.mp4,.mov,.m4v,.webm" multiple hidden>
+    </div>
+
+    <div id="style-box" class="style-box hidden">
+      <div id="analysis" class="analysis-line"></div>
+      <p class="step-label">어디에 올릴 사진인가요?</p>
+      <div id="purposes" class="segmented" role="radiogroup" aria-label="목적"></div>
+      <p class="step-label">분위기</p>
+      <div id="moods" class="mood-grid" role="radiogroup" aria-label="분위기"></div>
+      <input id="note" class="note-input" maxlength="40"
+             placeholder="원하는 분위기 한 줄 (선택) — 예: 캠핑 감성, 빈티지 카페">
+      <p class="note-help">배경과 조명만 바뀌어요. 물건의 색·흠집·글자는 그대로 둬요.</p>
+    </div>
     <button id="run" class="btn btn-primary btn-block" disabled>변환하기</button>
     <p id="status"></p>
   </section>

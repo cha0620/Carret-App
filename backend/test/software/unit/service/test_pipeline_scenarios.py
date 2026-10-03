@@ -127,7 +127,7 @@ class World:
         return _png(GENS[self.count("generate") - 1])
 
     def _compose(self, name):
-        def compose(image, bg, box=None, alpha=None):
+        def compose(image, bg, box=None, alpha=None, *, flat=False):
             self.calls.append(name)
             self.seen["compose"].append(_label(image))
             self.compose_boxes.append(box)
@@ -406,6 +406,8 @@ def test_gate_fail_then_verify_call_fails_is_verify_failed(w):
     ({"photo_type": "document", "text_level": "simple"}, "document", "compose_flat"),
     # 찢김·접힘이 넓은 문서는 펴지 않는다 — 네 모서리에 맞추면 상태가 좋아 보인다
     ({"photo_type": "document", "wear_level": "heavy"}, "document", "compose"),
+    # 여러 개(CD 두 장)도 펴지 않는다 — 붙어 있으면 한 장으로 합쳐 펴거나 한 장만 펴고 나머지가 사라진다
+    ({"photo_type": "document", "item_count": 2}, "document", "compose"),
 ])
 def test_composite_first_skips_generate_and_verify(w, analysis, reason, composer):
     w.analysis.update(analysis)
@@ -632,3 +634,50 @@ def test_dev_detect_failed_fails_gate_and_still_judges(w):
     out = w.run_dev()
     assert "verify" not in w.calls and w.count("judge") == 1
     assert out["detect_failed"] is True and out["gate_passed"] is False
+
+
+
+# ══ 10-01: 고른 정석 구도의 문장이 생성 프롬프트에 붙는다 ═══════
+@pytest.mark.parametrize("comp", ["shoes_side", None])
+def test_generate_prompt_gets_chosen_composition(w, comp):
+    from app.services.compositions import BY_KEY
+    out = w.run(composition=comp)
+    side = BY_KEY["shoes_side"]["prompt"]
+    assert w.prompts and all((side in p) == (comp is not None) for p in w.prompts)
+    assert (side in out["prompt_used"]) == (comp is not None)
+
+
+# ══ 10-01: analyze 가 글자를 주면 글자 읽기 VLM 을 부르지 않는다 ═══════
+def test_texts_from_analyze_skip_read_text_call(w):
+    w.analysis.update(text_level="simple", item_texts=[{"text": "BRAUN"}])
+    out = w.run()
+    assert "read_text" not in w.calls
+    assert out["mode"] == "generate" and '"BRAUN"' in w.prompts[0]
+
+
+def test_texts_from_analyze_still_trigger_text_heavy(w):
+    w.analysis.update(text_level="simple", item_texts=[{"text": f"L{i}"} for i in range(12)])
+    w.run()
+    assert "read_text" not in w.calls and "generate" not in w.calls
+    assert w.route()["composite_reason"] == "text_heavy"
+
+
+def test_old_analysis_without_texts_still_reads_text(w):
+    w.analysis.update(text_level="simple")
+    w.analysis.pop("item_texts", None)
+    w.run()
+    assert w.calls.count("read_text") == 1
+
+
+# ══ 10-01: KEEP_ATTEMPTS — 생성 시도마다 이미지를 남긴다 (게이트에 걸려 배경 교체돼도) ═══════
+@pytest.mark.parametrize("keep", [True, False])
+def test_keep_attempts_saves_every_generation(w, monkeypatch, keep):
+    monkeypatch.setattr(settings, "keep_attempts", keep)
+    w.verifies = ["lost", "lost"]                    # 게이트 실패 ×2 → 배경 교체
+    w.run()
+    saved = [storage.load("attempts", f"{FID}_{PRESET}_try{n}.jpg") for n in (1, 2, 3)]
+    if keep:
+        assert [_label(b) for b in saved[:2]] == ["gen1", "gen2"] and saved[2] is None
+    else:
+        assert saved == [None, None, None]
+    assert w.route()["mode"] == "composite"

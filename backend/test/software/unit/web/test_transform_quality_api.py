@@ -50,7 +50,19 @@ def _post(client, preset="studio_white"):
 # ── POST /api/transform ──
 def test_transform_requests_deferred_judge(client, fake_pipeline):
     assert _post(client).status_code == 200
-    assert fake_pipeline["run"] == [(FID, "studio_white", {"defer_judge": True})]
+    assert fake_pipeline["run"] == [(FID, "studio_white", {"defer_judge": True, "note": "", "composition": None})]
+
+
+def test_transform_passes_composition(client, fake_pipeline):
+    r = client.post("/api/transform", json={"file_id": FID, "preset": "studio_white", "composition": "shoes_sole"})
+    assert r.status_code == 200
+    assert fake_pipeline["run"][0][2]["composition"] == "shoes_sole"
+
+
+@pytest.mark.parametrize("comp", ["nope", "../x", "", 3])
+def test_transform_unknown_composition_is_422(client, fake_pipeline, comp):
+    r = client.post("/api/transform", json={"file_id": FID, "preset": "studio_white", "composition": comp})
+    assert r.status_code == 422 and fake_pipeline["run"] == []
 
 
 def test_transform_judge_pending_schedules_background_judge(client, fake_pipeline):
