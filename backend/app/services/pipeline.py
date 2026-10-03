@@ -5,7 +5,8 @@
   1) analyze    : 물건·아이덴티티 마크(앵커)·사진 종류·하자 수준·워터마크·글자 수준·물건 위치
                   (VLM 1회, 예전 classify + detect. 실패는 detect_failed)
   1.5) plan     : 사진 종류(photo_type) 셋으로 먼저 나눈다 —
-         document(책·음반·보증서처럼 글자가 곧 물건) → 표지를 펴서 배경 교체 (생성 안 함)
+         document(보증서·영수증·설명서처럼 진짜 문서) → 펴서 배경 교체 (생성 안 함).
+           책·CD·음반은 10-03 부터 product (글자 양으로)
          inside_view(엔진룸·뜯은 노트북 회로처럼 물건 일부·내부) → 원본 그대로
          product → 생성해도 못 지킬 게 보이면(분석 실패·글자 dense·하자 heavy) 배경 교체,
                    글자가 있으면(simple) read_text(원본 글자 읽기) 뒤 생성, 없으면(none) 바로 생성
@@ -205,7 +206,7 @@ def _composite_first_reason(s: State) -> str | None:
         # 오리기는 경계가 없어 엉뚱하게 잘린다. 배경을 바꿀 대상이 아니다
         return "inside_view"
     if s.get("photo_type") == "document":
-        # 책·음반·보증서 — 글자·표지가 곧 물건이다. 스펙·상태 글자(용량·주행거리)는 판매 정보로
+        # 보증서·영수증·설명서 — 글자가 곧 물건이다 (10-03: 책·CD·음반은 상품이라 product 로 뺐다). 스펙·상태 글자(용량·주행거리)는 판매 정보로
         # 따로 받으면 되지만 제목·문서 내용은 대신할 곳이 없고, 한 글자만 바뀌어도 다른 물건이 된다 (09-27)
         return "document"
     if s.get("text_level") == "dense":
@@ -258,8 +259,10 @@ def _route_after_plan_dev(s: State) -> str:
 
 def generate(s: State) -> dict:
     preset = s["preset"]
-    # 고른 정석 구도의 틀(가운데 · 여백 · 수평) — 각도는 잠금이 지킨다. 글자 잠금은 그 뒤에
-    extra = compositions.prompt_for(s.get("composition")) + text_lock(s.get("item_texts") or [])
+    # 고른 정석 구도의 틀(가운데 · 여백 · 수평) — 각도는 잠금이 지킨다. 글자 잠금은 그 뒤에.
+    # 물건이 여러 개면 구도를 붙이지 않는다 — 구도 문장은 한 개 기준이라 여럿을 하나로 합친다 (10-03 CD 2장)
+    composition = s.get("composition") if (s.get("item_count") or 1) <= 1 else None
+    extra = compositions.prompt_for(composition) + text_lock(s.get("item_texts") or [])
     if extra:
         preset = {**preset, "prompt": preset["prompt"] + extra}
     if s.get("gate_note"):
@@ -568,10 +571,10 @@ def composite(s: State) -> dict:
         if s.get("composite_error"):
             # 이번 실행에서 이미 실패한 오리기 — 같은 입력으로 다시 부르지 않는다
             raise RuntimeError(f"이전 오리기 실패: {s['composite_error']}")
-        # 책·음반·보증서는 표지를 정면으로 펴서 놓는다 (못 펴면 compose_flat 이 일반 배경 교체로).
+        # 문서(보증서·영수증)는 정면으로 펴서 놓는다 (못 펴면 compose_flat 이 일반 배경 교체로).
         # 하자가 넓은 문서(찢김·접힘)는 펴지 않는다 — 네 모서리에 맞추면 찢어진 모서리가 잘리고
         # 접힌 자국이 펴져 상태가 좋아 보인다
-        # 여러 개(CD 두 장·만화책 더미)도 펴지 않는다 — 붙어 있으면 한 사각형으로 합쳐 펴거나,
+        # 여러 개(종이 여러 장)도 펴지 않는다 — 붙어 있으면 한 사각형으로 합쳐 펴거나,
         # 한 개만 펴고 나머지를 지운다 (09-29 CD 2장: 한 장이 사라짐)
         flat = (reason == "document" and s.get("wear_level") != "heavy"
                 and (s.get("item_count") or 1) <= 1)

@@ -10,13 +10,14 @@
   (results.jsonl · carret.db · storage/ · 폴더 목록은 열지 않는다)
 
 사람 판정은 report.py 와 같은 규칙 (물건 표시 없으면 보존 통과, 평가자 여럿이면 다수결 · 동점은 실패, 오류난 회차는 판정 안 함).
-로컬 전용: 127.0.0.1 에만 열고, Host 가 localhost · 127.0.0.1 · Codespaces 포워딩 주소가 아니면 거절한다 (DNS rebinding).
+로컬 전용: 127.0.0.1 에 연다 (Codespaces 안에서는 포워딩 때문에 0.0.0.0 — --host). Host 가 localhost · 127.0.0.1 · Codespaces 포워딩 주소가 아니면 거절한다 (DNS rebinding).
 """
 import argparse
 import contextlib
 import csv
 import html
 import json
+import os
 import secrets
 import sys
 import threading
@@ -78,12 +79,37 @@ def _results(run_id: str) -> list[dict]:
     return out
 
 
-def collect() -> list[dict]:
-    """사진별 [{file, entry, orig, results:[{run, repeat, mode, result, preserved, flags, tags, notes}]}]."""
+def viewable_runs() -> list[str]:
+    """결과판에 나오는 실행 — 이미지가 남아 있는 것만, 최신 먼저 (지운 옛 실행 · analyze 만 한 실행은 빠진다)."""
+    out = []
+    for p in (HERE / "runs").glob("*"):
+        if (p / "results.jsonl").exists() and (p / "files").is_dir() and any(
+                r.get("result") or r.get("error") for r in _results(p.name)):
+            out.append(p.name)
+    # 이름순이 아니라 만든 시각순 (같은 날 실행은 이름이 시각 순서가 아니다)
+    return sorted(out, key=lambda r: (run_meta(r).get("created") or "",
+                                      (HERE / "runs" / r / "results.jsonl").stat().st_mtime), reverse=True)
+
+
+def run_meta(run_id: str) -> dict:
+    try:
+        m = json.loads((HERE / "runs" / run_id / "meta.json").read_text(encoding="utf-8"))
+        return m if isinstance(m, dict) else {}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+
+
+def collect(only_run: str | None = None, include_unrun: bool = True) -> list[dict]:
+    """사진별 [{file, entry, orig, results:[{run, repeat, mode, result, preserved, flags, tags, notes}]}].
+    only_run 이면 그 실행만, include_unrun 이면 아직 안 돌린 사진도 (실패 모음 체크용)."""
     dataset = {e["file"]: e for e in intake.load_dataset()}
     by_file: dict[str, dict] = {}
     runs = sorted(p.name for p in (HERE / "runs").glob("*") if (p / "results.jsonl").exists())
+    if only_run is not None:
+        runs = [r for r in runs if r == only_run]
     for run_id in runs:
+        if not (HERE / "runs" / run_id / "files").is_dir():
+            continue              # 이미지를 지운 옛 실행 (EXPERIMENTS.md 에 없는 것 — 10-03 정리)
         rows = _results(run_id)
         if not any(r.get("result") or r.get("error") for r in rows):
             continue              # analyze 만 한 실행은 결과 사진이 없다 (전부 오류난 실행은 보여 준다)
@@ -113,9 +139,11 @@ def collect() -> list[dict]:
                 "quality_flags": [x for x in flags if x not in rp.OBJECT_FLAGS],
                 "tags": sorted({x for v in vs for x in v.get("tags", ())}),
                 "raters": [] if r.get("error") else sorted(p for p in reviews if key in reviews[p]),
-                "notes": [] if r.get("error") else notes.get(key, [])})
+                "notes": [] if r.get("error") else notes.get(key, []),
+                "composition": r.get("composition"), "composition_skipped": r.get("composition_skipped")})
     for f, e in dataset.items():      # 아직 안 돌린 사진도 체크할 수 있게
-        by_file.setdefault(f, {"file": f, "entry": e, "orig": None, "results": []})
+        if include_unrun:
+            by_file.setdefault(f, {"file": f, "entry": e, "orig": None, "results": []})
 
     def rank(it):
         rated = [x for x in it["results"] if x["preserved"] is not None]
@@ -182,9 +210,9 @@ def _src(run_id: str, rel) -> str | None:
     return html.escape("/" + quote(f"{run_id}/{rel}"), quote=True)
 
 
-def page(items: list[dict], token: str) -> str:
+def page(items: list[dict], token: str, runs: list[str] | None = None, current: str | None = None) -> str:
+    """runs · current 를 주면 위에 실험 탭과 그 실험의 메모(무엇을 바꿨나)가 나온다."""
     e = html.escape
-    runs = sorted({x["run"] for it in items for x in it["results"]})
     cards = []
     for it in items:
         rated = [x for x in it["results"] if x["preserved"] is not None]
@@ -206,6 +234,8 @@ def page(items: list[dict], token: str) -> str:
                 + f'<div class="badge {state[0]}">{e(str(x["mode"] or ""))} · {state[1]}</div>'
                 + (f'<div class="small">{e(detail)}</div>' if detail else "")
                 + (f'<div class="small muted">배경·구도: {e(qual)}</div>' if qual else "")
+                + (f'<div class="small muted">구도 {e(x["composition"])}</div>' if x.get("composition") else "")
+                + (f'<div class="small muted">{e(x["composition_skipped"])}</div>' if x.get("composition_skipped") else "")
                 + (f'<div class="small muted">채점 {e(", ".join(x["raters"]))}</div>' if x["raters"] else "")
                 + "".join(f'<div class="small note">{e(n)}</div>' for n in x["notes"])
                 + "</figure>")
@@ -217,9 +247,15 @@ def page(items: list[dict], token: str) -> str:
             f' · {e(str(ent.get("item", "")))}</span></div>'
             + (f'<p class="muted small">{e(str(ent.get("note", "")))}</p>' if ent.get("note") else "")
             + f'<div class="grid">{"".join(figs)}</div></section>')
-    links = " · ".join(f'<a href="/{e(quote(r), quote=True)}/review.html">{e(r)}</a>' for r in runs)
-    compares = sorted(p.name for p in (HERE / "runs").glob("compare-*.html"))
-    clinks = " · ".join(f'<a href="/{e(quote(c), quote=True)}">{e(c[8:-5])}</a>' for c in compares)
+    tabs = " ".join(
+        f'<a class="tab{" on" if r == current else ""}" href="/?run={e(quote(r), quote=True)}">{e(r)}</a>'
+        for r in (runs or []))
+    m = run_meta(current) if current else {}
+    info = (f'<section class="small"><b>{e(current)}</b> — {e(str(m.get("note") or "메모 없음"))}'
+            f'<div class="muted">사진 {len(items)}장 · repeat {e(str(m.get("repeat", "?")))}'
+            f'{" · 구도 " + e(str(m["composition"])) if m.get("composition") else ""}'
+            f' · <a href="/{e(quote(current), quote=True)}/review.html">원본 · 결과 · 프롬프트</a></div></section>'
+            if current else "")
     return f"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>eval 결과판</title>
 <style>
@@ -236,26 +272,25 @@ img{{width:100%;border-radius:6px;border:1px solid var(--line);background:#fff}}
 .who{{font-size:11px;font-weight:600;margin-bottom:2px;word-break:break-all}} .small{{font-size:11px}} .muted{{color:var(--muted)}}
 .badge{{font-size:12px}} .badge.good{{color:var(--good)}} .badge.bad{{color:var(--bad);font-weight:600}} .badge.none{{color:var(--muted)}}
 .err{{font-size:11px;color:var(--bad)}} .note{{margin-top:2px}} body.onlyfail section.item:not(.fail){{display:none}}
-#msg{{margin-left:8px;color:var(--muted)}}
+#msg{{margin-left:8px;color:var(--muted)}} .tabs{{margin-top:6px;display:flex;gap:6px;flex-wrap:wrap}}
+.tab{{font-size:12px;padding:2px 8px;border:1px solid var(--line);border-radius:12px;text-decoration:none}} .tab.on{{background:var(--fg);color:var(--bg)}}
 </style>
 <main>
-<header><b>eval 결과판</b> — 사진 {len(items)}장 · 실패 모음 <span id="cnt">{sum(it["entry"].get("set") == "failure" for it in items)}</span>장
- <label><input type="checkbox" id="onlyfail"> 실패 있는 사진만</label><span id="msg"></span></header>
-<section class="small"><div>실행별 원본·결과·프롬프트: {links or "없음"}</div><div>비교 페이지: {clinks or "없음"}</div>
-<div class="muted">보존 판정은 사람 채점 다수결 (동점은 실패). 정렬은 모든 실행을 합친 실패 비율 순 — 옛 실행 · 기각한 실험도 들어간다. 체크하면 dataset.json 에 바로 저장된다.</div></section>
+<header><b>eval 결과판</b> <label><input type="checkbox" id="onlyfail"> 실패 있는 사진만</label><span id="msg"></span>
+<div class="tabs">{tabs}</div></header>
+{info}
 {"".join(cards)}
 </main>
 <script>
 const TOKEN = {json.dumps(token)};
 document.getElementById('onlyfail').addEventListener('change', ev => document.body.classList.toggle('onlyfail', ev.target.checked));
-const msg = document.getElementById('msg'), cnt = document.getElementById('cnt');
+const msg = document.getElementById('msg');
 document.querySelectorAll('input[data-file]').forEach(box => box.addEventListener('change', async () => {{
   box.disabled = true;
   try {{
     const r = await fetch('/api/failure', {{method: 'POST', headers: {{'Content-Type': 'application/json', 'X-Board-Token': TOKEN}},
       body: JSON.stringify({{file: box.dataset.file, on: box.checked}})}});
     if (!r.ok) throw new Error(await r.text());
-    cnt.textContent = document.querySelectorAll('input[data-file]:checked').length;
     msg.textContent = '저장됨: ' + box.dataset.file + (box.checked ? ' → 실패 모음' : ' → 뺌');
   }} catch (err) {{ box.checked = !box.checked; msg.textContent = '저장 실패: ' + err.message; }}
   box.disabled = false;
@@ -285,9 +320,14 @@ def make_handler(token: str):
         def _get(self, head: bool):
             if not self._host_ok():
                 return self._send(403, b"forbidden host", "text/plain", head)
-            path = self.path.split("?", 1)[0]
+            path, _, query = self.path.partition("?")
             if path in ("/", "/index.html"):
-                return self._send(200, page(collect(), token).encode(), "text/html; charset=utf-8", head)
+                from urllib.parse import parse_qs
+                runs = viewable_runs()
+                want = (parse_qs(query).get("run") or [""])[0]
+                current = want if want in runs else (runs[0] if runs else None)
+                items = collect(current, include_unrun=False) if current else []
+                return self._send(200, page(items, token, runs, current).encode(), "text/html; charset=utf-8", head)
             f = static_file(path)
             if f is None:
                 return self._send(404, b"not found", "text/plain", head)
@@ -328,8 +368,11 @@ def make_handler(token: str):
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8766)
+    # Codespaces 포트 포워딩은 127.0.0.1 로 들어오지 않는다 (10-03: 링크가 안 열림) — 그 안에서만 0.0.0.0.
+    # 포워딩 주소는 기본 비공개(GitHub 로그인)이고, Host 검사 · 토큰은 그대로다
+    ap.add_argument("--host", default="0.0.0.0" if os.environ.get("CODESPACES") == "true" else "127.0.0.1")
     a = ap.parse_args(argv)
-    srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(secrets.token_urlsafe(16)))
+    srv = ThreadingHTTPServer((a.host, a.port), make_handler(secrets.token_urlsafe(16)))
     print(f"결과판: http://localhost:{a.port}")
     try:
         srv.serve_forever()

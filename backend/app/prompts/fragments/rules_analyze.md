@@ -18,19 +18,18 @@ Report:
    - where: short region (e.g. "left side panel")
 
 4. photo_type — what kind of photo this is. Pick exactly one:
-   - "document": a flat printed item whose text or cover art IS what the buyer
-     looks at, so a single wrong letter changes what is being sold —
-     books, magazines, comics, album or record covers, CDs or records themselves,
-     game or movie cases, trading cards and photo cards, posters, tickets,
-     gift cards, warranty cards, certificates, manuals, receipts.
-     A box of another product (a board game box, cosmetics packaging) is "product"
+   - "document": an actual paper document whose written content IS the item —
+     warranty cards, certificates, receipts, manuals, tickets, gift cards, letters.
+     Books, magazines, comics, CDs, records, game or movie cases, trading cards,
+     photo cards and posters are goods for sale, NOT documents — they are "product"
    - "inside_view": only part or the INSIDE of a larger object, with no clear
      outline of a whole item — an open engine bay, a laptop or PC with its case
      removed and the board visible, a close-up of one spot, the inside of a bag.
      A laptop with its lid open and screen showing is "product". If most of the
      item is visible (even cut off a little at the frame), it is "product"
    - "product": everything else — a whole product photo, even when the product
-     carries a lot of text (electronics, clothing, cosmetics, product boxes)
+     carries a lot of text (electronics, clothing, cosmetics, product boxes,
+     books, CDs, albums)
    When unsure, choose "product".
 
 5. wear_level — visible wear or damage on the item:

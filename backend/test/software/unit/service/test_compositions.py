@@ -50,6 +50,13 @@ def test_new_categories_have_compositions():
     """10-03 예시 사진에서 뽑은 구도 — 상의는 하나, 시계 · 책 · CD 는 other 에."""
     assert [o["key"] for o in C.options("clothing", [_p("a", "front")])] == ["clothing_top_front"]
     keys = [o["key"] for o in C.options("other", [_p("a", "front")])]
-    assert keys == ["watch_front34", "book_cover34", "book_stack", "cd_front"]
+    assert keys == ["watch_front34", "book_cover34", "book_stack", "album_front"]
     assert all(o["available"] for o in C.options("other", [_p("a", "front")]))
     assert C.options("", [_p("a", "front")]) == C.options("other", [_p("a", "front")])   # 모르는 종류 = other
+
+
+def test_album_prompt_never_names_a_format():
+    """형태 이름(LP · CD · record · vinyl)을 쓰면 모델이 형태를 다시 고른다 (10-03)."""
+    low = C.BY_KEY["album_front"]["prompt"].lower()
+    for bad in ("lp", "cd ", "record", "vinyl", "cassette"):
+        assert bad not in low, bad

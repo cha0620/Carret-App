@@ -69,13 +69,15 @@ COMPOSITIONS: dict[str, list[dict]] = {
          "prompt": "Frame it as a standard book-set listing shot: the books stacked neatly as photographed with "
                    "their spines facing the camera, the stack upright and centered with even margins, filling "
                    "most of the frame height, on a plain white background."},
-        {"key": "cd_front", "label": "CD · 앞면",
-         "desc": "케이스 앞면을 정면으로 — 비닐 · 띠지 그대로",
+        {"key": "album_front", "label": "음반 · 앞면",
+         "desc": "앞면을 정면으로 — 케이스 · 비닐 · 개수는 원본 그대로",
          "views": {"front", "front_34"},
-         "prompt": "Frame it as a standard CD or album listing shot: the case front facing the camera straight on "
-                   "as photographed, square to the frame and centered with even margins, filling about 80% of "
-                   "the frame, on a plain white background. Keep any shrink wrap, obi strip and reflections "
-                   "as they are."},
+         # 형태 이름(LP · CD)을 쓰지 않는다 — 쓰면 모델이 형태를 다시 고른다 (10-03: LP→CD 케이스, CD→LP 슬리브)
+         "prompt": "Frame it as a standard music album listing shot: the front cover facing the camera straight "
+                   "on, square to the frame and centered with even margins, filling about 80% of the frame, on a "
+                   "plain white background. Keep its packaging exactly as photographed — the same kind of "
+                   "sleeve or case, the same shrink wrap and stickers, the same size and proportions — and add "
+                   "nothing that is not in the original photo."},
     ],
 }
 BY_KEY = {c["key"]: c for cs in COMPOSITIONS.values() for c in cs}

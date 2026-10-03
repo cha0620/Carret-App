@@ -647,6 +647,17 @@ def test_generate_prompt_gets_chosen_composition(w, comp):
     assert (side in out["prompt_used"]) == (comp is not None)
 
 
+@pytest.mark.parametrize("count,attached", [(None, True), (1, True), (2, False), (3, False)])
+def test_composition_skipped_when_several_items(w, count, attached):
+    """10-03: 구도 문장은 한 개 기준 — 여러 개(CD 2장)면 하나로 합쳐 버려서 붙이지 않는다."""
+    from app.services.compositions import BY_KEY
+    w.analysis.update(item_count=count)
+    out = w.run(composition="shoes_side")
+    side = BY_KEY["shoes_side"]["prompt"]
+    assert all((side in p) == attached for p in w.prompts)
+    assert (side in out["prompt_used"]) == attached
+
+
 # ══ 10-01: analyze 가 글자를 주면 글자 읽기 VLM 을 부르지 않는다 ═══════
 def test_texts_from_analyze_skip_read_text_call(w):
     w.analysis.update(text_level="simple", item_texts=[{"text": "BRAUN"}])
