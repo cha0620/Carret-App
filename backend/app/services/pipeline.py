@@ -42,7 +42,7 @@ from langgraph.graph import END, START, StateGraph
 from app.core.config import settings
 from app.core.tracing import current_trace_id, flush, observe, score
 from app.core.vlm import retryable
-from app.prompts.presets import (TEXT_LOCK_MAX_CHARS, get_preset, prompt_safe, unreadable,
+from app.prompts.presets import (TEXT_LOCK_MAX_CHARS, count_lock, get_preset, leave_out, prompt_safe, unreadable,
                                  text_lock, text_where)
 from app.prompts.rubric import AXES
 from app.services import compositions
@@ -59,6 +59,11 @@ class State(TypedDict, total=False):
     preset_key: str            # 스타일 키 (무드, 한 줄이 있으면 무드-해시) — 저장 이름·DB 키
     style_note: str            # 사용자가 적은 무드 한 줄 (clean_note 통과) — 배경에만
     composition: str | None    # 고른 정석 구도 키 (services/compositions.py) — 틀만, 각도는 그대로
+    sell: list | None          # 사용자가 고른 팔 물건 (analyze objects 의 번호) — None 이면 analyze 판단대로
+    answer_count: int | None   # eval 정답 개수 — 고르는 화면 없이 정답대로 (10-03)
+    leave_out: list            # 팔지 않는다고 고른 물건 이름 — 생성 프롬프트에서 빼라고
+    leave_out_boxes: list      # 그 물건들 박스 — 배경 교체에서 지운다
+    sell_boxes: list           # 고른 물건 박스 — 지울 박스와 겹치는 곳은 남긴다
     preset: dict
     original: bytes
     item: str                 # ⭐ analyze 산출
@@ -72,9 +77,11 @@ class State(TypedDict, total=False):
     item_texts: list           # 원본 물건 위 글자 [{text, x1..}] → generate 프롬프트
     text_level: str | None     # analyze 가 본 물건 위 글자 수준: none | simple | dense(잔글씨·원본에서도 못 읽음) (실패면 None)
     item_box: dict | None      # 원본에서 물건 위치 (0-1000) — 오리기 범위 (배경 교체 · item_dino)
-    item_count: int            # analyze: 팔려는 물건 개수 — 2개 이상이면 표지를 펴지 않는다
+    item_count: int            # 팔려는 물건 개수 — analyze 판단, 사용자가 고르면 고른 수, eval 은 정답.
+                               #   2개 이상이면 표지를 펴지 않고 구도 대신 개수 문장(count_lock)
     gate_retried: bool         # verify 게이트 실패로 재생성을 이미 1회 했나
     gate_note: str             # 그 재생성 때 프롬프트에 붙인 "사라진 하자" 목록
+    added_text: list           # 생성본에 새로 생긴 글자 · 로고 (원본에 없던 것) — 있으면 게이트 실패
     mode: str                  # "generate" | "composite"(원본 물건 + 배경만 교체) | "composite_failed"
                                #   | "original"(원본 그대로 — inside_view 등)
     composite_reason: str | None   # 생성하지 않은 이유: detect_failed | inside_view | document | text_dense
@@ -186,10 +193,55 @@ def analyze(s: State) -> dict:
     게이트를 통과시킨다. 재시도까지 실패하면 detect_failed 로 남겨 plan 이 배경 교체로 보낸다
     (생성 결과를 확인 없이 내보내지 않음)."""
     cached = load_analysis(s["file_id"])
-    if cached is not None and not cached.get("detect_failed"):
-        return cached
-    return analyze_original(s["file_id"], s["original"])
+    fresh = cached is None or cached.get("detect_failed")
+    out = analyze_original(s["file_id"], s["original"]) if fresh else cached
+    # 고른 번호는 사용자가 본 분석(저장된 것)의 번호다 — 지금 새로 분석했다면 목록 순서가 다를 수 있어 쓰지 않는다
+    sell = None if fresh else s.get("sell")
+    if fresh and s.get("sell") is not None:
+        print("[analyze] 저장된 분석이 없어 고른 물건 번호를 쓰지 않음 (분석 판단대로)")
+    return apply_selection(out, sell, s.get("answer_count"))
 
+
+def _inside(t: dict, b: dict) -> bool:
+    """글자 박스 가운데가 물건 박스 안에 있나 (0-1000)."""
+    if not all(k in t for k in ("x1", "y1", "x2", "y2")):
+        return False
+    cx, cy = (t["x1"] + t["x2"]) / 2, (t["y1"] + t["y2"]) / 2
+    return b["x1"] <= cx <= b["x2"] and b["y1"] <= cy <= b["y2"]
+
+
+def apply_selection(a: dict, sell: list | None, answer_count: int | None = None) -> dict:
+    """팔 물건 고르기 (10-03) — 사용자가 고른 objects 로 개수 · 위치 · 이름을 다시 정한다.
+    고르지 않은 물건은 leave_out(생성에서 빼라) · leave_out_boxes(배경 교체에서 지운다)로,
+    그 물건 위에만 있는 글자는 글자 잠금에서 뺀다 ("빼라"와 "글자를 지켜라"가 같은 물건에 붙지 않게).
+    마크(anchors)는 위치 좌표가 없어 못 가른다 — 알려진 한계.
+    sell 이 analyze objects 목록보다 길거나 맞는 번호가 없으면 분석 판단 그대로.
+    eval 은 고르는 화면이 없어 정답 개수(answer_count)만 쓴다 — 둘 다 주면 answer_count 가 개수를 덮는다."""
+    if a.get("detect_failed"):
+        return a
+    out = dict(a)
+    objs = a.get("objects") or []
+    if sell is not None and objs:
+        idx = {i for i in sell if isinstance(i, int) and not isinstance(i, bool) and 0 <= i < len(objs)}
+        picked = [objs[i] for i in sorted(idx)]
+        dropped = [o for i, o in enumerate(objs) if i not in idx]
+        if picked:
+            out["item_count"] = len(picked)
+            out["item_box"] = {"x1": min(o["box"]["x1"] for o in picked), "y1": min(o["box"]["y1"] for o in picked),
+                               "x2": max(o["box"]["x2"] for o in picked), "y2": max(o["box"]["y2"] for o in picked)}
+            names = list(dict.fromkeys(o["what"] for o in picked))
+            out["item"] = names[0] if len(names) == 1 else " and ".join(names[:3])
+            # 고른 것과 같은 이름(CD 두 장 중 한 장)은 이름으로 빼라고 하면 남길 것까지 지운다 — 박스로만 뺀다
+            out["leave_out"] = list(dict.fromkeys(o["what"] for o in dropped if o["what"] not in names))
+            out["leave_out_boxes"] = [o["box"] for o in dropped]
+            out["sell_boxes"] = [o["box"] for o in picked]
+            texts = a.get("item_texts") or []
+            out["item_texts"] = [t for t in texts
+                                 if not (any(_inside(t, o["box"]) for o in dropped)
+                                         and not any(_inside(t, o["box"]) for o in picked))]
+    if isinstance(answer_count, int) and not isinstance(answer_count, bool) and answer_count >= 1:
+        out["item_count"] = answer_count
+    return out
 
 def _result_name(s: State) -> str:
     return f"{s['file_id']}_{s['preset_key']}.jpg"
@@ -262,7 +314,8 @@ def generate(s: State) -> dict:
     # 고른 정석 구도의 틀(가운데 · 여백 · 수평) — 각도는 잠금이 지킨다. 글자 잠금은 그 뒤에.
     # 물건이 여러 개면 구도를 붙이지 않는다 — 구도 문장은 한 개 기준이라 여럿을 하나로 합친다 (10-03 CD 2장)
     composition = s.get("composition") if (s.get("item_count") or 1) <= 1 else None
-    extra = compositions.prompt_for(composition) + text_lock(s.get("item_texts") or [])
+    extra = (compositions.prompt_for(composition) + count_lock(s.get("item_count") or 1, s.get("item", ""))
+             + leave_out(s.get("leave_out") or []) + text_lock(s.get("item_texts") or []))
     if extra:
         preset = {**preset, "prompt": preset["prompt"] + extra}
     if s.get("gate_note"):
@@ -501,15 +554,19 @@ def verify(s: State) -> dict:
         # 원본 마크 목록이 없으니 보존 여부를 확인할 수 없다 — 생성본은 통과로 치지 않는다
         return {"checks": checks, "gate_passed": False, "verify_failed": False}
     targets = _verify_targets(s)
-    if not targets:
-        return {"checks": checks, "gate_passed": gate_passed, "verify_failed": False}
     saved = storage.load("result", s["result_name"])
+    added = _added_text(s, saved)
+    if added is None:
+        return {"checks": [], "verify_failed": True, "gate_passed": False, "added_text": []}
+    if not targets:
+        return {"checks": checks, "verify_failed": False, "added_text": added,
+                "gate_passed": False if added else gate_passed}
     for attempt in range(1, VERIFY_ATTEMPTS + 1):
         try:
             checks = detector.verify_and_locate(
                 saved, targets, s.get("item", "object"), strict=True, marks=True)
-            return {"checks": checks, "verify_failed": False,
-                    "gate_passed": detector.all_preserved(checks, expected=len(targets))}
+            return {"checks": checks, "verify_failed": False, "added_text": added,
+                    "gate_passed": detector.all_preserved(checks, expected=len(targets)) and not added}
         except Exception as e:
             print(f"[verify] 실패 ({attempt}/{VERIFY_ATTEMPTS}): {e}")
             if not retryable(e):
@@ -518,6 +575,25 @@ def verify(s: State) -> dict:
                 time.sleep(DETECT_RETRY_DELAY_S)
     # 호출 실패(타임아웃·429·장애)는 "보존됨"이 아니다 — 통과로 치지 않는다 (→ 배경 교체)
     return {"checks": [], "verify_failed": True, "gate_passed": False}
+
+
+def _added_text(s: State, result: bytes) -> list | None:
+    """생성본에 새로 생긴 글자 · 로고 (설정으로 끄면 빈 목록). 호출이 끝내 실패하면 None — "확인 못 함"."""
+    if not settings.added_text_gate:
+        return []
+    for attempt in range(1, VERIFY_ATTEMPTS + 1):
+        try:
+            added = detector.added_text(s["original"], result)
+            if added:
+                print(f"[verify] 없던 글자 · 로고: {[a['what'] for a in added]}")
+            return added
+        except Exception as e:
+            print(f"[added_text] 실패 ({attempt}/{VERIFY_ATTEMPTS}): {e}")
+            if not retryable(e):
+                break
+            if attempt < VERIFY_ATTEMPTS:
+                time.sleep(DETECT_RETRY_DELAY_S)
+    return None
 
 
 def _route_after_verify(s: State) -> str:
@@ -540,6 +616,10 @@ def mark_gate_retry(s: State) -> dict:
     note = ("\n\nIMPORTANT: a previous attempt lost or altered these marks on the "
             "product: " + "; ".join(f'"{w}"' for w in lost if w) +
             ". They MUST remain exactly as in the input image.") if lost else ""
+    if s.get("added_text"):
+        # 생긴 글자를 그대로 적지 않는다 — 단어를 쓰면 그걸 다시 그린다 (10-03)
+        note += ("\n\nIMPORTANT: a previous attempt drew marks on the product that are not in the input "
+                 "image. Every surface of the product must look exactly as in the input image.")
     print(f"[gate] 실패 → 1회 재생성: {lost}")
     return {"gate_retried": True, "gate_note": note,
             "photo_check": None}
@@ -583,6 +663,7 @@ def composite(s: State) -> dict:
         else:
             # 문서는 펴지 않아도(여러 개·하자 heavy) 납작한 인쇄물 — 윤곽에 붙은 가는 조각을 뗀다
             out = compositor.compose(s["original"], s["preset"]["bg_color"], s.get("item_box"),
+                                     drop=s.get("leave_out_boxes"), keep=s.get("sell_boxes"),
                                      flat=reason == "document")
     except Exception as e:
         if s.get("result") is None and reason in ("wear_heavy", "document"):
@@ -642,6 +723,8 @@ def save_inspect(s: State) -> dict:
             "text_level": s.get("text_level"),
             "item_box": s.get("item_box"),                     # 누끼 비교(그래프 밖)가 원본을 오릴 범위
             "item_count": s.get("item_count"),
+            "added_text": s.get("added_text") or [],
+            "sell": s.get("sell"), "leave_out": s.get("leave_out") or [],
             "mode": s.get("mode", "generate"),
             "composite_reason": s.get("composite_reason"),
             "gate_retried": s.get("gate_retried", False),
@@ -868,7 +951,8 @@ RECURSION_LIMIT = 80
 
 
 def run_transform(file_id: str, preset_key: str, *, defer_judge: bool = False,
-                  note: str = "", composition: str | None = None) -> dict:
+                  note: str = "", composition: str | None = None, sell: list | None = None,
+                  answer_count: int | None = None) -> dict:
     """defer_judge=True: 채점하지 않고 결과에 judge_pending/trace_id 를 실어 보낸다 —
     호출부(transform 라우트)가 응답 뒤 judge_and_save() 를 돌린다.
     기본값(False)은 그래프 직후 여기서 바로 채점 (ingest 등 배치 호출부)."""
@@ -896,7 +980,7 @@ def run_transform(file_id: str, preset_key: str, *, defer_judge: bool = False,
             # 새 결과에 옛 점수가 붙는다 (원본 그대로·채점 실패 때도)
             _clear_quality(f"{file_id}_{preset_key}.json")
             out = GRAPH.invoke({"file_id": file_id, "preset_key": preset_key, "style_note": note,
-                                "composition": composition},
+                                "composition": composition, "sell": sell, "answer_count": answer_count},
                                {"recursion_limit": RECURSION_LIMIT})
             # 그래프 도중(새 결과 저장 전)에 이전 요청의 백그라운드 채점이 옛 결과 점수를
             # 저장했을 수 있다 — 새 결과가 저장된 뒤 한 번 더 지운다. 이후에 그 채점이

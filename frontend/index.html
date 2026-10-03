@@ -39,6 +39,10 @@
         <div id="item-comps" class="item-comps" role="radiogroup" aria-label="구도"></div>
       </div>
       <p class="step-label">내 사진 <span class="step-sub">— 구도에 맞는 사진이 자동으로 골라져요. 직접 눌러도 돼요</span></p>
+      <div id="sell-wrap" class="sell-wrap hidden">
+        <p class="sell-title">팔 물건 <span class="muted">— 여러 개 고를 수 있어요 (원본 사진의 번호)</span></p>
+        <div id="sell-objects" class="sell-objects" role="group" aria-label="팔 물건"></div>
+      </div>
       <div id="item-photos" class="item-photos" role="radiogroup" aria-label="사진"></div>
       <div id="item-missing" class="item-missing hidden"></div>
       <button id="item-add" type="button" class="btn btn-ghost">사진 · 동영상 더 올리기</button>
@@ -63,7 +67,10 @@
     <div class="panel">
       <h3>원본</h3>
       <div class="image-frame">
-        <img id="before" hidden>
+        <div class="before-wrap">
+          <img id="before" hidden>
+          <div id="sell-boxes" class="sell-boxes"></div>
+        </div>
       </div>
     </div>
 

@@ -7,6 +7,8 @@
 
 경로(어느 노드로 가나)는 test_pipeline_scenarios.py 가 그래프 끝까지 돌려서 본다.
 """
+import json
+
 import pytest
 
 import app.services.pipeline as pipeline_mod
@@ -166,3 +168,164 @@ def test_mark_gate_retry_note_lists_only_lost_marks():
 
 def test_mark_gate_retry_nothing_lost_no_note():
     assert pipeline_mod.mark_gate_retry({"checks": [{"what": "a", "preserved": True}]})["gate_note"] == ""
+
+
+# ══ 10-03: 팔 물건 고르기 (apply_selection) ═════════════════════════
+def _obj(what, x1, y1, x2, y2, for_sale=True):
+    return {"what": what, "box": {"x1": x1, "y1": y1, "x2": x2, "y2": y2}, "for_sale": for_sale}
+
+
+CD1, CD2 = _obj("CD", 50, 100, 450, 900), _obj("CD", 550, 100, 950, 900)
+KB = _obj("keyboard", 0, 0, 1000, 80, for_sale=False)
+CASE = _obj("case", 300, 950, 700, 1000)
+
+
+def _analysis(objects=(CD1, CD2, KB), **kw):
+    return {"item": "CD", "item_count": 2, "item_box": {"x1": 1, "y1": 2, "x2": 3, "y2": 4},
+            "objects": list(objects), "detect_failed": False, **kw}
+
+
+def test_apply_selection_picks_two_unions_boxes_and_leaves_out_rest():
+    out = pipeline_mod.apply_selection(_analysis(), [0, 1])
+    assert out["item_count"] == 2 and out["item"] == "CD"
+    assert out["item_box"] == {"x1": 50, "y1": 100, "x2": 950, "y2": 900}
+    assert out["leave_out"] == ["keyboard"]
+    assert out["leave_out_boxes"] == [KB["box"]] and out["sell_boxes"] == [CD1["box"], CD2["box"]]
+
+
+def test_apply_selection_does_not_mutate_input():
+    a = _analysis(item_texts=[{"text": "A", "x1": 0, "y1": 0, "x2": 10, "y2": 10}])
+    snap = json.loads(json.dumps(a))
+    pipeline_mod.apply_selection(a, [2], answer_count=5)
+    assert a == snap
+
+
+def test_apply_selection_order_and_duplicates_of_indices_do_not_matter():
+    a = pipeline_mod.apply_selection(_analysis(), [1, 0, 1, 0])
+    b = pipeline_mod.apply_selection(_analysis(), [0, 1])
+    assert a == b and a["item_count"] == 2
+
+
+def test_apply_selection_distinct_names_joined_in_index_order():
+    out = pipeline_mod.apply_selection(_analysis((CD1, KB, CASE)), [2, 0])
+    assert out["item"] == "CD and case" and out["item_count"] == 2
+    assert out["item_box"] == {"x1": 50, "y1": 100, "x2": 700, "y2": 1000}
+    assert out["leave_out"] == ["keyboard"]
+
+
+def test_apply_selection_item_name_capped_at_three_but_count_is_all():
+    objs = [_obj(n, 0, 0, 10, 10) for n in ("a", "b", "c", "d", "e")]
+    out = pipeline_mod.apply_selection(_analysis(objs), [0, 1, 2, 3, 4])
+    assert out["item"] == "a and b and c" and out["item_count"] == 5
+    assert out["leave_out"] == [] and out["leave_out_boxes"] == []
+
+
+def test_apply_selection_one_of_two_same_name_leaves_out_by_box_only():
+    """CD 2장 중 1장 — 이름으로 빼라고 하면 남길 CD 까지 지운다. 박스로만 뺀다."""
+    out = pipeline_mod.apply_selection(_analysis(), [0])
+    assert out["item"] == "CD" and out["item_count"] == 1
+    assert out["leave_out"] == ["keyboard"]
+    assert out["leave_out_boxes"] == [CD2["box"], KB["box"]] and out["sell_boxes"] == [CD1["box"]]
+
+
+def test_apply_selection_leave_out_names_deduplicated():
+    out = pipeline_mod.apply_selection(_analysis(), [2])
+    assert out["item"] == "keyboard" and out["item_count"] == 1
+    assert out["item_box"] == KB["box"] and out["leave_out"] == ["CD"]
+    assert out["leave_out_boxes"] == [CD1["box"], CD2["box"]]
+
+
+def _t(text, x1, y1, x2, y2):
+    return {"text": text, "x1": x1, "y1": y1, "x2": x2, "y2": y2}
+
+
+def test_apply_selection_drops_texts_only_on_unchosen_objects():
+    texts = [_t("ON_CD1", 100, 400, 300, 500),     # 고른 CD1 위
+             _t("ON_KB", 500, 10, 600, 50),        # 안 고른 키보드 위
+             _t("ON_CD2", 600, 400, 800, 500),     # 안 고른 CD2 위
+             _t("NOWHERE", 460, 950, 540, 990),    # 어느 박스에도 없음 → 남긴다
+             {"text": "NO_BOX"}]                   # 위치 모름 → 남긴다
+    out = pipeline_mod.apply_selection(_analysis(item_texts=texts), [0])
+    assert [t["text"] for t in out["item_texts"]] == ["ON_CD1", "NOWHERE", "NO_BOX"]
+
+
+def test_apply_selection_text_in_overlap_of_chosen_and_unchosen_is_kept():
+    """키보드 박스(위쪽 띠)와 CD1 박스가 겹치는 곳의 글자 — 고른 물건에도 있으니 남긴다."""
+    cd = _obj("CD", 0, 0, 500, 500)
+    out = pipeline_mod.apply_selection(_analysis((cd, KB), item_texts=[_t("X", 100, 20, 200, 60)]), [0])
+    assert [t["text"] for t in out["item_texts"]] == ["X"]
+
+
+def test_apply_selection_text_center_on_box_edge_counts_as_inside():
+    out = pipeline_mod.apply_selection(
+        _analysis((CD1, KB), item_texts=[_t("EDGE", 400, 60, 600, 100)]), [0])   # 가운데 (500, 80) = 키보드 아래 모서리
+    assert out["item_texts"] == []
+
+
+def test_apply_selection_without_choice_keeps_texts_as_is():
+    texts = [_t("ON_KB", 500, 10, 600, 50)]
+    assert pipeline_mod.apply_selection(_analysis(item_texts=texts), None)["item_texts"] == texts
+
+
+@pytest.mark.xfail(strict=True, reason="버그 보고: 옛 분석(item_texts 키 없음)에 sell 을 주면 item_texts=[] 가 생겨 "
+                                       "read_text 가 '이미 읽었다'로 보고 글자 읽기를 건너뛴다 → 글자 잠금이 사라짐")
+def test_apply_selection_keeps_item_texts_key_absent_when_analysis_has_none():
+    a = _analysis()
+    assert "item_texts" not in a
+    out = pipeline_mod.apply_selection(a, [0])
+    assert "item_texts" not in out
+
+
+def test_apply_selection_picking_only_non_sale_object_follows_user():
+    """분석이 for_sale=False 로 본 물건이라도 사용자가 고르면 그것을 판다."""
+    out = pipeline_mod.apply_selection(_analysis(), [2])
+    assert out["item"] == "keyboard" and out["sell_boxes"] == [KB["box"]]
+
+
+@pytest.mark.parametrize("sell", [[True], [False, True], [-1], [3], [99], ["0"], [0.0], [None]])
+def test_apply_selection_bad_indices_only_leaves_analysis(sell):
+    """잘못된 번호 · bool · 문자열 · 실수만 고르면 아무것도 안 고른 것 — 분석 그대로."""
+    a = _analysis()
+    assert pipeline_mod.apply_selection(a, sell) == a
+
+
+def test_apply_selection_bad_indices_mixed_with_good_are_ignored():
+    out = pipeline_mod.apply_selection(_analysis(), [True, -1, 9, "1", 0])
+    assert out["item_count"] == 1 and out["item_box"] == CD1["box"]
+    assert out["sell_boxes"] == [CD1["box"]] and out["leave_out"] == ["keyboard"]
+
+
+@pytest.mark.parametrize("sell", [None, []])
+def test_apply_selection_no_choice_keeps_analysis(sell):
+    a = _analysis()
+    assert pipeline_mod.apply_selection(a, sell) == a
+
+
+@pytest.mark.parametrize("objects", [None, []])
+def test_apply_selection_without_objects_ignores_sell(objects):
+    """옛 분석(objects 없음)에 sell 이 와도 그대로 — 번호를 맞출 목록이 없다."""
+    a = _analysis(objects=())
+    a["objects"] = objects
+    assert pipeline_mod.apply_selection(a, [0]) == a
+
+
+def test_apply_selection_detect_failed_returned_as_is_even_with_answer_count():
+    a = {"detect_failed": True, "item_count": 1}
+    assert pipeline_mod.apply_selection(a, [0], answer_count=3) is a
+
+
+@pytest.mark.parametrize("answer", [1, 3, 12])
+def test_apply_selection_answer_count_overrides_analysis_and_selection(answer):
+    assert pipeline_mod.apply_selection(_analysis(), None, answer)["item_count"] == answer
+    out = pipeline_mod.apply_selection(_analysis(), [0, 1], answer)
+    assert out["item_count"] == answer and out["leave_out"] == ["keyboard"]
+
+
+@pytest.mark.parametrize("answer", [None, 0, -2, True, False, "3", 2.0])
+def test_apply_selection_bad_answer_count_ignored(answer):
+    assert pipeline_mod.apply_selection(_analysis(item_count=5), None, answer)["item_count"] == 5
+
+
+def test_apply_selection_answer_count_without_objects_still_applies():
+    a = {"item": "x", "item_count": 1, "detect_failed": False}
+    assert pipeline_mod.apply_selection(a, None, 2)["item_count"] == 2

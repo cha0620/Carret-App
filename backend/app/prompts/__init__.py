@@ -110,6 +110,10 @@ def item_text_prompt(item: str) -> str:
     return get_prompt_text("item_text", fallback=frag("item_text"), item=item)
 
 
+def added_text_prompt() -> str:
+    return get_prompt_text("added_text", fallback=frag("added_text"))
+
+
 def check_photo_prompt() -> str:
     return get_prompt_text("check_photo", fallback=check_photo_template())
 

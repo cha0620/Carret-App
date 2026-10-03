@@ -63,6 +63,7 @@ class World:
         self.prompts = []          # generate 에 넘긴 프롬프트
         self.targets = []          # verify 에 넘긴 체크리스트
         self.compose_boxes = []
+        self.compose_drop_keep = []    # compose 에 넘긴 (drop, keep) 박스 — 10-03 팔 물건 고르기
         self.seen = {"check_photo": [], "verify": [], "compose": [], "judge": []}   # 받은 이미지
         self.analysis = {"item": "chair", "considered": [], "anchors": [MARK], "item_box": None,
                          "photo_type": "product", "wear_level": "light", "watermark": "none",
@@ -71,6 +72,8 @@ class World:
         self.texts, self.read_box, self.read_error = [], None, None
         self.photo_checks = []     # 소진되면 valid
         self.verifies = []         # "pass" | "lost" | "short"(항목 하나 덜 답함) | 예외 — 소진되면 pass
+        self.added = []            # added_text 답 — [{"what","where"}] 목록 | 예외, 소진되면 [] (10-03)
+        self.added_calls = []      # added_text 에 넘긴 (원본, 생성본) — calls 순서 검사와 섞지 않으려고 따로
         self.compose_error = None
         self.similarity = 0.9          # 원본 vs 생성본 (이미지 전체)
         self.comp_similarity = 0.77    # 원본 vs 합성본
@@ -83,6 +86,7 @@ class World:
         monkeypatch.setattr(det, "read_item_text", self._read)
         monkeypatch.setattr(det, "check_photo", self._check_photo)
         monkeypatch.setattr(det, "verify_and_locate", self._verify)
+        monkeypatch.setattr(det, "added_text", self._added)
         monkeypatch.setattr(pipeline_mod, "_generate_ai", self._generate)
         comp = pipeline_mod.compositor
         monkeypatch.setattr(comp, "compose", self._compose("compose"))
@@ -111,6 +115,13 @@ class World:
         self.seen["check_photo"].append(_label(img))
         return self.photo_checks.pop(0) if self.photo_checks else {"valid": True, "reason": ""}
 
+    def _added(self, original, result):
+        self.added_calls.append((_label(original), _label(result)))
+        a = self.added.pop(0) if self.added else []
+        if isinstance(a, Exception):
+            raise a
+        return a
+
     def _verify(self, img, targets, item="object", considered=None, *, strict=False, marks=False):
         self.calls.append("verify")
         self.seen["verify"].append(_label(img))
@@ -127,10 +138,11 @@ class World:
         return _png(GENS[self.count("generate") - 1])
 
     def _compose(self, name):
-        def compose(image, bg, box=None, alpha=None, *, flat=False):
+        def compose(image, bg, box=None, alpha=None, *, flat=False, drop=None, keep=None):
             self.calls.append(name)
             self.seen["compose"].append(_label(image))
             self.compose_boxes.append(box)
+            self.compose_drop_keep.append((drop, keep))
             if self.compose_error:
                 raise self.compose_error
             return _png(COMP)
@@ -692,3 +704,201 @@ def test_keep_attempts_saves_every_generation(w, monkeypatch, keep):
     else:
         assert saved == [None, None, None]
     assert w.route()["mode"] == "composite"
+
+
+# ══ 10-03: 팔 물건 고르기 — sell · answer_count 가 analyze 결과를 바꾸고 생성 프롬프트에 실린다 ═══════
+# sell 번호는 사용자가 본 분석(저장된 것)의 번호 — 저장된 분석이 있을 때만 쓴다
+CD_L = {"what": "CD", "box": {"x1": 50, "y1": 100, "x2": 450, "y2": 900}, "for_sale": True}
+CD_R = {"what": "CD", "box": {"x1": 550, "y1": 100, "x2": 950, "y2": 900}, "for_sale": True}
+KEYB = {"what": "keyboard", "box": {"x1": 0, "y1": 0, "x2": 1000, "y2": 80}, "for_sale": False}
+LEAVE = "Leave out these things that are not for sale"
+
+
+def _cached(w, *objs, count=None, **extra):
+    """/api/analyze 가 미리 분석해 저장해 둔 상태 — 변환 때 analyze VLM 을 부르지 않는다."""
+    w.analysis.update(item="CD", objects=list(objs), item_count=count or 1, **extra)
+    storage.save("quality", f"{FID}_analysis.json",
+                 json.dumps({**w.analysis, "detect_failed": False}).encode())
+
+
+def test_sell_two_of_three_puts_count_lock_and_leave_out_in_every_prompt(w):
+    _cached(w, CD_L, CD_R, KEYB)
+    w.verifies = ["lost"]                               # 재생성까지 — 두 번째 프롬프트에도 실려야
+    out = w.run(sell=[0, 1])
+    assert "analyze" not in w.calls and len(w.prompts) == 2
+    for p in w.prompts:
+        assert "This photo shows 2 CD for sale" in p and f'{LEAVE}: "keyboard".' in p
+        assert p.index("This photo shows 2") < p.index(LEAVE)
+    assert "This photo shows 2 CD" in out["prompt_used"]
+    assert w.row()["item"] == "CD"
+
+
+def test_sell_ignored_when_analysis_is_fresh(w):
+    """저장된 분석이 없으면 지금 분석한 목록 순서가 사용자가 본 것과 다를 수 있어 sell 을 버린다."""
+    w.analysis.update(item="CD", objects=[CD_L, CD_R, KEYB], item_count=2)
+    w.run(sell=[2])
+    assert w.calls[0] == "analyze"
+    assert LEAVE not in w.prompts[0] and "This photo shows 2 CD" in w.prompts[0]
+
+
+def test_sell_ignored_when_cached_analysis_failed(w):
+    w.analysis.update(item="CD", objects=[CD_L, CD_R, KEYB], item_count=2)
+    storage.save("quality", f"{FID}_analysis.json", json.dumps({"detect_failed": True}).encode())
+    w.run(sell=[2])
+    assert w.calls[0] == "analyze" and LEAVE not in w.prompts[0]
+
+
+def test_sell_order_composition_then_leave_out_then_text_lock(w):
+    """한 개 고르면 구도가 붙고, 순서는 구도 → (개수) → 뺄 물건 → 글자 잠금."""
+    from app.services.compositions import BY_KEY
+    _cached(w, CD_L, KEYB, count=2, text_level="simple", item_texts=[{"text": "BRAUN"}])
+    w.run(sell=[0], composition="shoes_side")
+    p = w.prompts[0]
+    side = BY_KEY["shoes_side"]["prompt"]
+    assert side in p and "This photo shows" not in p          # 고른 게 하나 → 개수 문장 없음
+    assert p.index(side) < p.index(LEAVE) < p.index('"BRAUN"')
+
+
+def test_count_lock_before_leave_out_before_text_lock(w):
+    _cached(w, CD_L, CD_R, KEYB, text_level="simple", item_texts=[{"text": "BRAUN"}])
+    w.run(sell=[0, 1], composition="shoes_side")
+    p = w.prompts[0]
+    assert p.index("This photo shows 2") < p.index(LEAVE) < p.index('"BRAUN"')
+
+
+def test_text_only_on_unchosen_object_is_not_locked(w):
+    """안 고른 키보드 위 글자는 글자 잠금에서 빠진다 — "빼라"와 "지켜라"가 같은 물건에 붙지 않게."""
+    _cached(w, CD_L, KEYB, text_level="simple", item_texts=[
+        {"text": "SONY", "x1": 100, "y1": 400, "x2": 300, "y2": 500},      # CD 위
+        {"text": "LOGI", "x1": 500, "y1": 10, "x2": 600, "y2": 50}])       # 키보드 위
+    w.run(sell=[0])
+    assert '"SONY"' in w.prompts[0] and "LOGI" not in w.prompts[0]
+
+
+def test_sell_two_skips_composition_even_if_analysis_said_one(w):
+    from app.services.compositions import BY_KEY
+    _cached(w, CD_L, CD_R, count=1)
+    w.run(sell=[0, 1], composition="shoes_side")
+    assert BY_KEY["shoes_side"]["prompt"] not in w.prompts[0]
+    assert "This photo shows 2 CD" in w.prompts[0] and LEAVE not in w.prompts[0]
+
+
+def test_one_of_two_same_name_is_not_named_in_leave_out(w):
+    """CD 2장 중 1장 — "CD 를 빼라"고 하면 남길 CD 까지 지운다. 이름으로는 빼지 않는다."""
+    _cached(w, CD_L, CD_R, count=2)
+    w.run(sell=[0])
+    assert LEAVE not in w.prompts[0] and "This photo shows" not in w.prompts[0]
+
+
+def test_selection_is_not_saved_into_cached_analysis(w):
+    """고른 결과가 저장된 분석에 섞이면 다음 변환(다른 무드 · 다른 선택)이 옛 선택을 물려받는다."""
+    _cached(w, CD_L, CD_R, KEYB, count=2)
+    w.run(sell=[0])
+    saved = json.loads(storage.load("quality", f"{FID}_analysis.json"))
+    assert not {"leave_out", "leave_out_boxes", "sell_boxes"} & set(saved) and saved["item_count"] == 2
+    w.prompts.clear()
+    w.run()                                              # 선택 없음
+    assert "analyze" not in w.calls
+    assert LEAVE not in w.prompts[0] and "This photo shows 2 CD" in w.prompts[0]
+
+
+def test_sell_picking_only_non_sale_object(w):
+    _cached(w, CD_L, CD_R, KEYB, count=2)
+    w.run(sell=[2])
+    assert f'{LEAVE}: "CD".' in w.prompts[0] and "This photo shows" not in w.prompts[0]
+    assert w.row()["item"] == "keyboard"
+
+
+@pytest.mark.parametrize("sell", [[], [7], [True]])
+def test_sell_nothing_valid_keeps_analysis_prompt(w, sell):
+    _cached(w, CD_L, CD_R, KEYB, count=2)
+    w.run(sell=sell)
+    assert LEAVE not in w.prompts[0] and "This photo shows 2 CD" in w.prompts[0]
+
+
+def test_sell_union_box_and_drop_keep_reach_composite(w):
+    """배경 교체로 가도 고른 물건들의 합집합 박스로 오리고, 안 고른 물건 박스는 지운다."""
+    _cached(w, CD_L, CD_R, KEYB, wear_level="heavy")
+    out = w.run(sell=[0, 1])
+    assert out["mode"] == "composite" and "generate" not in w.calls
+    assert w.compose_boxes == [{"x1": 50, "y1": 100, "x2": 950, "y2": 900}]
+    assert w.compose_drop_keep == [([KEYB["box"]], [CD_L["box"], CD_R["box"]])]
+
+
+def test_composite_without_sell_drops_nothing(w):
+    _cached(w, CD_L, KEYB, wear_level="heavy")
+    w.run()
+    assert w.compose_drop_keep == [(None, None)]
+
+
+def test_sell_with_detect_failed_does_not_crash(w):
+    w.analyze_errors = [TypeError("bug")] * 5
+    out = w.run(sell=[0, 1], answer_count=3)
+    assert out["detect_failed"] is True and "generate" not in w.calls
+
+
+@pytest.mark.parametrize("answer,count_lock_on,comp_on", [(None, False, True), (1, False, True),
+                                                           (2, True, False), (0, False, True)])
+def test_answer_count_drives_count_lock_and_composition(w, answer, count_lock_on, comp_on):
+    """eval: 고르는 화면 없이 정답 개수만 — 새로 분석해도 적용된다. 개수 문장 · 구도 여부가 그것을 따른다."""
+    from app.services.compositions import BY_KEY
+    w.run(composition="shoes_side", answer_count=answer)
+    p = w.prompts[0]
+    assert ("This photo shows 2 chair" in p) == count_lock_on
+    assert (BY_KEY["shoes_side"]["prompt"] in p) == comp_on
+
+
+def test_answer_count_one_overrides_analysis_many(w):
+    from app.services.compositions import BY_KEY
+    w.analysis.update(item_count=3)
+    w.run(composition="shoes_side", answer_count=1)
+    assert "This photo shows" not in w.prompts[0] and BY_KEY["shoes_side"]["prompt"] in w.prompts[0]
+
+
+@pytest.mark.xfail(strict=True, reason="버그 보고: 옛 분석(item_texts 없음)에 sell 을 주면 apply_selection 이 item_texts=[] 를 "
+                                       "만들어 read_text 를 건너뛰고 글자 잠금이 빠진다")
+def test_sell_on_old_analysis_without_texts_still_reads_text(w):
+    _cached(w, CD_L, KEYB, text_level="simple")
+    w.texts = [{"text": "SONY"}]
+    w.run(sell=[0])
+    assert w.calls.count("read_text") == 1 and '"SONY"' in w.prompts[0]
+
+
+
+# ══ 10-03: 생성본에 없던 글자 · 로고가 생기면 게이트 실패 ═══════
+ADDED = [{"what": "H4", "where": "chest"}]
+
+
+def test_added_text_fails_gate_then_regenerates_without_naming_it(w):
+    w.added = [ADDED, []]
+    out = w.run()
+    assert w.count("generate") == 2 and out["mode"] == "generate" and out["gate_passed"] is True
+    assert "drew marks on the product that are not in the input image" in w.prompts[1]
+    assert "H4" not in w.prompts[1]                     # 생긴 글자를 프롬프트에 다시 쓰지 않는다
+    assert all(o == "orig" for o, _ in w.added_calls)
+
+
+def test_added_text_twice_goes_composite(w):
+    w.added = [ADDED, ADDED]
+    out = w.run()
+    assert w.count("generate") == 2 and out["mode"] == "composite" and out["composite_reason"] == "gate_failed"
+
+
+def test_added_text_alone_fails_gate_even_with_nothing_to_verify(w):
+    w.analysis.update(anchors=[])
+    w.added = [ADDED, ADDED]
+    out = w.run()
+    assert "verify" not in w.calls and out["mode"] == "composite"
+
+
+def test_added_text_call_failure_is_verify_failed(w):
+    w.added = [RuntimeError("down")] * 3
+    out = w.run()
+    assert out["mode"] == "composite" and out["composite_reason"] == "verify_failed"
+
+
+def test_added_text_gate_off_skips_call(w, monkeypatch):
+    monkeypatch.setattr(pipeline_mod.settings, "added_text_gate", False)
+    w.added = [ADDED]
+    out = w.run()
+    assert w.added_calls == [] and out["gate_passed"] is True

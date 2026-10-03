@@ -4,6 +4,11 @@ Report:
    item_count — how many separate items for sale are in the photo: two CDs side by side = 2,
    a stack of 12 comics = 12, a pair of shoes = 1, one product with its box or accessories = 1.
    Things in the background that are not for sale do not count.
+   objects — every separate physical object clearly visible in the photo that a seller could be
+   selling, ONE entry per piece (two CDs = two entries, a pair of shoes = one entry, a product and
+   its box = two entries), at most 12. For each: what (short noun), box_2d, and for_sale — true if it
+   is part of what is being sold (the items you counted in item_count), false for things around it
+   (a keyboard behind, a mug next to it). Do not list hands, people, furniture, the floor or walls.
 
 2. considered — 3~8 inspection terms for THIS item, most likely first
    (e.g. clothing: stain, tear, pilling; phone: scratch, crack, display line).

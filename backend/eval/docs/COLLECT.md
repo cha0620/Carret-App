@@ -51,11 +51,11 @@
 
 ## 3. 저장
 
-1. 사진을 `backend/eval/images/inbox/` 에 저장한다. 파일 이름: `<코드>_<아무거나>.<확장자>` (jpg · png · webp 만 —
+1. 사진을 `backend/eval/data/images/inbox/` 에 저장한다. 파일 이름: `<코드>_<아무거나>.<확장자>` (jpg · png · webp 만 —
    heic · gif 는 다시 저장. 섞여 있으면 `add` 가 거부한다)
    - 예: `none_airpods.jpg`, `doc_linear_algebra.webp`, `heavy_03.png`
    - 네이버 카페 이미지는 우클릭 → 이미지 저장 (주소로 내려받으면 막힐 때가 많다)
-2. 게시글 주소를 `images/inbox/urls.txt` 에 한 줄씩: `파일이름 주소` (마지막 칸이 주소 — 이름에 공백이 있어도 된다)
+2. 게시글 주소를 `data/images/inbox/urls.txt` 에 한 줄씩: `파일이름 주소` (마지막 칸이 주소 — 이름에 공백이 있어도 된다)
 
    ```text
    none_airpods.jpg https://cafe.naver.com/joonggonara/123456789
@@ -70,7 +70,7 @@
    python eval/intake.py add             # inbox → images/, dataset.json 에 추가, dev/test 나눔
    ```
 
-   `add` 가 라벨 달 항목을 `images/inbox/labels.csv` 로 뽑아 준다. 파일이 이미 있으면 **채워 둔 칸은 그대로 두고**
+   `add` 가 라벨 달 항목을 `data/images/inbox/labels.csv` 로 뽑아 준다. 파일이 이미 있으면 **채워 둔 칸은 그대로 두고**
    새 사진 줄만 더한다 — 라벨을 반쯤 달다가 사진을 더 모아도 된다.
    하나라도 틀리면(이름 규칙 · 같은 이름 · 같은 사진 · 층 목표 넘음) 아무것도 옮기지 않는다.
 
@@ -95,7 +95,7 @@
 | `note` | 자유 |
 
 ```bash
-python eval/intake.py merge images/inbox/labels.csv --by <이름>
+python eval/intake.py merge data/images/inbox/labels.csv --by <이름>
 ```
 
 - 값이 하나라도 틀리면 전부 반영하지 않는다 (대소문자는 안 가린다). 빈 줄은 건너뛴다

@@ -52,10 +52,80 @@ function setBusy(on) {
     if ('disabled' in el) el.disabled = on;
   }
   document.getElementById('item-photos').classList.toggle('locked', on);
-  runBtn.disabled = on || !fileId;
+  for (const b of document.querySelectorAll('.sell-check')) b.disabled = on;   // 변환 중엔 고르기 잠금
+  runBtn.disabled = on || !fileId || analyzing;
 }
 
 let composition = null;          // 고른 정석 구도 키 (신발만 — 없으면 null)
+let sell = null;                 // 고른 팔 물건 번호 (analyze objects) — 목록이 없으면 null (분석 판단대로)
+let sellDirty = false;           // 사용자가 기본 체크를 바꿨나 — 안 바꿨으면 서버에 보내지 않는다 (분석 판단대로)
+let analyzing = false;           // 미리 분석 중 — 끝나기 전에 변환하면 서버가 같은 사진을 두 번 분석한다
+let analyzeToken = 0;            // 사진을 바꾸면 늦게 온 분석 응답을 버린다
+
+function resetSell() {
+  ++analyzeToken;
+  sell = null;
+  sellDirty = false;
+  analyzing = false;
+  renderSell(null);
+}
+
+async function loadSellObjects(fid) {
+  resetSell();
+  const token = analyzeToken;
+  analyzing = true;
+  runBtn.disabled = true;
+  try {
+    const a = await analyzePhoto(fid);
+    if (token !== analyzeToken || fid !== fileId) return;
+    const objs = a.objects || [];
+    if (objs.length < 2) return;            // 하나뿐이면 고를 게 없다
+    sell = objs.filter(o => o.for_sale).map(o => o.index);
+    if (!sell.length) sell = objs.map(o => o.index);
+    renderSell(objs);
+  } catch (_) { /* 분석 실패 — 고르기 없이 변환 (서버가 판단) */ }
+  finally {
+    if (token === analyzeToken) {
+      analyzing = false;
+      runBtn.disabled = busy || !fileId;
+    }
+  }
+}
+
+function renderSell(objs) {
+  const wrap = document.getElementById('sell-wrap');
+  const list = document.getElementById('sell-objects');
+  const boxes = document.getElementById('sell-boxes');
+  list.innerHTML = '';
+  boxes.innerHTML = '';
+  wrap.classList.toggle('hidden', !objs);
+  if (!objs) return;
+  for (const o of objs) {
+    const label = document.createElement('label');
+    label.className = 'sell-obj';
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.className = 'sell-check';
+    box.checked = sell.includes(o.index);
+    const mark = document.createElement('div');
+    box.onchange = () => {
+      const next = box.checked ? [...sell, o.index] : sell.filter(i => i !== o.index);
+      if (!next.length) { box.checked = true; return; }   // 하나 이상은 남긴다
+      sell = next.sort((a, b) => a - b);
+      sellDirty = true;
+      mark.classList.toggle('off', !box.checked);
+    };
+    label.append(box, document.createTextNode(` ${o.index + 1}. ${o.what}`));   // textContent — 이름은 VLM 답
+    list.append(label);
+    mark.className = 'sell-box' + (box.checked ? '' : ' off');
+    mark.style.left = (o.box.x1 / 10) + '%';
+    mark.style.top = (o.box.y1 / 10) + '%';
+    mark.style.width = ((o.box.x2 - o.box.x1) / 10) + '%';
+    mark.style.height = ((o.box.y2 - o.box.y1) / 10) + '%';
+    mark.textContent = String(o.index + 1);
+    boxes.append(mark);
+  }
+}
 
 function compOfPhoto(fid) {
   const c = (item?.compositions || []).find(c => c.photo_ids.includes(fid));
@@ -83,6 +153,7 @@ function selectPhoto(p, comp) {
   clearResults();
   renderItem(item, fileId, p => selectPhoto(p));
   renderComps(item, composition, pickComp);
+  loadSellObjects(p.file_id);
   runBtn.disabled = false;
   statusEl.textContent = '이 구도로 변환하려면 변환하기를 누르세요';
 }
@@ -102,7 +173,7 @@ async function handleFiles(files, append = false) {
   const hasVideo = files.some(f => f.type.startsWith('video/'));
   statusEl.textContent = hasVideo ? '동영상에서 장면 고르는 중... (조금 걸려요)' : '업로드하고 각도 확인 중...';
   if (!append) {
-    fileId = null; item = null; composition = null; clearResults(); hideItem();
+    fileId = null; item = null; composition = null; resetSell(); clearResults(); hideItem();
     afterImg.hidden = true; beforeImg.hidden = true;
   }
   urlInput.value = '';
@@ -141,6 +212,7 @@ urlBtn.onclick = async () => {
     fileId = data.file_id;
     item = null;
     composition = null;
+    resetSell();                 // 이전 사진의 팔 물건 고르기를 남기지 않는다
     hideItem();
     beforeImg.src = url;
     beforeImg.hidden = false;
@@ -158,13 +230,14 @@ urlBtn.onclick = async () => {
 
 // ---- 변환 ----
 runBtn.onclick = async () => {
-  if (!fileId || busy) return;
+  if (!fileId || busy || analyzing) return;
   const fileId_ = fileId;        // 변환 중 사진을 바꿔도 이 결과 · 성적표 · 피드백은 이 사진에
   const comp_ = composition;
+  const sell_ = sellDirty ? sell : null;   // 기본 체크 그대로면 보내지 않는다 — 분석 판단대로
   setBusy(true);
   statusEl.textContent = '변환 중... (몇 초 걸려요)';
   try {
-    const data = await requestTransform(fileId_, PRESET, comp_);
+    const data = await requestTransform(fileId_, PRESET, comp_, sell_);
 
     // 이전 결과의 말풍선이 새 이미지 로드 전까지 잘못 남아있지 않도록 즉시 비움
     overlay.innerHTML = '';

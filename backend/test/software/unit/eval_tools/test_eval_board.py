@@ -26,7 +26,7 @@ def R(file, repeat=1, **kw):
 
 
 def write_run(root, run_id, results, raw_extra="", images=()):
-    d = root / "runs" / run_id
+    d = root / "results" / "runs" / run_id
     (d / "files").mkdir(parents=True, exist_ok=True)
     (d / "results.jsonl").write_text(
         "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in results) + raw_extra, encoding="utf-8")
@@ -36,7 +36,7 @@ def write_run(root, run_id, results, raw_extra="", images=()):
 
 
 def write_review(root, run_id, rater, rows, raw_extra=""):
-    d = root / "reviews" / run_id
+    d = root / "results" / "reviews" / run_id
     d.mkdir(parents=True, exist_ok=True)
     with open(d / f"{rater}.csv", "w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=COLS)
@@ -69,7 +69,7 @@ def test_import_puts_eval_dir_on_sys_path_and_paths_are_redirected(board_mod, tm
     assert board_mod.rp.__file__ == str(EVAL_DIR / "report.py")
     assert board_mod.intake.__file__ == str(EVAL_DIR / "intake.py")
     assert board_mod.HERE == tmp_path and board_mod.rp.HERE == tmp_path
-    assert board_mod.intake.DATASET == tmp_path / "dataset.json"
+    assert board_mod.intake.DATASET == tmp_path / "data" / "dataset.json"
     assert board_mod.intake.load_dataset() == []          # 실제 dataset.json 이 아니다
 
 
@@ -97,7 +97,7 @@ def test_notes_skips_broken_rows(board_mod, tmp_path):
 
 
 def test_notes_missing_repeat_column_and_bom(board_mod, tmp_path):
-    d = tmp_path / "reviews" / "r1"
+    d = tmp_path / "results" / "reviews" / "r1"
     d.mkdir(parents=True)
     (d / "kim.csv").write_text("﻿file,reviewed,note\na.webp,1,repeat 없음\n", encoding="utf-8")
     (d / "lee.csv").write_text("﻿file,repeat,reviewed,note\na.webp,2,1,BOM 있음\n", encoding="utf-8")
@@ -106,7 +106,7 @@ def test_notes_missing_repeat_column_and_bom(board_mod, tmp_path):
 
 def test_notes_ignores_undecodable_csv(board_mod, tmp_path):
     write_review(tmp_path, "r1", "kim", [ok("a.webp", note="정상")])
-    (tmp_path / "reviews" / "r1" / "broken.csv").write_bytes(b"file,repeat,reviewed,note\n\xff\xfe\xfa,1,1,x\n")
+    (tmp_path / "results" / "reviews" / "r1" / "broken.csv").write_bytes(b"file,repeat,reviewed,note\n\xff\xfe\xfa,1,1,x\n")
     assert dict(board_mod._notes("r1")) == {("a.webp", 1): ["kim: 정상"]}
 
 
@@ -122,8 +122,8 @@ def test_results_skips_broken_blank_and_non_dict_lines(board_mod, tmp_path):
 
 def test_results_missing_or_undecodable(board_mod, tmp_path):
     assert board_mod._results("없음") == []
-    d = tmp_path / "runs" / "bin"
-    d.mkdir()
+    d = tmp_path / "results" / "runs" / "bin"
+    d.mkdir(parents=True)
     (d / "results.jsonl").write_bytes(b"\xff\xfe\x00")
     assert board_mod._results("bin") == []
 
@@ -205,7 +205,7 @@ def test_collect_unreviewed_row_is_not_a_vote(board_mod, tmp_path):
 def test_collect_survives_undecodable_review_csv(board_mod, tmp_path):
     write_run(tmp_path, "r1", [R("a.webp")])
     write_review(tmp_path, "r1", "kim", [bad("a.webp")])
-    (tmp_path / "reviews" / "r1" / "broken.csv").write_bytes(b"file,repeat,reviewed\n\xff\xfe,1,1\n")
+    (tmp_path / "results" / "reviews" / "r1" / "broken.csv").write_bytes(b"file,repeat,reviewed\n\xff\xfe,1,1\n")
     [it] = board_mod.collect()                                    # 예외 없이 열린다
     assert len(it["results"]) == 1
 
@@ -224,7 +224,7 @@ def test_collect_orig_only_if_real_image_under_files(board_mod, tmp_path):
                                R("a.webp", 3, orig="results.jsonl"), R("a.webp", 4, orig="files/o1.webp")],
               images=["files/o1.webp"])
     write_run(tmp_path, "r2", [R("a.webp", orig="files/o2.webp")], images=["files/o2.webp"])
-    (tmp_path / "runs" / "no_results").mkdir()
+    (tmp_path / "results" / "runs" / "no_results").mkdir(parents=True)
     [it] = board_mod.collect()
     assert [(x["run"], x["repeat"]) for x in it["results"]] == [("r1", 1), ("r1", 2), ("r1", 3), ("r1", 4), ("r2", 1)]
     assert it["orig"] == ("r1", "files/o1.webp")
@@ -352,7 +352,7 @@ def test_set_failure_concurrent_writes_do_not_lose_updates(board_mod, tmp_path):
 # ── _image · static_file ────────────────────────
 @pytest.fixture
 def run_files(board_mod, tmp_path):
-    runs = tmp_path / "runs"
+    runs = tmp_path / "results" / "runs"
     (runs / "r1" / "files" / "sub").mkdir(parents=True)
     for rel in ("files/a.webp", "files/b.JPG", "files/sub/c.png", "files/note.txt", "orig.webp",
                 "review.html", "report.md", "results.jsonl", "carret.db", "storage/x.webp"):
@@ -527,8 +527,8 @@ def test_page_token_embedded_as_json(board_mod):
 
 
 def test_page_tabs_and_current_run_note(board_mod, tmp_path):
-    (tmp_path / "runs" / "r 1").mkdir()
-    (tmp_path / "runs" / "r 1" / "meta.json").write_text(json.dumps({"note": "<b>바꾼 것</b>", "repeat": 2,
+    (tmp_path / "results" / "runs" / "r 1").mkdir(parents=True)
+    (tmp_path / "results" / "runs" / "r 1" / "meta.json").write_text(json.dumps({"note": "<b>바꾼 것</b>", "repeat": 2,
                                                                      "composition": "auto"}))
     h = board_mod.page([_item(results=[_res(run="r 1")])], "tok", runs=["r2", "r 1"], current="r 1")
     assert '<a class="tab" href="/?run=r2">r2</a>' in h
@@ -543,7 +543,7 @@ def test_page_without_runs_has_no_tabs_or_note(board_mod):
 
 
 def _run(tmp_path, run_id, created, rows, files=True):
-    d = tmp_path / "runs" / run_id
+    d = tmp_path / "results" / "runs" / run_id
     d.mkdir(parents=True)
     (d / "meta.json").write_text(json.dumps({"created": created, "note": run_id}))
     (d / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))

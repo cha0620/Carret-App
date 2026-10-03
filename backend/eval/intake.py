@@ -1,14 +1,14 @@
-"""모은 사진 정리 — images/inbox/ → images/ + dataset.json, 라벨은 CSV 로 주고받는다.
+"""모은 사진 정리 — data/images/inbox/ → images/ + dataset.json, 라벨은 CSV 로 주고받는다.
 
     cd backend
     python eval/intake.py status                              # 층별 현황 · 라벨 남은 수 · 이상한 파일
     python eval/intake.py add                                 # inbox 사진을 dataset.json 에 추가 (dev/test 나눔)
     python eval/intake.py add --pilot                         # 파일럿: 층 목표에 세지 않고 전부 dev
-    python eval/intake.py export                              # 라벨 빈 항목 → images/inbox/labels.csv
-    python eval/intake.py merge images/inbox/labels.csv --by 이름   # 채운 라벨을 dataset.json 에
+    python eval/intake.py export                              # 라벨 빈 항목 → data/images/inbox/labels.csv
+    python eval/intake.py merge data/images/inbox/labels.csv --by 이름   # 채운 라벨을 dataset.json 에
 
 inbox 파일 이름은 `<층 코드>_<아무거나>.<확장자>` (코드는 STRATA). 게시글 주소는
-images/inbox/urls.txt 에 `파일이름 주소` 로 한 줄씩. 모으는 규칙은 COLLECT.md.
+data/images/inbox/urls.txt 에 `파일이름 주소` 로 한 줄씩. 모으는 규칙은 COLLECT.md.
 
 dev/test: 층마다 목표 수만큼 자리(dev·test)를 미리 섞어 두고, 그 층에 k 번째로 들어온 사진이 k 번째 자리를
 받는다 — 조금씩 add 해도 모은 순서(=검색어 순서)와 무관하게 dev 가 흩어진다. 한 번 단 split 은
@@ -30,10 +30,10 @@ from datetime import date
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-IMAGES = HERE / "images"
+IMAGES = HERE / "data" / "images"
 INBOX = IMAGES / "inbox"
-DATASET = HERE / "dataset.json"
-SPLIT_LOG = HERE / "splits.jsonl"
+DATASET = HERE / "data" / "dataset.json"
+SPLIT_LOG = HERE / "data" / "splits.jsonl"
 LABELS_CSV = INBOX / "labels.csv"
 
 # 층 코드 → (test 목표, dev 목표). COLLECT.md 의 표와 같게

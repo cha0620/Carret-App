@@ -49,6 +49,17 @@ class TransformRequest(BaseModel):
     composition: str | None = Field(
         default=None, description="고른 정석 구도 (GET /api/items 의 compositions[].key) — 구도의 틀로만 정리, 각도는 그대로")
 
+    sell: list[int] | None = Field(
+        default=None, max_length=12,
+        description="팔 물건 (POST /api/analyze 의 objects[].index, 여러 개 가능) — 없으면 분석 판단대로")
+
+    @field_validator("sell")
+    @classmethod
+    def _sell_indices(cls, v: list[int] | None) -> list[int] | None:
+        if v is not None and (not v or any(i < 0 or i >= 12 for i in v)):
+            raise ValueError("팔 물건을 하나 이상, 0~11 번호로 골라 주세요")
+        return v
+
     @field_validator("composition")
     @classmethod
     def _known_composition(cls, v: str | None) -> str | None:
@@ -126,8 +137,17 @@ class AnalyzeRequest(BaseModel):
     file_id: str = Field(pattern=r"^[a-f0-9]{32}$")
 
 
+class SellObject(BaseModel):
+    index: int
+    what: str
+    box: dict = Field(description="x1 · y1 · x2 · y2 (0-1000)")
+    for_sale: bool = Field(description="분석이 판매 물건으로 본 것 — 화면의 기본 체크")
+
+
 class AnalyzeResponse(BaseModel):
     item: str = "object"
+    item_count: int = 1
+    objects: list[SellObject] = Field(default_factory=list, description="사진 속 물건 — 사용자가 팔 물건을 고른다")
     photo_type: str | None = None
     wear_level: str | None = None
     text_level: str | None = None

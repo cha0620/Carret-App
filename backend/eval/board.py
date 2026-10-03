@@ -6,7 +6,7 @@
 - 첫 페이지: 사진마다 원본 + 모든 실행의 결과 (사람 판정 배지 · 채점 메모). 보존 실패 비율이 높은 사진부터
   (모든 실행을 합친 비율 — 옛 실행 · 기각한 실험도 들어간다)
 - 사진마다 "실패 모음" 체크 → dataset.json 의 set="failure" 를 바로 고친다 (해제하면 set · failure_added 를 지운다, 태그 · 근거 메모는 남긴다)
-- 그 밖에 여는 것: runs/*.html (compare · failures), runs/<id>/review.html · report.md, runs/<id>/files/ 의 사진만
+- 그 밖에 여는 것: runs/*.html (compare · failures), results/runs/<id>/review.html · report.md, results/runs/<id>/files/ 의 사진만
   (results.jsonl · carret.db · storage/ · 폴더 목록은 열지 않는다)
 
 사람 판정은 report.py 와 같은 규칙 (물건 표시 없으면 보존 통과, 평가자 여럿이면 다수결 · 동점은 실패, 오류난 회차는 판정 안 함).
@@ -44,7 +44,7 @@ ALLOWED_HOST_SUFFIXES = (".app.github.dev",)    # Codespaces 포트 포워딩
 def _notes(run_id: str) -> dict:
     """{(file, repeat): ["평가자: 메모"]} — 채점표의 note 칸."""
     out = defaultdict(list)
-    for p in sorted((HERE / "reviews" / run_id).glob("*.csv")):
+    for p in sorted((HERE / "results" / "reviews" / run_id).glob("*.csv")):
         if p.stem == "TEMPLATE":
             continue
         try:
@@ -68,7 +68,7 @@ def _results(run_id: str) -> list[dict]:
     """results.jsonl — 깨진 줄(중간에 멈춘 실행의 마지막 줄 등)은 건너뛴다."""
     out = []
     try:
-        text = (HERE / "runs" / run_id / "results.jsonl").read_text(encoding="utf-8")
+        text = (HERE / "results" / "runs" / run_id / "results.jsonl").read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return out
     for line in text.splitlines():
@@ -82,18 +82,18 @@ def _results(run_id: str) -> list[dict]:
 def viewable_runs() -> list[str]:
     """결과판에 나오는 실행 — 이미지가 남아 있는 것만, 최신 먼저 (지운 옛 실행 · analyze 만 한 실행은 빠진다)."""
     out = []
-    for p in (HERE / "runs").glob("*"):
+    for p in (HERE / "results" / "runs").glob("*"):
         if (p / "results.jsonl").exists() and (p / "files").is_dir() and any(
                 r.get("result") or r.get("error") for r in _results(p.name)):
             out.append(p.name)
     # 이름순이 아니라 만든 시각순 (같은 날 실행은 이름이 시각 순서가 아니다)
     return sorted(out, key=lambda r: (run_meta(r).get("created") or "",
-                                      (HERE / "runs" / r / "results.jsonl").stat().st_mtime), reverse=True)
+                                      (HERE / "results" / "runs" / r / "results.jsonl").stat().st_mtime), reverse=True)
 
 
 def run_meta(run_id: str) -> dict:
     try:
-        m = json.loads((HERE / "runs" / run_id / "meta.json").read_text(encoding="utf-8"))
+        m = json.loads((HERE / "results" / "runs" / run_id / "meta.json").read_text(encoding="utf-8"))
         return m if isinstance(m, dict) else {}
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return {}
@@ -104,11 +104,11 @@ def collect(only_run: str | None = None, include_unrun: bool = True) -> list[dic
     only_run 이면 그 실행만, include_unrun 이면 아직 안 돌린 사진도 (실패 모음 체크용)."""
     dataset = {e["file"]: e for e in intake.load_dataset()}
     by_file: dict[str, dict] = {}
-    runs = sorted(p.name for p in (HERE / "runs").glob("*") if (p / "results.jsonl").exists())
+    runs = sorted(p.name for p in (HERE / "results" / "runs").glob("*") if (p / "results.jsonl").exists())
     if only_run is not None:
         runs = [r for r in runs if r == only_run]
     for run_id in runs:
-        if not (HERE / "runs" / run_id / "files").is_dir():
+        if not (HERE / "results" / "runs" / run_id / "files").is_dir():
             continue              # 이미지를 지운 옛 실행 (EXPERIMENTS.md 에 없는 것 — 10-03 정리)
         rows = _results(run_id)
         if not any(r.get("result") or r.get("error") for r in rows):
@@ -173,24 +173,24 @@ def set_failure(file: str, on: bool) -> bool:
 
 # ── 파일 ────────────────────────────────────────
 def _image(run_id: str, rel) -> Path | None:
-    """runs/<run_id>/files/ 아래 실제 사진만 (심볼릭 링크로 밖을 가리키면 None)."""
+    """results/runs/<run_id>/files/ 아래 실제 사진만 (심볼릭 링크로 밖을 가리키면 None)."""
     rel = str(rel or "")
     if not rel or not run_id or "/" in run_id or run_id in (".", ".."):
         return None
-    runs = (HERE / "runs").resolve()
-    run_dir, files = HERE / "runs" / run_id, HERE / "runs" / run_id / "files"
+    runs = (HERE / "results" / "runs").resolve()
+    run_dir, files = HERE / "results" / "runs" / run_id, HERE / "results" / "runs" / run_id / "files"
     if run_dir.is_symlink() or files.is_symlink():      # files/ 자체가 밖을 가리키는 링크면 막는다
         return None
     base = runs / run_id / "files"
-    p = (HERE / "runs" / run_id / rel).resolve()
+    p = (HERE / "results" / "runs" / run_id / rel).resolve()
     return p if p.is_relative_to(base) and p.is_file() and p.suffix.lower() in IMAGE_TYPES else None
 
 
 def static_file(url_path: str) -> Path | None:
-    """열어 주는 파일: runs/*.html · runs/<id>/review.html · report.md · runs/<id>/files/<사진>. 나머지는 None."""
+    """열어 주는 파일: runs/*.html · results/runs/<id>/review.html · report.md · results/runs/<id>/files/<사진>. 나머지는 None."""
     from urllib.parse import unquote
     parts = [x for x in unquote(url_path).split("/") if x]
-    runs = (HERE / "runs").resolve()
+    runs = (HERE / "results" / "runs").resolve()
     if len(parts) == 1 and parts[0].endswith(".html"):
         p = (runs / parts[0]).resolve()
         return p if p.parent == runs and p.is_file() else None

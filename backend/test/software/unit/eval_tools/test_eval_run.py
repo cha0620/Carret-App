@@ -17,13 +17,13 @@ def _rows():
 
 def test_write_review_template_and_html(run_mod, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(run_mod, "HERE", tmp_path)
-    run_dir = tmp_path / "runs" / "r1"
+    run_dir = tmp_path / "results" / "runs" / "r1"
     run_dir.mkdir(parents=True)
     gt = {"bag.webp": {"photo_type": "product", "wear_level": "light", "key_texts": ["LV", "<Paris>"],
                        "note": "손잡이 <닳음>"}}
     run_mod._write_review("r1", run_dir, _rows(), gt)
 
-    tpl = tmp_path / "reviews" / "r1" / "TEMPLATE.csv"
+    tpl = tmp_path / "results" / "reviews" / "r1" / "TEMPLATE.csv"
     with open(tpl, encoding="utf-8") as f:
         reader = csv.DictReader(f)
         assert reader.fieldnames == run_mod.REVIEW_COLS
@@ -50,10 +50,10 @@ def test_write_review_template_and_html(run_mod, tmp_path, monkeypatch, capsys):
 def test_write_review_reviews_dir_lives_under_here_and_is_idempotent(run_mod, tmp_path, monkeypatch):
     monkeypatch.setattr(run_mod, "HERE", tmp_path)
     run_dir = tmp_path / "x"
-    run_dir.mkdir()
+    run_dir.mkdir(parents=True)
     run_mod._write_review("r", run_dir, [], {})
     run_mod._write_review("r", run_dir, [], {})           # 두 번 불러도 mkdir 가 안 터진다
-    with open(tmp_path / "reviews" / "r" / "TEMPLATE.csv", encoding="utf-8") as f:
+    with open(tmp_path / "results" / "reviews" / "r" / "TEMPLATE.csv", encoding="utf-8") as f:
         assert list(csv.reader(f)) == [run_mod.REVIEW_COLS]
     assert "<section>" not in (run_dir / "review.html").read_text(encoding="utf-8")
 
@@ -100,11 +100,11 @@ def _setup_main(run_mod, tmp_path, monkeypatch, entries, argv):
     import json
     import sys
     monkeypatch.setattr(run_mod, "HERE", tmp_path)
-    monkeypatch.setattr(run_mod, "IMAGES", tmp_path / "images")
-    (tmp_path / "images").mkdir()
+    monkeypatch.setattr(run_mod, "IMAGES", tmp_path / "data" / "images")
+    (tmp_path / "data" / "images").mkdir(parents=True)
     for e in entries:
-        (tmp_path / "images" / e["file"]).write_bytes(b"x")
-    (tmp_path / "dataset.json").write_text(json.dumps(entries), encoding="utf-8")
+        (tmp_path / "data" / "images" / e["file"]).write_bytes(b"x")
+    (tmp_path / "data" / "dataset.json").write_text(json.dumps(entries), encoding="utf-8")
     monkeypatch.setattr(sys, "argv", ["run.py", *argv])
     calls = []
     monkeypatch.setattr(run_mod, "_confirm", lambda n, full, yes: calls.append((n, full, yes)) or False)
@@ -124,7 +124,7 @@ def test_main_split_filters_and_skips_unlabeled(run_mod, tmp_path, monkeypatch, 
     assert run_mod.main() == 1                                 # _confirm False 에서 멈춤
     assert calls == [(2 * 3, True, False)]
     assert "라벨이 안 된 사진 1장은 건너뛴다: t_raw.jpg" in capsys.readouterr().out
-    assert not (tmp_path / "runs").exists()
+    assert not (tmp_path / "results" / "runs").exists()
 
     (tmp_path / "b").mkdir()
     calls = _setup_main(run_mod, tmp_path / "b", monkeypatch, entries, ["--split", "dev", "--analyze-only"])
@@ -144,10 +144,10 @@ def test_main_returns_1_when_nothing_left(run_mod, tmp_path, monkeypatch, capsys
 
 def test_main_stops_before_spending_when_vlm_fails(run_mod, monkeypatch, tmp_path, capsys):
     """한도 초과(429) 같은 실패면 비용을 쓰기 전에 멈춘다."""
-    images = tmp_path / "images"
-    images.mkdir()
+    images = tmp_path / "data" / "images"
+    images.mkdir(parents=True)
     (images / "a.jpg").write_bytes(b"x")
-    (tmp_path / "dataset.json").write_text(
+    (tmp_path / "data" / "dataset.json").write_text(
         '[{"file": "a.jpg", "photo_type": "product", "wear_level": "none", "text_level": "none"}]',
         encoding="utf-8")
     monkeypatch.setattr(run_mod, "HERE", tmp_path)
@@ -196,9 +196,9 @@ def test_review_cols_has_failure_tags_and_matches_grade(run_mod):
 def test_template_csv_has_failure_tags_blank(run_mod, tmp_path, monkeypatch):
     monkeypatch.setattr(run_mod, "HERE", tmp_path)
     run_dir = tmp_path / "x"
-    run_dir.mkdir()
+    run_dir.mkdir(parents=True)
     run_mod._write_review("r", run_dir, _rows(), {})
-    with open(tmp_path / "reviews" / "r" / "TEMPLATE.csv", encoding="utf-8") as f:
+    with open(tmp_path / "results" / "reviews" / "r" / "TEMPLATE.csv", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     assert rows and all(r["failure_tags"] == "" for r in rows)
 
@@ -206,7 +206,7 @@ def test_template_csv_has_failure_tags_blank(run_mod, tmp_path, monkeypatch):
 def test_write_review_shows_prompt_used_escaped(run_mod, tmp_path, monkeypatch):
     monkeypatch.setattr(run_mod, "HERE", tmp_path)
     run_dir = tmp_path / "x"
-    run_dir.mkdir()
+    run_dir.mkdir(parents=True)
     rows = _rows()
     rows[0]["prompt_used"] = 'white bg <script>alert("x")</script> & keep'
     run_mod._write_review("r", run_dir, rows, {})
@@ -221,7 +221,7 @@ def test_write_review_shows_prompt_used_escaped(run_mod, tmp_path, monkeypatch):
 def test_write_review_prompt_used_empty_is_dash(run_mod, tmp_path, monkeypatch, value):
     monkeypatch.setattr(run_mod, "HERE", tmp_path)
     run_dir = tmp_path / "x"
-    run_dir.mkdir()
+    run_dir.mkdir(parents=True)
     rows = [dict(_rows()[0], prompt_used=value)]
     run_mod._write_review("r", run_dir, rows, {})
     assert '<p class="prompt">-</p>' in (run_dir / "review.html").read_text(encoding="utf-8")
@@ -287,10 +287,10 @@ def _setup_lock_main(run_mod, tmp_path, monkeypatch, argv):
     import sys
     from app.core import db
     monkeypatch.setattr(run_mod, "HERE", tmp_path)
-    monkeypatch.setattr(run_mod, "IMAGES", tmp_path / "images")
-    (tmp_path / "images").mkdir(exist_ok=True)
-    (tmp_path / "images" / "a.jpg").write_bytes(b"x")
-    (tmp_path / "dataset.json").write_text(json.dumps([_lab("a.jpg")]), encoding="utf-8")
+    monkeypatch.setattr(run_mod, "IMAGES", tmp_path / "data" / "images")
+    (tmp_path / "data" / "images").mkdir(exist_ok=True)
+    (tmp_path / "data" / "images" / "a.jpg").write_bytes(b"x")
+    (tmp_path / "data" / "dataset.json").write_text(json.dumps([_lab("a.jpg")]), encoding="utf-8")
     monkeypatch.setattr(sys, "argv", ["run.py", *argv])
     monkeypatch.setattr(run_mod, "_isolate", lambda d: None)
     monkeypatch.setattr(db, "init_db", lambda: None)
@@ -314,7 +314,7 @@ def test_main_lock_file_overrides_and_records_meta(run_mod, presets, tmp_path, m
                             ["--analyze-only", "--yes", "--run-id", "t", "--lock-file", str(lock)])
     assert run_mod.main() == 0
     assert seen == ["Keep it. Do not repair."]                         # 공백·줄바꿈을 한 칸으로
-    meta = json.loads((tmp_path / "runs" / "t" / "meta.json").read_text(encoding="utf-8"))
+    meta = json.loads((tmp_path / "results" / "runs" / "t" / "meta.json").read_text(encoding="utf-8"))
     assert meta["lock_file"] == "lock.txt"                              # 경로가 아니라 파일 이름만 (기계마다 달라 비교 오탐)
 
 
@@ -324,15 +324,15 @@ def test_main_without_lock_file_meta_none_and_lock_unchanged(run_mod, presets, t
     seen = _setup_lock_main(run_mod, tmp_path, monkeypatch, ["--analyze-only", "--yes", "--run-id", "t"])
     assert run_mod.main() == 0
     assert seen == [orig]
-    assert json.loads((tmp_path / "runs" / "t" / "meta.json").read_text(encoding="utf-8"))["lock_file"] is None
+    assert json.loads((tmp_path / "results" / "runs" / "t" / "meta.json").read_text(encoding="utf-8"))["lock_file"] is None
 
 
 def test_main_lock_file_relative_to_eval_dir(run_mod, presets, tmp_path, monkeypatch):
-    (tmp_path / "locks").mkdir()
-    (tmp_path / "locks" / "a.txt").write_text("REL LOCK.", encoding="utf-8")
+    (tmp_path / "data" / "locks").mkdir(parents=True)
+    (tmp_path / "data" / "locks" / "a.txt").write_text("REL LOCK.", encoding="utf-8")
     seen = _setup_lock_main(run_mod, tmp_path, monkeypatch,
                             ["--analyze-only", "--yes", "--run-id", "t", "--lock-file", "locks/a.txt"])
-    monkeypatch.chdir(tmp_path / "images")                            # cwd 에는 locks/ 가 없다
+    monkeypatch.chdir(tmp_path / "data" / "images")                            # cwd 에는 locks/ 가 없다
     assert run_mod.main() == 0
     assert seen == ["REL LOCK."]
 
@@ -346,7 +346,7 @@ def test_main_lock_file_empty_returns_1_before_anything(run_mod, tmp_path, monke
     monkeypatch.setattr(sys, "argv", ["run.py", "--yes", "--lock-file", str(lock)])
     assert run_mod.main() == 1
     assert "이 비었다" in capsys.readouterr().out
-    assert not (tmp_path / "runs").exists()
+    assert not (tmp_path / "results" / "runs").exists()
 
 
 @pytest.mark.parametrize("make_dir", [False, True])
@@ -355,11 +355,11 @@ def test_main_lock_file_missing_or_directory_returns_1(run_mod, tmp_path, monkey
     monkeypatch.setattr(run_mod, "HERE", tmp_path)
     monkeypatch.chdir(tmp_path)
     if make_dir:
-        (tmp_path / "locks").mkdir()                                  # 파일이 아니라 디렉터리
+        (tmp_path / "data" / "locks").mkdir(parents=True)                                  # 파일이 아니라 디렉터리
     monkeypatch.setattr(sys, "argv", ["run.py", "--yes", "--lock-file", "locks"])
     assert run_mod.main() == 1
     assert "잠금 파일이 없다: locks" in capsys.readouterr().out
-    assert not (tmp_path / "runs").exists()
+    assert not (tmp_path / "results" / "runs").exists()
 
 
 # ── select ──────────────────────────────────────
@@ -467,3 +467,54 @@ def test_dataset_sha_unicode_label(run_mod, tmp_path):
     a = run_mod.dataset_sha([{"file": "x.webp", "key_texts": ["루이비통"]}], tmp_path)
     b = run_mod.dataset_sha([{"file": "x.webp", "key_texts": ["샤넬"]}], tmp_path)
     assert a != b
+
+
+# ══ 10-03: _full_row 가 dataset 정답 개수를 answer_count 로 넘긴다 ═══════
+@pytest.fixture
+def full_row(run_mod, tmp_path, monkeypatch, make_png):
+    """파이프라인을 가짜로 — run_transform 이 받은 인자를 기록하고 결과 이미지만 저장.
+    st.prompt 로 돌려줄 prompt_used 를 정한다."""
+    import types
+    from app.services import pipeline
+    from app.services.persistence import storage
+    images, files = tmp_path / "data" / "images", tmp_path / "files"
+    images.mkdir(parents=True)
+    files.mkdir(parents=True)
+    png = make_png()
+    (images / "cd.png").write_bytes(png)
+    monkeypatch.setattr(run_mod, "IMAGES", images)
+    st = types.SimpleNamespace(calls=[], prompt="P")
+
+    def run_transform(fid, preset, **kw):
+        st.calls.append(kw)
+        storage.save("result", f"{fid}_{preset}.jpg", png)
+        return {"prompt_used": st.prompt}
+
+    monkeypatch.setattr(pipeline, "run_transform", run_transform)
+    st.call = lambda entry, composition=None: run_mod._full_row(entry, png, 1, "studio_white", files, composition)
+    return st
+
+
+@pytest.mark.parametrize("entry,expected", [
+    ({"file": "cd.png", "item_count": 2}, 2),
+    ({"file": "cd.png"}, None),
+    ({"file": "cd.png", "item_count": None}, None),
+])
+def test_full_row_passes_answer_count(full_row, entry, expected):
+    full_row.call(entry)
+    assert full_row.calls == [{"composition": None, "answer_count": expected}]
+
+
+def test_full_row_composition_recorded_only_when_in_prompt(full_row):
+    from app.services.compositions import BY_KEY
+    full_row.prompt = "bg " + BY_KEY["shoes_side"]["prompt"] + " lock"
+    assert full_row.call({"file": "cd.png"}, "shoes_side")["composition"] == "shoes_side"
+    full_row.prompt = "bg lock"                          # 파이프라인이 뺐다 (물건 여러 개 등)
+    assert full_row.call({"file": "cd.png", "item_count": 2}, "shoes_side")["composition"] is None
+
+
+@pytest.mark.parametrize("key,prompt,expected", [
+    ("shoes_side", None, False), ("shoes_side", "", False), ("nope", "anything", False),
+])
+def test_composition_in_edge_cases(run_mod, key, prompt, expected):
+    assert run_mod._composition_in(key, prompt) is expected

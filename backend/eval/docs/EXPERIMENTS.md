@@ -9,7 +9,7 @@
 2. 한 번에 하나만 바꾼다. 처음엔 작게 (`--set failure` 또는 `--only`, `--repeat 2`)
    - 프롬프트: `--lock-file locks/<이름>.txt` · 모델: 환경변수 (`FAL_MODEL=… VLM_MODEL=…`)
    - 실행 이름 `YYYYMMDD-<바꾼 축>-<변형>`, `--note` 에 가설 한 줄
-3. 채점: Claude 1차(`reviews/<run>/claude.csv`) → 사람 (`python eval/grade.py <run> --name <이름>`)
+3. 채점: Claude 1차(`results/reviews/<run>/claude.csv`) → 사람 (`python eval/grade.py <run> --name <이름>`)
 4. 비교: `python eval/compare.py <기준> <실험>` → 숫자표를 결과 칸에 (누가 채점했는지 같이). 페이지는 `runs/` 아래라 로컬에만 있다
    - 평가자가 다르면 `--rater <이름>` 으로 같은 사람 채점끼리
 5. 판정
@@ -31,7 +31,9 @@
 
 | 날짜 | 실행 (기준 → 실험) | 바꾼 것 | 가설 · 합격선 | 결과 (보존 통과 · 누가 채점) | 판정 | 링크 |
 |---|---|---|---|---|---|---|
-| 10-01 | `20261001-listing-clothes` → `20261001-lock-trim` | 잠금 문구: 각도 유지 · 손 조건 문장 빼고 세 덩어리로 (소급 기록) | 짧게 줄여도 보존이 나빠지지 않는다 | 0/8 → 5/9 · claude 1차만 (채점 덜 됨 · 사진 2장 다름 · 옛 실행이라 조건 기록 없음) | 보류 | study 10-01 §2 · 로컬 `runs/compare-…lock-trim.html` |
+| 10-01 | `20261001-listing-clothes` → `20261001-lock-trim` | 잠금 문구: 각도 유지 · 손 조건 문장 빼고 세 덩어리로 (소급 기록) | 짧게 줄여도 보존이 나빠지지 않는다 | 0/8 → 5/9 · claude 1차만 (채점 덜 됨 · 사진 2장 다름 · 옛 실행이라 조건 기록 없음) | 보류 | study 10-01 §2 · 로컬 `results/runs/compare-…lock-trim.html` |
 | 10-03 | (없음) → `20261003-comp-try` | 예시 사진에서 뽑은 구도 문장을 종류마다 붙임 (`--composition auto`), 6장 × 1 | 구도 문장을 붙이면 예시처럼 정리된다 | 구도 문장이 실제로 쓰인 건 2/6 — 책 · 음반은 document, 시계는 text_dense 라 배경 교체로 가서 생성 자체를 안 함 | 보류 | study 10-03 |
 | 10-03 | `20261003-comp-try` → `20261003-comp-try2` | analyze 규칙: 책 · CD · 음반을 document → product (글자 양으로), 3장 × 1 | 글자 적은 음반은 생성으로 가서 구도가 붙는다 | 음반 생성됨 — 그런데 LP 를 CD 케이스로 지어냄 (cd_front 문장 탓) → album_front 로 바꿈. 책 · 만화는 text_dense 로 배경 교체 | 보류 | study 10-03 |
 | 10-03 | `20261003-comp-try2` → `20261003-album-front` | cd_front → album_front (형태 그대로 · 케이스 지어내지 말 것) + 각도 맞을 때만 구도, 음반 2장 × 1 | LP 는 LP 로 남는다 | album1(LP): 케이스 안 지어냄 ✓ · album2(CD 2장): 케이스 · 비닐이 사라지고 한 장짜리 슬리브로 바뀜 ✗ (claude 눈으로) | 보류 | study 10-03 |
+| 10-03 | `20261003-album-front` → `20261003-album-front2` | album_front 문장에서 형태 이름 뺌 ("포장 · 비닐 · 스티커 그대로") + 물건 여러 개면 구도 생략, 음반 2장 × 1 | 형태를 안 바꾼다 | album1(LP): 없던 비닐 · 투명 케이스 테를 지어냄 ✗ — "비닐 그대로" 라는 말이 단서가 됨 · album2(CD 2장): 구도는 생략됐지만 2장 → 1장 ✗ — 공통 잠금("가운데 · 꽉 채워 · 다른 물건 빼") 탓 (claude 눈으로) | 보류 | study 10-03 |
+

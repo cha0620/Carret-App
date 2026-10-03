@@ -26,8 +26,8 @@ if str(HERE.parent) not in sys.path:
 
 from app.services import compositions, coverage  # noqa: E402
 
-REFS_DIR = HERE / "refs"
-REFS_JSON = HERE / "refs.json"
+REFS_DIR = HERE / "data" / "refs"
+REFS_JSON = HERE / "data" / "refs.json"
 SVG_DIR = HERE.parent.parent / "frontend" / "img" / "compositions"
 MIN_EXAMPLES = 3      # 구도 하나를 숫자로 정하려면 예시가 이만큼은 있어야 한다
 NEW = "new:"          # compositions.py 에 아직 없는 구도 — "new:<이름>"

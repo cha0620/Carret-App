@@ -161,7 +161,8 @@ def analyze(image_bytes: bytes) -> dict:
     """파이프라인 첫 단계 (VLM 1회) — 예전 classify + detect 를 합친 것.
 
     반환: {"item", "considered", "anchors"(아이덴티티 마크만, category="print"), "item_box",
-           "photo_type", "wear_level", "watermark", "text_level"}
+           "photo_type", "wear_level", "watermark", "text_level", "item_count",
+           "objects"(사진 속 물건 [{what, box, for_sale}] — 사용자가 팔 물건을 고른다), "item_texts"}
     하자는 목록으로 뽑지 않고 wear_level 로만 본다 (plan 이 heavy 면 생성 전 배경 교체).
     응답에 marks 목록이 없으면(깨진 JSON → {}) 예외 — 빈 목록을 "지킬 게 없음"으로 읽으면
     검증 없이 통과한다 (detect strict 와 같은 이유). 모르는 분류 값은 보수적인 쪽으로:
@@ -192,11 +193,30 @@ def analyze(image_bytes: bytes) -> dict:
         "watermark": _level(data, "watermark", WATERMARKS, "none"),
         "text_level": level,
         "item_count": _count(data.get("item_count")),
+        "objects": _parse_objects(data.get("objects")),
         # 물건 위 글자 (10-01, 글자 읽기 호출을 합침). 응답에 texts 목록이 없으면(옛 프롬프트) 키를 두지
         # 않는다 — read_text 가 예전처럼 따로 읽는다. 글자 수준이 simple 이 아니면 쓰지 않으니 비운다
         **({"item_texts": _parse_texts(data["texts"]) if level == "simple" else []}
            if isinstance(data.get("texts"), list) else {}),
     }
+
+
+MAX_OBJECTS = 12
+
+
+def _parse_objects(raw) -> list[dict]:
+    """objects → [{"what", "box", "for_sale"}] — 사용자가 팔 물건을 고르는 목록 (10-03).
+    이름이나 박스가 이상한 항목은 뺀다 (고를 수 없는 칸이 화면에 나오지 않게). 없으면 빈 목록."""
+    out = []
+    for o in raw if isinstance(raw, list) else []:
+        if not isinstance(o, dict):
+            continue
+        what, box = _text(o.get("what")), _from_box_2d({"box_2d": o.get("box_2d")})
+        if what and _has_box(box):
+            out.append({"what": what, "box": _box(box), "for_sale": o.get("for_sale") is not False})
+        if len(out) >= MAX_OBJECTS:
+            break
+    return out
 
 
 def _count(v) -> int:
@@ -423,3 +443,32 @@ def _has_box(c: dict) -> bool:
                for k in ("x1", "y1", "x2", "y2")):
         return False
     return c["x1"] != c["x2"] and c["y1"] != c["y2"]
+
+
+def added_text(original: bytes, result: bytes) -> list[dict]:
+    """원본에 없던 글자 · 로고가 생성본에 생겼나 (10-03, VLM 1회 · 두 장 비교).
+    반환: [{"what", "where"}] — 없으면 빈 목록. 응답이 깨지면 예외 (호출부가 "확인 못 함"으로)."""
+    client = get_client()
+    prompt = P.added_text_prompt()
+    with observe("added_text", as_type="generation", model=vlm_model("added_text"), input=prompt) as obs:
+        resp = client.models.generate_content(
+            model=vlm_model("added_text"),
+            contents=["Photo 1 (original):", image_part(original, "image/jpeg", "added_text"),
+                      "Photo 2 (redrawn):", image_part(result, "image/jpeg", "added_text"), prompt],
+            config=types.GenerateContentConfig(temperature=0, response_mime_type="application/json",
+                                               thinking_config=thinking("added_text")),
+        )
+        data = json.loads(resp.text)
+        if obs is not None:
+            obs.update(output=data, usage_details=_usage(resp))
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        data = data[0]
+    if not isinstance(data, dict) or not isinstance(data.get("added"), list):
+        raise ValueError(f"added_text: 응답에 added 목록 없음: {str(data)[:200]}")
+    out = []
+    for a in data["added"]:
+        what = _text(a.get("what")) if isinstance(a, dict) else ""
+        if what:
+            out.append({"what": what, "where": _text(a.get("where"))})
+    return out
+

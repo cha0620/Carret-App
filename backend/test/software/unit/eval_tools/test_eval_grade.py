@@ -217,7 +217,7 @@ def test_write_sheet_failure_leaves_original_and_no_tmp(grade_mod, tmp_path, mon
 @pytest.fixture
 def fake_run(grade_mod, tmp_path):
     """층 코드 이름(none_/doc_/edge_)과 __r 가 든 실제 같은 파일 이름 — HTML 에 새면 안 된다."""
-    run_dir = tmp_path / "runs" / RUN_ID
+    run_dir = tmp_path / "results" / "runs" / RUN_ID
     (run_dir / "files").mkdir(parents=True)
     results = []
     for stem in ("none_mug", "doc_album", "edge_shoe"):
@@ -275,7 +275,7 @@ def test_page_token_is_json_escaped(grade_mod):
 def server(grade_mod, fake_run, tmp_path):
     rows = grade_mod.load_rows(RUN_ID)
     gt = {"doc_album.webp": {"key_texts": ["LOGO"]}}
-    sheet_path = tmp_path / "reviews" / RUN_ID / f"{NAME}.csv"
+    sheet_path = tmp_path / "results" / "reviews" / RUN_ID / f"{NAME}.csv"
     sheet_path.parent.mkdir(parents=True)
     srv = ThreadingHTTPServer(("127.0.0.1", 0), grade_mod.make_handler(RUN_ID, NAME, rows, gt, sheet_path))
     threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()

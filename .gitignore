@@ -47,8 +47,9 @@ llm-wiki/
 backend/storage/real_defects/
 
 # eval 사진·실행 결과 (중고 거래 게시물 = 남의 사진) — 정답(dataset.json)·채점(reviews/)만 올린다
-backend/eval/images/
-backend/eval/refs/
+backend/eval/data/images/
+backend/eval/data/refs/
 phone_img/
-backend/eval/runs/
-backend/eval/dataset.json.lock
+backend/eval/results/runs/
+backend/eval/results/archive/
+backend/eval/data/dataset.json.lock

@@ -153,6 +153,28 @@ def _drop_thin(binary: np.ndarray) -> np.ndarray:
                             cv2.getStructuringElement(cv2.MORPH_RECT, (k, k)))
 
 
+def _px(b: dict, w: int, h: int) -> tuple[int, int, int, int]:
+    return (max(0, int(b["x1"]) * w // 1000), max(0, int(b["y1"]) * h // 1000),
+            min(w, int(b["x2"]) * w // 1000), min(h, int(b["y2"]) * h // 1000))
+
+
+def drop_boxes(alpha: np.ndarray, drop: list[dict] | None, keep: list[dict] | None = None) -> np.ndarray:
+    """사용자가 팔지 않는다고 고른 물건 자리를 지운다 (10-03) — 고른 물건 박스와 겹치는 곳은 남긴다."""
+    if not drop:
+        return alpha
+    h, w = alpha.shape
+    gone = np.zeros_like(alpha, dtype=bool)
+    for b in drop:
+        x1, y1, x2, y2 = _px(b, w, h)
+        gone[y1:y2, x1:x2] = True
+    for b in keep or []:
+        x1, y1, x2, y2 = _px(b, w, h)
+        gone[y1:y2, x1:x2] = False
+    out = alpha.copy()
+    out[gone] = 0
+    return out
+
+
 def clean_alpha(alpha: np.ndarray, item_box: dict | None = None, *, flat: bool = False) -> np.ndarray:
     """오리기 잔여물 정리: 물건 박스 밖은 지우고, 가장 큰 덩어리(와 그 5% 이상인
     덩어리)만 남긴다 — 어수선한 배경에서 벽 조각이 뿌옇게 남는 문제 대응.
@@ -428,12 +450,14 @@ def compose_flat(image_bytes: bytes, bg_color: tuple, item_box: dict | None = No
 
 
 def compose(image_bytes: bytes, bg_color: tuple, item_box: dict | None = None,
-            alpha: np.ndarray | None = None, *, flat: bool = False) -> bytes:
+            alpha: np.ndarray | None = None, *, flat: bool = False,
+            drop: list[dict] | None = None, keep: list[dict] | None = None) -> bytes:
     """원본 → 물건만 오려 CANVAS 정사각 배경 가운데에 놓고 바닥 그림자를 깐 JPEG.
-    물건 픽셀은 크기 조정(리샘플링) 외에는 손대지 않는다."""
+    물건 픽셀은 크기 조정(리샘플링) 외에는 손대지 않는다. drop = 팔지 않는다고 고른 물건 박스 (지운다)."""
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     if alpha is None:
         alpha = original_alpha(image_bytes, img)
+    alpha = drop_boxes(alpha, drop, keep)
     item, mask = _item_and_mask(img, alpha, item_box, flat=flat)
 
     room = CANVAS * (1 - 2 * MARGIN)

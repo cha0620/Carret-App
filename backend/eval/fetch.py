@@ -1,4 +1,4 @@
-"""dataset.json 의 url → eval/images/ 로 내려받기 (이미 있으면 건너뜀).
+"""dataset.json 의 url → eval/data/images/ 로 내려받기 (이미 있으면 건너뜀).
 
     cd backend && python eval/fetch.py
 
@@ -11,13 +11,13 @@ import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).parent
-IMAGES = HERE / "images"
+IMAGES = HERE / "data" / "images"
 
 
 def main() -> int:
     IMAGES.mkdir(exist_ok=True)
     missing = 0
-    for e in json.loads((HERE / "dataset.json").read_text(encoding="utf-8")):
+    for e in json.loads((HERE / "data" / "dataset.json").read_text(encoding="utf-8")):
         dst = IMAGES / e["file"]
         if dst.exists():
             continue

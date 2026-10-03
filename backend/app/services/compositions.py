@@ -72,12 +72,11 @@ COMPOSITIONS: dict[str, list[dict]] = {
         {"key": "album_front", "label": "음반 · 앞면",
          "desc": "앞면을 정면으로 — 케이스 · 비닐 · 개수는 원본 그대로",
          "views": {"front", "front_34"},
-         # 형태 이름(LP · CD)을 쓰지 않는다 — 쓰면 모델이 형태를 다시 고른다 (10-03: LP→CD 케이스, CD→LP 슬리브)
+         # 원본에 없을 수 있는 물건 이름(LP · CD · 케이스 · 비닐)을 쓰지 않는다 — "그대로"라고 해도 그걸 그린다
+         # (10-03: LP→CD 케이스, CD→LP 슬리브, "비닐 그대로" → 없던 비닐)
          "prompt": "Frame it as a standard music album listing shot: the front cover facing the camera straight "
                    "on, square to the frame and centered with even margins, filling about 80% of the frame, on a "
-                   "plain white background. Keep its packaging exactly as photographed — the same kind of "
-                   "sleeve or case, the same shrink wrap and stickers, the same size and proportions — and add "
-                   "nothing that is not in the original photo."},
+                   "plain white background. Keep the packaging exactly as photographed and add nothing."},
     ],
 }
 BY_KEY = {c["key"]: c for cs in COMPOSITIONS.values() for c in cs}

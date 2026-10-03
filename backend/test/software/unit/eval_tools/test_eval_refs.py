@@ -41,13 +41,13 @@ def fake(refs_mod, monkeypatch, tmp_path):
     monkeypatch.setattr(compositions, "BY_KEY", {c["key"]: c for cs in FAKE_COMPS.values() for c in cs})
     monkeypatch.setattr(coverage, "REQUIRED", FAKE_REQUIRED)
     monkeypatch.setattr(coverage, "CATEGORIES", tuple(FAKE_REQUIRED))
-    refs_dir = tmp_path / "refs"
+    refs_dir = tmp_path / "data" / "refs"
     svg_dir = tmp_path / "svg"
-    refs_dir.mkdir()
-    svg_dir.mkdir()
+    refs_dir.mkdir(parents=True)
+    svg_dir.mkdir(parents=True)
     monkeypatch.setattr(refs_mod, "REFS_DIR", refs_dir)
     monkeypatch.setattr(refs_mod, "SVG_DIR", svg_dir)
-    monkeypatch.setattr(refs_mod, "REFS_JSON", tmp_path / "refs.json")
+    monkeypatch.setattr(refs_mod, "REFS_JSON", tmp_path / "data" / "refs.json")
     return refs_mod, refs_dir, svg_dir
 
 
@@ -652,6 +652,6 @@ def test_main_requires_subcommand(refs_mod):
 def test_status_smoke_with_real_definitions(refs_mod, monkeypatch, tmp_path, capsys):
     """실제 compositions · coverage 정의로 status 가 오류 없이 0 (예시 0장)."""
     monkeypatch.setattr(refs_mod, "REFS_JSON", tmp_path / "none.json")
-    monkeypatch.setattr(refs_mod, "REFS_DIR", tmp_path / "refs")
+    monkeypatch.setattr(refs_mod, "REFS_DIR", tmp_path / "data" / "refs")
     assert refs_mod.cmd_status(None) == 0
     assert "예시 0장" in capsys.readouterr().out

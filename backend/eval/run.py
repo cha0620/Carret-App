@@ -1,4 +1,4 @@
-"""평가 실행 — dataset.json 의 사진을 파이프라인에 돌려 결과를 runs/<run_id>/ 에 모은다.
+"""평가 실행 — dataset.json 의 사진을 파이프라인에 돌려 결과를 results/runs/<run_id>/ 에 모은다.
 
     cd backend
     python eval/run.py --analyze-only            # analyze(VLM)만 — 분류 정확도, 사진당 약 $0.005
@@ -6,15 +6,15 @@
     python eval/run.py --repeat 2 --only book.webp,bike.webp
     python eval/run.py --split test --repeat 2   # 동결된 test 만 (dev 는 조정용)
     python eval/run.py --set failure --repeat 2  # 실패 모음만 (dataset.json 의 set="failure")
-    python eval/run.py --lock-file eval/locks/surface.txt   # 잠금 문구만 바꿔 보기 (코드는 그대로, meta 에 문구가 남는다)
+    python eval/run.py --lock-file eval/data/locks/surface.txt   # 잠금 문구만 바꿔 보기 (코드는 그대로, meta 에 문구가 남는다)
 
 라벨(photo_type · wear_level · text_level)이 안 된 사진은 건너뛴다 — 정답 없이 돌리면 집계가 틀린다.
 
 전체 실행이 끝나면 사람 채점용 파일이 생긴다:
-  runs/<run_id>/review.html        원본 | 결과를 나란히 (브라우저로 열기)
-  reviews/<run_id>/TEMPLATE.csv    채점표 — 평가자마다 <이름>.csv 로 복사해 채운다 (README 참고)
+  results/runs/<run_id>/review.html        원본 | 결과를 나란히 (브라우저로 열기)
+  results/reviews/<run_id>/TEMPLATE.csv    채점표 — 평가자마다 <이름>.csv 로 복사해 채운다 (README 참고)
 
-앱의 storage·DB 는 건드리지 않는다 — 이 실행 전용 폴더(runs/<run_id>/storage, carret.db)를 쓴다.
+앱의 storage·DB 는 건드리지 않는다 — 이 실행 전용 폴더(results/runs/<run_id>/storage, carret.db)를 쓴다.
 """
 import argparse
 import csv
@@ -31,7 +31,7 @@ from datetime import datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-IMAGES = HERE / "images"
+IMAGES = HERE / "data" / "images"
 COST_ANALYZE, COST_FULL = 0.005, 0.04   # 사진 1장 대략 (09-26 실측 기준)
 LABEL_VALUES = {"photo_type": ("document", "inside_view", "product"),   # intake.ENUMS 와 같게
                 "wear_level": ("none", "light", "heavy"),
@@ -82,6 +82,7 @@ def _conditions() -> dict:
     from app.services.ai.generator import GEN_STEPS
     return {"gen_model": settings.fal_model, "gen_steps": GEN_STEPS, "vlm_model": settings.VLM_MODEL,
             "lock_sha": hashlib.sha1(SECONDHAND_LOCK.encode()).hexdigest()[:10], "lock": SECONDHAND_LOCK,
+            "added_text_gate": settings.added_text_gate,
             **_git()}
 
 
@@ -137,6 +138,12 @@ def _view_of(data: bytes) -> str | None:
         return None
 
 
+def _composition_in(key: str, prompt: str | None) -> bool:
+    from app.services import compositions
+    text = compositions.BY_KEY.get(key, {}).get("prompt")
+    return bool(text and prompt and text in prompt)
+
+
 def _full_row(e: dict, data: bytes, rep: int, preset: str, files_dir: Path, composition: str | None = None) -> dict:
     from app.services import pipeline
     from app.services.persistence import storage, store
@@ -145,7 +152,8 @@ def _full_row(e: dict, data: bytes, rep: int, preset: str, files_dir: Path, comp
     storage.save("original", f"{fid}{ext}", data)
     store.record_original(fid, ext, "eval", original_name=e["file"], size_bytes=len(data))
     t0 = time.time()
-    out = pipeline.run_transform(fid, preset, composition=composition)
+    # 팔 물건을 고르는 화면이 없다 — 정답 개수(dataset.json item_count)가 있으면 그대로 (10-03)
+    out = pipeline.run_transform(fid, preset, composition=composition, answer_count=e.get("item_count"))
     elapsed = time.time() - t0
     name = f"{fid}_{preset}"
     inspect = json.loads(storage.load("quality", f"{name}_inspect.json") or b"{}")
@@ -169,16 +177,18 @@ def _full_row(e: dict, data: bytes, rep: int, preset: str, files_dir: Path, comp
             "composite_reason", "gate_passed", "verify_failed", "detect_failed",
             "visual_similarity", "item_similarity", "item_patch_similarity", "gen_attempts")},
         "gate_checks": inspect.get("gate_checks") or [],
+        "added_text": inspect.get("added_text") or [],
         "checks": inspect.get("checks") or [],
         "judge": {k: quality.get(k) for k in ("fidelity", "realism", "trust")} if quality else None,
         "prompt_used": out.get("prompt_used"),
-        "composition": composition,
+        # 실제로 붙었나 — 파이프라인이 더 빼는 경우가 있다 (물건 여러 개 · 생성 안 하는 경로)
+        "composition": composition if composition and _composition_in(composition, out.get("prompt_used")) else None,
     }
 
 
 def _write_review(run_id: str, run_dir: Path, rows: list, gt: dict) -> None:
     """채점표 템플릿 + 나란히 보기 HTML."""
-    rdir = HERE / "reviews" / run_id
+    rdir = HERE / "results" / "reviews" / run_id
     rdir.mkdir(parents=True, exist_ok=True)
     with open(rdir / "TEMPLATE.csv", "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=REVIEW_COLS)
@@ -269,8 +279,9 @@ def main() -> int:
     lock = ""
     if a.lock_file:
         path = Path(a.lock_file)
-        if not path.exists() and (HERE / path).exists():   # eval/ 기준 경로도 받는다 (locks/x.txt)
-            path = HERE / path
+        for base in (HERE, HERE / "data"):   # eval/ · eval/data/ 기준 경로도 받는다 (locks/x.txt)
+            if not path.exists() and (base / path).exists():
+                path = base / path
         if not path.is_file():
             print(f"잠금 파일이 없다: {a.lock_file}")
             return 1
@@ -279,7 +290,7 @@ def main() -> int:
             print(f"{a.lock_file} 이 비었다")
             return 1
 
-    dataset = select(json.loads((HERE / "dataset.json").read_text(encoding="utf-8")), a.only, a.split, a.set_)
+    dataset = select(json.loads((HERE / "data" / "dataset.json").read_text(encoding="utf-8")), a.only, a.split, a.set_)
     unlabeled = [e["file"] for e in dataset
                  if not all(e.get(k) in v for k, v in LABEL_VALUES.items())]
     if unlabeled:
@@ -298,7 +309,7 @@ def main() -> int:
         return 1
 
     run_id = a.run_id or datetime.now().strftime("%Y%m%d-%H%M") + ("-full" if full else "-analyze")
-    run_dir = HERE / "runs" / run_id
+    run_dir = HERE / "results" / "runs" / run_id
     files_dir = run_dir / "files"
     files_dir.mkdir(parents=True, exist_ok=True)
     _isolate(run_dir)

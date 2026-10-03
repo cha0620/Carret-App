@@ -44,7 +44,9 @@ def analyze(req: AnalyzeRequest):
         raise HTTPException(status_code=503, detail="분석하지 못했습니다 — 변환은 할 수 있어요")
     reason = pipeline._composite_first_reason(out)
     route = "generate" if reason is None else "original" if reason == "inside_view" else "composite"
-    return AnalyzeResponse(item=out.get("item", "object"), photo_type=out.get("photo_type"),
+    objects = [{"index": i, **o} for i, o in enumerate(out.get("objects") or [])]
+    return AnalyzeResponse(item=out.get("item", "object"), item_count=out.get("item_count") or 1,
+                           objects=objects, photo_type=out.get("photo_type"),
                            wear_level=out.get("wear_level"), text_level=out.get("text_level"),
                            route=route, reason=reason)
 
@@ -55,7 +57,7 @@ def transform(req: TransformRequest, background: BackgroundTasks):
     key = style_key(req.preset, req.note)
     try:
         out = pipeline.run_transform(req.file_id, key, defer_judge=True, note=req.note,
-                                     composition=req.composition)
+                                     composition=req.composition, sell=req.sell)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다")
     except Exception:

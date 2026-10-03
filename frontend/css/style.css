@@ -300,3 +300,18 @@ body {
 .comp-label { font-size: 13px; font-weight: 600; color: var(--ink); }
 .comp-desc { font-size: 11px; color: var(--muted); line-height: 1.35; }
 .comp.missing .comp-desc { color: #c0392b; }
+
+/* 팔 물건 고르기 (10-03) — 원본 위 번호 상자 + 체크 목록 */
+/* 박스는 이미지 크기의 래퍼 기준 — 프레임(가운데 정렬 · 최소 높이) 기준이면 위아래로 밀린다 */
+.before-wrap { position: relative; width: 100%; }
+.sell-boxes { position: absolute; inset: 0; pointer-events: none; }
+#before[hidden] + .sell-boxes { display: none; }
+.sell-box { position: absolute; border: 2px solid var(--accent); border-radius: 4px; color: #fff;
+  font: 600 12px/1 system-ui, sans-serif; }
+.sell-box { text-indent: 4px; padding-top: 3px; text-shadow: 0 0 3px #000; }
+.sell-box.off { border-style: dashed; border-color: var(--muted); opacity: .6; }
+.sell-wrap { margin-bottom: 14px; }
+.sell-title { margin: 0 0 6px; font-weight: 600; }
+.sell-title .muted { font-weight: 400; color: var(--muted); font-size: 13px; }
+.sell-objects { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.sell-obj { cursor: pointer; }

@@ -20,7 +20,7 @@ def R(file, repeat=1, **kw):
 
 
 def write_run(root, run_id, results, meta=None):
-    d = root / "runs" / run_id
+    d = root / "results" / "runs" / run_id
     d.mkdir(parents=True, exist_ok=True)
     (d / "results.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in results),
                                      encoding="utf-8")
@@ -29,7 +29,7 @@ def write_run(root, run_id, results, meta=None):
 
 
 def write_review(root, run_id, rater, rows):
-    d = root / "reviews" / run_id
+    d = root / "results" / "reviews" / run_id
     d.mkdir(parents=True, exist_ok=True)
     cols = ["file", "repeat", "mode", "reviewed", "shape_color_changed", "text_changed", "wear_changed",
             "added_content", "background_issue", "framing_issue", "failure_tags", "photo_quality", "note"]
@@ -425,15 +425,15 @@ def test_load_run_missing_results_exits(compare_mod, tmp_path):
     with pytest.raises(SystemExit) as e:
         compare_mod.load_run("nope")
     assert "nope" in str(e.value)
-    (tmp_path / "runs" / "half").mkdir(parents=True)
-    (tmp_path / "runs" / "half" / "meta.json").write_text("{}")
+    (tmp_path / "results" / "runs" / "half").mkdir(parents=True)
+    (tmp_path / "results" / "runs" / "half" / "meta.json").write_text("{}")
     with pytest.raises(SystemExit):
         compare_mod.load_run("half")
 
 
 def test_load_run_without_meta_and_blank_lines(compare_mod, tmp_path):
     write_run(tmp_path, "r", [R("a")])
-    p = tmp_path / "runs" / "r" / "results.jsonl"
+    p = tmp_path / "results" / "runs" / "r" / "results.jsonl"
     p.write_text(p.read_text() + "\n   \n", encoding="utf-8")
     meta, results = compare_mod.load_run("r")
     assert meta == {} and results == [R("a")]
@@ -454,7 +454,7 @@ def test_main_end_to_end(compare_mod, tmp_path, capsys):
 
     assert compare_mod.main(["base", "exp"]) == 0
     out = capsys.readouterr().out
-    page = tmp_path / "runs" / "compare-base-vs-exp.html"
+    page = tmp_path / "results" / "runs" / "compare-base-vs-exp.html"
     assert page.exists()
     assert "사진이 다르다" in out and "기준에만 x" in out
     assert "평가자가 다르다 (기준 kim, lee · 실험 kim)" in out        # TEMPLATE.csv 는 평가자가 아니다
@@ -474,7 +474,7 @@ def test_main_rater_only(compare_mod, tmp_path, capsys):
     compare_mod.main(["b", "e", "--rater", "kim"])
     out = capsys.readouterr().out
     assert "| **보존 통과** (사람) | 1/1 (100%) | 1/1 (100%) |" in out
-    assert "kim" in (tmp_path / "runs" / "compare-b-vs-e.html").read_text(encoding="utf-8")
+    assert "kim" in (tmp_path / "results" / "runs" / "compare-b-vs-e.html").read_text(encoding="utf-8")
 
 
 def test_main_unknown_rater_exits_without_page(compare_mod, tmp_path):
@@ -484,7 +484,7 @@ def test_main_unknown_rater_exits_without_page(compare_mod, tmp_path):
     with pytest.raises(SystemExit) as e:
         compare_mod.main(["b", "e", "--rater", "<nobody>"])
     assert "kim" in str(e.value)
-    assert not list((tmp_path / "runs").glob("compare-*.html"))
+    assert not list((tmp_path / "results" / "runs").glob("compare-*.html"))
 
 
 def test_main_rater_in_one_run_only_is_allowed(compare_mod, tmp_path, capsys):
@@ -499,4 +499,4 @@ def test_main_missing_run_exits_without_page(compare_mod, tmp_path):
     write_run(tmp_path, "b", [R("a")], {})
     with pytest.raises(SystemExit):
         compare_mod.main(["b", "ghost"])
-    assert not list((tmp_path / "runs").glob("compare-*.html"))
+    assert not list((tmp_path / "results" / "runs").glob("compare-*.html"))
