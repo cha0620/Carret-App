@@ -36,7 +36,7 @@ def test_options_order_good_photos_first_and_hint_when_missing():
     assert "앞쪽 비스듬히" in opts["shoes_front34"]["hint"]
 
 
-@pytest.mark.parametrize("category", ["clothing", "other", "", None, "SHOES?"])
+@pytest.mark.parametrize("category", ["bag", "vehicle", "electronics"])
 def test_options_empty_for_other_kinds(category):
     assert C.options(category, [_p("a", "front")]) == []
 
@@ -44,3 +44,12 @@ def test_options_empty_for_other_kinds(category):
 def test_prompt_for():
     assert C.prompt_for("shoes_sole").startswith("\n\n") and "sole" in C.prompt_for("shoes_sole")
     assert C.prompt_for(None) == "" and C.prompt_for("nope") == ""
+
+
+def test_new_categories_have_compositions():
+    """10-03 예시 사진에서 뽑은 구도 — 상의는 하나, 시계 · 책 · CD 는 other 에."""
+    assert [o["key"] for o in C.options("clothing", [_p("a", "front")])] == ["clothing_top_front"]
+    keys = [o["key"] for o in C.options("other", [_p("a", "front")])]
+    assert keys == ["watch_front34", "book_cover34", "book_stack", "cd_front"]
+    assert all(o["available"] for o in C.options("other", [_p("a", "front")]))
+    assert C.options("", [_p("a", "front")]) == C.options("other", [_p("a", "front")])   # 모르는 종류 = other

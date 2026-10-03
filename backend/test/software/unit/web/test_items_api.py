@@ -565,7 +565,14 @@ def test_shoes_item_lists_compositions_with_matching_photos(client, views):
     assert comps["shoes_side"]["image"] == "/img/compositions/shoes_side.svg"
 
 
-def test_non_shoes_item_has_no_compositions(client, views):
-    views["category"] = "clothing"
+def test_item_without_compositions_gets_empty_list(client, views):
+    views["category"] = "bag"            # 정석 구도가 아직 없는 종류
     views["photos"] = [_v("front")]
     assert client.post("/api/items", files=_files(("a.png", _png()))).json()["compositions"] == []
+
+
+def test_clothing_item_gets_top_front_composition(client, views):
+    views["category"] = "clothing"
+    views["photos"] = [_v("front")]
+    comps = client.post("/api/items", files=_files(("a.png", _png()))).json()["compositions"]
+    assert [c["key"] for c in comps] == ["clothing_top_front"] and comps[0]["available"]

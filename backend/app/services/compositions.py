@@ -39,6 +39,44 @@ COMPOSITIONS: dict[str, list[dict]] = {
          "prompt": "Frame it as a standard outsole shot: the whole sole visible and centered with even margins. "
                    "Keep every worn area of the sole exactly as photographed."},
     ],
+    # 10-03 예시 사진(eval/refs/)에서 뽑은 구도 — 상의는 종류(티셔츠 · 맨투맨 · 폴로 · 유니폼 · 재킷) 상관없이 하나
+    "clothing": [
+        {"key": "clothing_top_front", "label": "상의 앞판",
+         "desc": "앞판 정면, 펼쳐서 좌우 대칭 — 옷걸이 · 손 없이",
+         "views": {"front", "front_34"},
+         "prompt": "Frame it as a standard flat front apparel listing shot: the top laid out flat and facing the "
+                   "camera as photographed, sleeves spread symmetrically to the sides, centered with generous even "
+                   "margins, filling about 70% of the frame, on a plain white background with no hanger, hands "
+                   "or mannequin."},
+    ],
+    # 앱 종류 목록에 시계 · 책 · 음반이 없어서 other 에 둔다 — other 물건이면 이 구도들이 다 후보로 나온다
+    "other": [
+        {"key": "watch_front34", "label": "시계 · 비스듬히",
+         "desc": "다이얼이 보이게 비스듬히 세우고 줄은 뒤로 둥글게",
+         "views": {"front", "front_34"},
+         "prompt": "Frame it as a standard wristwatch listing shot: the watch standing upright with the dial "
+                   "facing the camera at a slight angle as photographed, the strap curving behind the case, "
+                   "centered with even margins, filling about 75% of the frame, on a plain white background."},
+        {"key": "book_cover34", "label": "책 · 표지 비스듬히",
+         "desc": "앞표지와 책등이 함께 보이게 비스듬히 세운 한 권",
+         "views": {"front", "front_34"},
+         "prompt": "Frame it as a standard single-book listing shot: the book standing upright with its front "
+                   "cover facing the camera as photographed, centered with even margins, filling about 75% of "
+                   "the frame, on a plain white background with a soft contact shadow."},
+        {"key": "book_stack", "label": "책 · 쌓은 세트",
+         "desc": "여러 권을 책등이 보이게 가지런히 쌓은 모습",
+         "views": {"side", "front", "front_34"},
+         "prompt": "Frame it as a standard book-set listing shot: the books stacked neatly as photographed with "
+                   "their spines facing the camera, the stack upright and centered with even margins, filling "
+                   "most of the frame height, on a plain white background."},
+        {"key": "cd_front", "label": "CD · 앞면",
+         "desc": "케이스 앞면을 정면으로 — 비닐 · 띠지 그대로",
+         "views": {"front", "front_34"},
+         "prompt": "Frame it as a standard CD or album listing shot: the case front facing the camera straight on "
+                   "as photographed, square to the frame and centered with even margins, filling about 80% of "
+                   "the frame, on a plain white background. Keep any shrink wrap, obi strip and reflections "
+                   "as they are."},
+    ],
 }
 BY_KEY = {c["key"]: c for cs in COMPOSITIONS.values() for c in cs}
 

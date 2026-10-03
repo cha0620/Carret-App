@@ -27,7 +27,11 @@
 | `category` | `coverage.CATEGORIES` — shoes · clothing · bag · electronics · vehicle · other |
 | `composition` | `compositions.py` 의 구도 키. 아직 없는 구도면 `new:<이름>` (영문 소문자 · 숫자 · `_`, 예: `new:clothing_flatlay`) |
 | `view` | 그 예시를 찍은 각도 — `coverage.VIEWS` (front · front_34 · side · back · rear_34 · top · bottom · inside · label · detail). 있는 구도면 그 구도의 각도 중 하나여야 한다 |
+| `applies_to` | 이 구도를 쓰는 물건 (예: "상의 전부") — 선택 |
 | `source` · `note` | 선택 (검사하지 않는다) |
+
+데이터셋 사진이 어떤 구도를 목표로 하는지는 `dataset.json` 의 `target_composition` (같은 구도 키).
+세부 종류마다 따로 두지 않고 묶는다 — 상의는 전부 `new:clothing_top_front`, 신발은 전부 `shoes_front34` (10-03).
 
 ## 3. 확인
 
