@@ -337,6 +337,23 @@ make docs    # browse the repo's .md files (http://localhost:8090, renders merma
 
 ---
 
+## 🧰 Technology Choices
+
+| Tool | Why | Alternatives | Limits found in use |
+|---|---|---|---|
+| **LangGraph** (LangChain is not used) | Branching by photo type, regeneration after guard/verify failures, and the background-swap fallback are easier to follow as one graph with shared state. Each node gets a Langfuse trace | Plain functions + if statements | With many state keys it's easy to miss a key on one path, so reviews check "state keys on every path" explicitly. With fewer branches, plain ifs would have been better |
+| **FastAPI** | Request validation with pydantic schemas (the `file_id` regex blocks path traversal) and auto-generated docs. `transform` is a `def`, so it runs in the thread pool and blocking work like rembg doesn't stall the event loop | Flask, Django | A transform is a synchronous request that can take tens of seconds. A public service would need a job queue + polling |
+| **fal.ai + FLUX.2 edit** | Current editing models without running a GPU server. The model is one setting (`FAL_MODEL`) | Self-hosted GPU, other editing APIs | Tied to an external service's outages, rate limits and cost. The default flash model is fast but weak at large edits |
+| **Gemini (VLM)** | Item locations and verify results come back in the coordinate format it was trained on (`box_2d`), so they can be drawn as bubbles on the result. Resolution level and thinking budget are set per call to control cost | GPT models, Claude | Judgments wobble on the same photo (09-27: wear none ↔ light), so "couldn't check" never counts as a pass |
+| **DINOv2** (local) | A second opinion independent of the VLM: a deterministic number instead of words | CLIP, LPIPS | Still observational (soft). Whether it blocks results will be decided by its AUC against human labels (`backend/eval/`) |
+| **Langfuse** | Prompt versioning, call tracing and scorecards in one place. Prompts change without a deploy | Prompts in code only, LangSmith | An old prompt left in production could silently disable a feature, so the honesty lock is appended in code and a missing response field is logged |
+| **BiRefNet (fal) + rembg** | Cutouts for background swap. fal BiRefNet did better on cluttered backgrounds (09-24 comparison), so it's the default, with local rembg as a fallback | SAM | Cutouts can fail, so each path needed its own fallback (before generation, after a failed guard, heavy wear) |
+| **SQLite** | Metadata for a single server, with nothing to install or run | Postgres | Has to change if the service scales past one server |
+| **S3 / local FS** | Image bytes stay out of the database; one setting switches backends (`storage.py`) | DB BLOBs | Other people's photos pile up, so a retention period is needed |
+| **Vanilla JS** | The frontend isn't the point, so no build tooling | React | State management gets awkward as screens grow |
+
+---
+
 ## 🩸 Failures & Lessons
 
 | Bug | Lesson |
