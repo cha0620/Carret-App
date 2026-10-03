@@ -42,3 +42,8 @@ def intake_mod(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "LABELS_CSV", inbox / "labels.csv")
     monkeypatch.setattr(mod, "SPLIT_LOG", tmp_path / "splits.jsonl")
     return mod
+
+
+@pytest.fixture
+def refs_mod():
+    return _load("refs")
