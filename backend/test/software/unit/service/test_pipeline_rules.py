@@ -64,6 +64,23 @@ def _box(text, x1, y1, x2, y2):
     ({"photo_type": "document", "text_level": "dense", "wear_level": "heavy"}, "document"),
     ({"text_level": "dense", "wear_level": "heavy"}, "text_dense"),
     ({"photo_type": "product", "text_level": "dense", "wear_level": "heavy"}, "text_dense"),
+    # 10-03: 잘림(cut_off) · 여러 개(multi_item) — wear_heavy 다음, cut_off 가 multi_item 보다 먼저
+    ({"item_cut_off": True}, "cut_off"),
+    ({"item_count": 2}, "multi_item"),
+    ({"item_count": 12}, "multi_item"),
+    ({"item_cut_off": False}, None),
+    ({"item_cut_off": None}, None),
+    ({"item_count": 1}, None),
+    ({"item_count": 0}, None),            # 0 · None 은 1개로 본다
+    ({"item_count": None}, None),
+    ({"item_cut_off": True, "item_count": 3}, "cut_off"),
+    ({"wear_level": "heavy", "item_cut_off": True, "item_count": 2}, "wear_heavy"),
+    ({"text_level": "dense", "item_cut_off": True}, "text_dense"),
+    ({"photo_type": "document", "item_count": 2}, "document"),
+    ({"photo_type": "document", "item_cut_off": True}, "document"),
+    ({"photo_type": "inside_view", "item_cut_off": True, "item_count": 2}, "inside_view"),
+    ({"detect_failed": True, "item_cut_off": True, "item_count": 2}, "detect_failed"),
+    ({"wear_level": "light", "text_level": "simple", "item_count": 2}, "multi_item"),
 ])
 def test_composite_first_reason(state, expected):
     assert pipeline_mod._composite_first_reason(state) == expected

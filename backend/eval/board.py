@@ -140,7 +140,8 @@ def collect(only_run: str | None = None, include_unrun: bool = True) -> list[dic
                 "tags": sorted({x for v in vs for x in v.get("tags", ())}),
                 "raters": [] if r.get("error") else sorted(p for p in reviews if key in reviews[p]),
                 "notes": [] if r.get("error") else notes.get(key, []),
-                "composition": r.get("composition"), "composition_skipped": r.get("composition_skipped")})
+                "composition": r.get("composition"), "composition_skipped": r.get("composition_skipped"),
+                "prompt": r.get("prompt_used") or ""})
     for f, e in dataset.items():      # 아직 안 돌린 사진도 체크할 수 있게
         if include_unrun:
             by_file.setdefault(f, {"file": f, "entry": e, "orig": None, "results": []})
@@ -169,6 +170,63 @@ def set_failure(file: str, on: bool) -> bool:
             return True                                # 이미 그 상태 — 쓰지 않는다 (낡은 탭이 날짜를 바꾸지 않게)
         intake.save_dataset(entries)
     return True
+
+
+# ── 프롬프트 한국어 (10-03 — 결과 옆에 늘 보이게) ──────
+# 고정 문장은 미리 옮겨 두고, 사진마다 바뀌는 부분(글자 · 물건 이름)은 원문 그대로 둔다.
+_KO_SENTENCES = {
+    "professional product photography, pure white studio background, soft even lighting, subtle shadow.":
+        "전문 상품 사진, 순백색 스튜디오 배경, 부드럽고 고른 조명, 은은한 그림자.",
+    "Tidy it into a clean listing photo: place it near the center with comfortable margins, smooth out wrinkles, "
+    "and leave out hangers, hands and props that are not part of the product.":
+        "깔끔한 판매 사진으로 정리해: 가운데 근처에 여백은 넉넉히, 주름은 펴고, 상품이 아닌 옷걸이 · 손 · 소품은 빼.",
+    "Tidy it into a clean listing photo: center it, fill most of the frame, smooth out wrinkles, and leave out "
+    "hangers, hands and props that are not part of the product.":
+        "깔끔한 판매 사진으로 정리해: 가운데에 놓고 화면 대부분을 채우고, 주름은 펴고, 상품이 아닌 옷걸이 · 손 · 소품은 빼.",
+    "Do not add anything that is not in the original photo.": "원본에 없는 건 아무것도 더하지 마.",
+    "Do not add anything that is not in the original photo — no other items and no text.":
+        "원본에 없는 건 아무것도 더하지 마 — 다른 물건도, 글자도.",
+    "Keep the product itself exactly as it is: its shape, color, pattern, texture, parts, logos and printed text, "
+    "any packaging or tags, and every stain, scratch, tear, hole, fading and wear mark in the same place and at "
+    "the same size.":
+        "상품 자체는 정확히 그대로: 모양 · 색 · 무늬 · 질감 · 부품 · 로고와 인쇄 글자 · 포장이나 택, 그리고 모든 얼룩 · "
+        "긁힘 · 찢김 · 구멍 · 바램 · 사용 흔적을 같은 자리에 같은 크기로.",
+    "Do not repair, clean or restore it.": "고치거나 닦거나 복원하지 마.",
+}
+_KO_PATTERNS = [
+    (r"As a loose reference for the layout, think of (.+?)\. Follow it only as far as this photo already allows: "
+     r"keep the item's angle, shape, size, number and packaging exactly as photographed, and add nothing that is "
+     r"not in the original photo\.",
+     "[구도 · 느슨한 참고] {0} — 이 사진이 이미 허락하는 만큼만 따라. 각도 · 모양 · 크기 · 개수 · 포장은 찍힌 그대로, "
+     "원본에 없는 건 더하지 마."),
+    (r"Leave out these things that are not for sale: (.+)\.$", "[뺄 물건] 판매하지 않는 이것들은 빼: {0}"),
+    (r"Text printed on the product — keep each one exactly as in the input image.*?add any text: (.+)$",
+     "[글자 잠금] 상품에 인쇄된 글자를 입력 사진과 한 글자도 다르지 않게 같은 글꼴 · 크기 · 위치로 — "
+     "다시 쓰거나 바꾸거나 옮기거나 겹치거나 더하지 마: {0}"),
+    (r"IMPORTANT: a previous attempt lost or altered these marks on the product: (.+?)\. They MUST remain "
+     r"exactly as in the input image\.", "[재생성 메모] 앞 시도에서 이 표시가 사라지거나 바뀌었어: {0} — 입력 사진과 똑같이."),
+    (r"IMPORTANT: a previous attempt drew marks on the product that are not in the input image\. Every surface "
+     r"of the product must look exactly as in the input image\.",
+     "[재생성 메모] 앞 시도에서 입력 사진에 없던 표시를 그렸어 — 상품의 모든 면을 입력 사진과 똑같이."),
+]
+
+
+def prompt_ko(prompt: str) -> str:
+    """생성 프롬프트 → 한국어 (아는 문장만 옮기고, 모르는 문장은 원문 그대로)."""
+    import re
+    out = []
+    for block in [b.strip() for b in (prompt or "").split("\n\n") if b.strip()]:
+        for pat, tmpl in _KO_PATTERNS:
+            m = re.match(pat, block, re.S)
+            if m:
+                out.append(tmpl.format(*m.groups()))
+                break
+        else:
+            text = block
+            for en, ko in sorted(_KO_SENTENCES.items(), key=lambda kv: -len(kv[0])):
+                text = text.replace(en, ko)
+            out.append(text)
+    return "\n\n".join(out)
 
 
 # ── 파일 ────────────────────────────────────────
@@ -220,7 +278,8 @@ def page(items: list[dict], token: str, runs: list[str] | None = None, current: 
         ent = it["entry"]
         on = ent.get("set") == "failure"
         o = _src(*it["orig"]) if it["orig"] else None
-        orig_img = f'<img loading="lazy" src="{o}">' if o else '<div class="small muted">원본 없음</div>'
+        orig_img = (f'<a href="{o}" target="_blank"><img loading="lazy" src="{o}"></a>' if o   # 결과처럼 눌러서 크게
+                    else '<div class="small muted">원본 없음</div>')
         figs = [f'<figure><div class="who">원본</div>{orig_img}</figure>']
         for x in it["results"]:
             s = _src(x["run"], x["result"]) if not x["error"] else None
@@ -235,6 +294,9 @@ def page(items: list[dict], token: str, runs: list[str] | None = None, current: 
                 + (f'<div class="small">{e(detail)}</div>' if detail else "")
                 + (f'<div class="small muted">배경·구도: {e(qual)}</div>' if qual else "")
                 + (f'<div class="small muted">구도 {e(x["composition"])}</div>' if x.get("composition") else "")
+                + (f'<div class="prompt"><div class="ko">{e(prompt_ko(x["prompt"]))}</div>'
+                   f'<details><summary>영어 원문</summary><div class="en">{e(x["prompt"])}</div></details></div>'
+                   if x.get("prompt") else "")
                 + (f'<div class="small muted">{e(x["composition_skipped"])}</div>' if x.get("composition_skipped") else "")
                 + (f'<div class="small muted">채점 {e(", ".join(x["raters"]))}</div>' if x["raters"] else "")
                 + "".join(f'<div class="small note">{e(n)}</div>' for n in x["notes"])
@@ -272,7 +334,10 @@ img{{width:100%;border-radius:6px;border:1px solid var(--line);background:#fff}}
 .who{{font-size:11px;font-weight:600;margin-bottom:2px;word-break:break-all}} .small{{font-size:11px}} .muted{{color:var(--muted)}}
 .badge{{font-size:12px}} .badge.good{{color:var(--good)}} .badge.bad{{color:var(--bad);font-weight:600}} .badge.none{{color:var(--muted)}}
 .err{{font-size:11px;color:var(--bad)}} .note{{margin-top:2px}} body.onlyfail section.item:not(.fail){{display:none}}
-#msg{{margin-left:8px;color:var(--muted)}} .tabs{{margin-top:6px;display:flex;gap:6px;flex-wrap:wrap}}
+#msg{{margin-left:8px;color:var(--muted)}}
+.prompt{{margin-top:6px;font-size:11px;line-height:1.45;border-top:1px dashed var(--line);padding-top:4px}}
+.prompt .ko,.prompt .en{{white-space:pre-wrap}} .prompt .en{{color:var(--muted)}} .prompt summary{{cursor:pointer;color:var(--muted)}}
+.grid{{grid-template-columns:repeat(auto-fill,minmax(240px,1fr))!important}} .tabs{{margin-top:6px;display:flex;gap:6px;flex-wrap:wrap}}
 .tab{{font-size:12px;padding:2px 8px;border:1px solid var(--line);border-radius:12px;text-decoration:none}} .tab.on{{background:var(--fg);color:var(--bg)}}
 </style>
 <main>

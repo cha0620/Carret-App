@@ -42,7 +42,7 @@ from langgraph.graph import END, START, StateGraph
 from app.core.config import settings
 from app.core.tracing import current_trace_id, flush, observe, score
 from app.core.vlm import retryable
-from app.prompts.presets import (TEXT_LOCK_MAX_CHARS, count_lock, get_preset, leave_out, prompt_safe, unreadable,
+from app.prompts.presets import (TEXT_LOCK_MAX_CHARS, get_preset, leave_out, prompt_safe, unreadable,
                                  text_lock, text_where)
 from app.prompts.rubric import AXES
 from app.services import compositions
@@ -77,8 +77,9 @@ class State(TypedDict, total=False):
     item_texts: list           # 원본 물건 위 글자 [{text, x1..}] → generate 프롬프트
     text_level: str | None     # analyze 가 본 물건 위 글자 수준: none | simple | dense(잔글씨·원본에서도 못 읽음) (실패면 None)
     item_box: dict | None      # 원본에서 물건 위치 (0-1000) — 오리기 범위 (배경 교체 · item_dino)
+    item_cut_off: bool         # analyze: 판매 물건이 사진 밖으로 잘림 — 생성하지 않고 배경 교체(cut_off)
     item_count: int            # 팔려는 물건 개수 — analyze 판단, 사용자가 고르면 고른 수, eval 은 정답.
-                               #   2개 이상이면 표지를 펴지 않고 구도 대신 개수 문장(count_lock)
+                               #   2개 이상이면 생성하지 않고 배경 교체(multi_item) — 10-03, 개수 문장(count_lock)은 효과 없어 뺐다
     gate_retried: bool         # verify 게이트 실패로 재생성을 이미 1회 했나
     gate_note: str             # 그 재생성 때 프롬프트에 붙인 "사라진 하자" 목록
     added_text: list           # 생성본에 새로 생긴 글자 · 로고 (원본에 없던 것) — 있으면 게이트 실패
@@ -86,6 +87,7 @@ class State(TypedDict, total=False):
     mode: str                  # "generate" | "composite"(원본 물건 + 배경만 교체) | "composite_failed"
                                #   | "original"(원본 그대로 — inside_view 등)
     composite_reason: str | None   # 생성하지 않은 이유: detect_failed | inside_view | document | text_dense
+                                   #   | cut_off(물건이 잘림) | multi_item(여러 개)
                                    #   | text_heavy | wear_heavy | gate_failed | verify_failed
     provided_result: bytes     # dev 그래프: generate 대신 쓸 결과 이미지
     composite_error: str | None
@@ -268,6 +270,13 @@ def _composite_first_reason(s: State) -> str | None:
         # 녹·도장 벗겨짐처럼 하자가 넓다 — 생성은 지우거나(굴삭기 범퍼) 과장한다(승용차 녹).
         # 원본 픽셀을 쓰는 배경 교체만 상태를 그대로 보여준다
         return "wear_heavy"
+    if s.get("item_cut_off"):
+        # 물건이 사진 밖으로 잘렸다 — 정리하며 구도를 잡으면 안 보이던 부분을 지어낸다 (10-03 사용자 결정:
+        # 전체가 안 나온 사진은 배경 제거만, 다시 찍으면 정리까지)
+        return "cut_off"
+    if (s.get("item_count") or 1) >= 2:
+        # 여러 개 — 생성은 개수를 못 지킨다 (10-03 CD 2장: 개수 문장 없이 1장, 있어도 3장). 원본 픽셀로 배경만
+        return "multi_item"
     # text_heavy(읽어 보니 잔글씨 多)는 read_text 가 정한다 — 여기선 아직 읽기 전이다
     return None
 
@@ -315,7 +324,7 @@ def generate(s: State) -> dict:
     # 고른 정석 구도의 틀(가운데 · 여백 · 수평) — 각도는 잠금이 지킨다. 글자 잠금은 그 뒤에.
     # 물건이 여러 개면 구도를 붙이지 않는다 — 구도 문장은 한 개 기준이라 여럿을 하나로 합친다 (10-03 CD 2장)
     composition = s.get("composition") if (s.get("item_count") or 1) <= 1 else None
-    extra = (compositions.prompt_for(composition) + count_lock(s.get("item_count") or 1, s.get("item", ""))
+    extra = (compositions.prompt_for(composition)
              + leave_out(s.get("leave_out") or []) + text_lock(s.get("item_texts") or []))
     if extra:
         preset = {**preset, "prompt": preset["prompt"] + extra}
@@ -671,7 +680,7 @@ def composite(s: State) -> dict:
                                      drop=s.get("leave_out_boxes"), keep=s.get("sell_boxes"),
                                      flat=reason == "document")
     except Exception as e:
-        if s.get("result") is None and reason in ("wear_heavy", "document"):
+        if s.get("result") is None and reason in ("wear_heavy", "document", "cut_off", "multi_item"):
             # 하자가 넓어 "생성하면 지우거나 지어낸다"고 본 사진 / 책·음반처럼 한 글자만 바뀌어도
             # 다른 물건 — 오리기가 안 되면 생성하지 않고 원본을 그대로 보여준다
             # (생성으로 가면 하자·잔글씨 검사 없이 "보존됨" 배지가 붙는다)

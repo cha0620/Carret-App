@@ -9,6 +9,9 @@ Report:
    its box = two entries), at most 12. For each: what (short noun), box_2d, and for_sale — true if it
    is part of what is being sold (the items you counted in item_count), false for things around it
    (a keyboard behind, a mug next to it). Do not list hands, people, furniture, the floor or walls.
+   item_cut_off — true if part of an item for sale is outside the photo (cut by the frame edge) or
+   hidden behind something, so its whole outline is not shown. A close-up of one spot is
+   "inside_view", not cut off. false if every item for sale is fully in the photo.
 
 2. considered — 3~8 inspection terms for THIS item, most likely first
    (e.g. clothing: stain, tear, pilling; phone: scratch, crack, display line).

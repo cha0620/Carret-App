@@ -78,6 +78,12 @@ async function loadSellObjects(fid) {
   try {
     const a = await analyzePhoto(fid);
     if (token !== analyzeToken || fid !== fileId) return;
+    // 생성 대신 배경만 바꾸는 사진 — 이유와 어떻게 하면 정리까지 되는지 알려준다 (10-03)
+    const NOTE = {
+      cut_off: '물건이 사진에 다 안 나와서 배경만 바꿔요 — 물건 전체가 나오게 다시 찍으면 정리까지 해 드려요',
+      multi_item: '물건이 여러 개라 배경만 바꿔요 (개수가 바뀌지 않게) — 한 개만 팔면 아래에서 하나만 고르세요',
+    };
+    if (NOTE[a.reason]) statusEl.textContent = NOTE[a.reason];
     const objs = a.objects || [];
     if (objs.length < 2) return;            // 하나뿐이면 고를 게 없다
     sell = objs.filter(o => o.for_sale).map(o => o.index);

@@ -193,6 +193,7 @@ def analyze(image_bytes: bytes) -> dict:
         "watermark": _level(data, "watermark", WATERMARKS, "none"),
         "text_level": level,
         "item_count": _count(data.get("item_count")),
+        "item_cut_off": data.get("item_cut_off") is True,   # 물건이 사진 밖으로 잘림 — 없으면 False (예전 동작)
         "objects": _parse_objects(data.get("objects")),
         # 물건 위 글자 (10-01, 글자 읽기 호출을 합침). 응답에 texts 목록이 없으면(옛 프롬프트) 키를 두지
         # 않는다 — read_text 가 예전처럼 따로 읽는다. 글자 수준이 simple 이 아니면 쓰지 않으니 비운다

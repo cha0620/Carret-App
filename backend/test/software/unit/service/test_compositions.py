@@ -60,3 +60,42 @@ def test_album_prompt_never_names_a_format():
     low = C.BY_KEY["album_front"]["prompt"].lower()
     for bad in ("lp", "cd ", "record", "vinyl", "cassette"):
         assert bad not in low, bad
+
+
+# ══ 10-03: 구도 문장은 느슨한 참고 (_ref) — 틀을 세게 주면 물건을 바꿔서 맞췄다 ═══════
+KEEP = "keep the item's angle, shape, size, number and packaging exactly as photographed"
+
+
+@pytest.mark.parametrize("key", sorted(C.BY_KEY))
+def test_every_prompt_is_loose_reference_keeping_angle_and_count(key):
+    p = C.BY_KEY[key]["prompt"]
+    assert p.startswith("As a loose reference for the layout, think of ")
+    assert "Follow it only as far as this photo already allows" in p
+    assert KEEP in p and "add nothing that is not in the original photo" in p
+
+
+@pytest.mark.parametrize("key", sorted(C.BY_KEY))
+def test_every_prompt_has_no_hard_frame_orders(key):
+    """퍼센트 · "square to the frame" · "filling" · "symmetric" 같은 센 틀 지시가 남아 있지 않다."""
+    low = C.BY_KEY[key]["prompt"].lower()
+    assert "%" not in low
+    for bad in ("square to the frame", "filling about", "fill most", "symmetrically", "straight on",
+                "even margins"):
+        assert bad not in low, (key, bad)
+
+
+def test_ref_wraps_body_once():
+    out = C._ref("BODY")
+    assert out.count("BODY") == 1 and out.index("BODY") < out.index("Follow it only")
+    assert C._ref("").startswith("As a loose reference for the layout, think of .")
+
+
+def test_prompt_for_keeps_ref_sentence_after_blank_line():
+    assert C.prompt_for("shoes_side") == "\n\n" + C.BY_KEY["shoes_side"]["prompt"]
+
+
+def test_specific_notes_survive_ref_wrap():
+    """sole 의 닳은 곳 · 앨범 포장 문장처럼 구도마다 붙인 당부는 _ref 안에 그대로 남는다."""
+    assert "Keep every worn area of the sole exactly as photographed" in C.BY_KEY["shoes_sole"]["prompt"]
+    assert "Keep the packaging exactly as photographed" in C.BY_KEY["album_front"]["prompt"]
+    assert "no hanger, hands or mannequin" in C.BY_KEY["clothing_top_front"]["prompt"]

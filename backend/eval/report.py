@@ -113,7 +113,8 @@ def fmt(v, d=2) -> str:
     return "—" if v is None else f"{v:.{d}f}"
 
 
-PRE_REASONS = {"detect_failed", "inside_view", "document", "text_dense", "wear_heavy", "text_heavy"}
+PRE_REASONS = {"detect_failed", "inside_view", "document", "text_dense", "wear_heavy", "text_heavy",
+               "cut_off", "multi_item"}
 
 
 def route_trace(r: dict) -> str:

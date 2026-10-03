@@ -28,6 +28,8 @@ FID, PRESET = "fid", "studio_white"
 MARK = {"category": "print", "what": "logo: ACME", "where": "front"}
 BOX_A = {"x1": 100, "y1": 100, "x2": 900, "y2": 900}
 BOX_B = {"x1": 200, "y1": 200, "x2": 800, "y2": 800}
+# 10-03 알려진 버그: pipeline.State 에 item_cut_off 키가 없어 LangGraph 가 analyze 결과에서 떨어뜨린다
+#   → 그래프에선 cut_off 가 절대 안 나온다 (_composite_first_reason 단위로는 맞음). State 에 키를 넣으면 이 표시를 뗀다.
 
 
 def _png(color):
@@ -448,6 +450,51 @@ def test_many_text_lines_after_reading_go_composite(w, monkeypatch, n, min_texts
         assert out["composite_reason"] == "text_heavy" and "generate" not in w.calls
 
 
+@pytest.mark.parametrize("analysis,reason", [
+    ({"item_cut_off": True}, "cut_off"),
+    ({"item_cut_off": True, "text_level": "simple", "item_count": 3}, "cut_off"),   # 잘림이 먼저,
+    ({"item_count": 2}, "multi_item"),
+    ({"item_count": 2, "text_level": "simple"}, "multi_item"),        # 글자가 있어도 읽지 않는다
+])
+def test_cut_off_or_multi_item_goes_composite_without_generating(w, analysis, reason):
+    """10-03: 물건이 잘렸거나(cut_off) 여러 개(multi_item)면 생성하지 않고 배경만 바꾼다."""
+    w.analysis.update(analysis)
+    out = w.run(composition="shoes_side")
+    assert w.calls == ["analyze", "compose", "judge"]
+    assert w.seen["compose"] == ["orig"] and w.seen["judge"] == [("orig", "comp")]
+    assert out["mode"] == "composite" and out["composite_reason"] == reason
+    assert out["gate_passed"] is None and out["prompt_used"].startswith("COMPOSITE")
+    assert w.result() == "comp" and w.inspect()["composite_reason"] == reason
+    assert w.route()["composite_reason"] == reason
+
+
+@pytest.mark.parametrize("analysis,reason", [
+    ({"item_cut_off": True, "wear_level": "heavy"}, "wear_heavy"),
+    ({"item_cut_off": True, "text_level": "dense"}, "text_dense"),
+    ({"item_count": 2, "photo_type": "inside_view"}, "inside_view"),
+])
+def test_earlier_reasons_win_over_cut_off_and_multi_item(w, analysis, reason):
+    w.analysis.update(analysis)
+    out = w.run()
+    assert out["composite_reason"] == reason and "generate" not in w.calls
+
+
+@pytest.mark.parametrize("raw", [False, None])
+def test_not_cut_off_single_item_generates(w, raw):
+    w.analysis.update(item_cut_off=raw, item_count=1)
+    out = w.run()
+    assert out["mode"] == "generate" and w.count("generate") == 1 and "compose" not in w.calls
+
+
+def test_cut_off_from_cached_analysis(w):
+    """미리 분석(/api/analyze)해 둔 결과의 item_cut_off 도 그대로 쓴다 — 한 개를 골라도 잘림이면 배경 교체."""
+    _cached(w, CD_L, KEYB, count=1, item_cut_off=True)
+    out = w.run(sell=[0])
+    assert "analyze" not in w.calls and "generate" not in w.calls
+    assert out["composite_reason"] == "cut_off"
+    assert w.compose_drop_keep == [([KEYB["box"]], [CD_L["box"]])]
+
+
 @pytest.mark.parametrize("analysis_box,read_box,expected", [
     (BOX_A, BOX_B, BOX_A),      # analyze 가 준 위치가 우선
     (None, BOX_B, BOX_B),       # 없을 때만 read_text 값
@@ -548,6 +595,22 @@ def test_wear_heavy_or_document_cutout_failure_keeps_original(w, analysis):
     assert "generate" not in w.calls and "read_text" not in w.calls and "judge" not in w.calls
     assert out["mode"] == "original" and out["composite_reason"] in ("wear_heavy", "document")
     assert w.result() == "orig"
+
+
+@pytest.mark.parametrize("analysis,reason", [
+    pytest.param({"item_cut_off": True}, "cut_off"),
+    ({"item_count": 2}, "multi_item"),
+    ({"item_cut_off": True, "item_count": 2, "text_level": "simple"}, "cut_off"),
+])
+def test_cut_off_or_multi_item_cutout_failure_keeps_original(w, analysis, reason):
+    """10-03: 잘림 · 여러 개도 오리기가 안 되면 생성하지 않고 원본 그대로 (wear_heavy · document 처럼)."""
+    w.analysis.update(analysis)
+    w.compose_error = ValueError("no item")
+    out = w.run()
+    assert w.calls == ["analyze", "compose"]
+    assert out["mode"] == "original" and out["composite_reason"] == reason
+    assert w.result() == "orig" and w.quality() is None
+    assert w.route()["composite_reason"] == reason
 
 
 def test_worst_path_fits_recursion_limit(w, monkeypatch):
@@ -668,6 +731,9 @@ def test_composition_skipped_when_several_items(w, count, attached):
     side = BY_KEY["shoes_side"]["prompt"]
     assert all((side in p) == attached for p in w.prompts)
     assert (side in out["prompt_used"]) == attached
+    # 10-03: 여러 개면 아예 생성하지 않는다 (multi_item 배경 교체)
+    assert bool(w.prompts) == attached
+    assert out["composite_reason"] == (None if attached else "multi_item")
 
 
 # ══ 10-01: analyze 가 글자를 주면 글자 읽기 VLM 을 부르지 않는다 ═══════
@@ -721,31 +787,38 @@ def _cached(w, *objs, count=None, **extra):
                  json.dumps({**w.analysis, "detect_failed": False}).encode())
 
 
-def test_sell_two_of_three_puts_count_lock_and_leave_out_in_every_prompt(w):
+def _multi_item_composite(w, out, drop_keep):
+    """여러 개 → 생성하지 않고 원본 픽셀로 배경만 (10-03, 개수 문장은 효과가 없어 뺐다)."""
+    assert out["mode"] == "composite" and out["composite_reason"] == "multi_item"
+    assert "generate" not in w.calls and "verify" not in w.calls and w.prompts == []
+    assert out["prompt_used"].startswith("COMPOSITE")
+    assert w.compose_drop_keep == [drop_keep]
+    assert w.result() == "comp" and w.route()["composite_reason"] == "multi_item"
+
+
+def test_sell_two_of_three_goes_multi_item_with_drop_and_keep(w):
     _cached(w, CD_L, CD_R, KEYB)
-    w.verifies = ["lost"]                               # 재생성까지 — 두 번째 프롬프트에도 실려야
     out = w.run(sell=[0, 1])
-    assert "analyze" not in w.calls and len(w.prompts) == 2
-    for p in w.prompts:
-        assert "This photo shows 2 CD for sale" in p and f'{LEAVE}: "keyboard".' in p
-        assert p.index("This photo shows 2") < p.index(LEAVE)
-    assert "This photo shows 2 CD" in out["prompt_used"]
+    assert w.calls == ["compose", "judge"]                  # 저장된 분석 — analyze VLM 없음
+    _multi_item_composite(w, out, ([KEYB["box"]], [CD_L["box"], CD_R["box"]]))
+    assert w.compose_boxes == [{"x1": 50, "y1": 100, "x2": 950, "y2": 900}]
     assert w.row()["item"] == "CD"
 
 
 def test_sell_ignored_when_analysis_is_fresh(w):
     """저장된 분석이 없으면 지금 분석한 목록 순서가 사용자가 본 것과 다를 수 있어 sell 을 버린다."""
     w.analysis.update(item="CD", objects=[CD_L, CD_R, KEYB], item_count=2)
-    w.run(sell=[2])
+    out = w.run(sell=[2])
     assert w.calls[0] == "analyze"
-    assert LEAVE not in w.prompts[0] and "This photo shows 2 CD" in w.prompts[0]
+    _multi_item_composite(w, out, (None, None))             # 분석 판단(2개) 그대로, 뺄 것 없음
 
 
 def test_sell_ignored_when_cached_analysis_failed(w):
     w.analysis.update(item="CD", objects=[CD_L, CD_R, KEYB], item_count=2)
     storage.save("quality", f"{FID}_analysis.json", json.dumps({"detect_failed": True}).encode())
-    w.run(sell=[2])
-    assert w.calls[0] == "analyze" and LEAVE not in w.prompts[0]
+    out = w.run(sell=[2])
+    assert w.calls[0] == "analyze"
+    _multi_item_composite(w, out, (None, None))
 
 
 def test_sell_order_composition_then_leave_out_then_text_lock(w):
@@ -759,11 +832,12 @@ def test_sell_order_composition_then_leave_out_then_text_lock(w):
     assert p.index(side) < p.index(LEAVE) < p.index('"BRAUN"')
 
 
-def test_count_lock_before_leave_out_before_text_lock(w):
-    _cached(w, CD_L, CD_R, KEYB, text_level="simple", item_texts=[{"text": "BRAUN"}])
-    w.run(sell=[0, 1], composition="shoes_side")
-    p = w.prompts[0]
-    assert p.index("This photo shows 2") < p.index(LEAVE) < p.index('"BRAUN"')
+def test_sell_two_with_text_goes_composite_without_reading_text(w):
+    """여러 개면 글자 잠금도 쓸 일이 없다 — plan 에서 바로 배경 교체 (글자 읽기 VLM 없음)."""
+    _cached(w, CD_L, CD_R, KEYB, text_level="simple")       # 옛 분석(글자 목록 없음)이어도
+    out = w.run(sell=[0, 1], composition="shoes_side")
+    assert "read_text" not in w.calls
+    _multi_item_composite(w, out, ([KEYB["box"]], [CD_L["box"], CD_R["box"]]))
 
 
 def test_text_only_on_unchosen_object_is_not_locked(w):
@@ -775,12 +849,28 @@ def test_text_only_on_unchosen_object_is_not_locked(w):
     assert '"SONY"' in w.prompts[0] and "LOGI" not in w.prompts[0]
 
 
-def test_sell_two_skips_composition_even_if_analysis_said_one(w):
-    from app.services.compositions import BY_KEY
+def test_sell_two_goes_multi_item_even_if_analysis_said_one(w):
     _cached(w, CD_L, CD_R, count=1)
-    w.run(sell=[0, 1], composition="shoes_side")
-    assert BY_KEY["shoes_side"]["prompt"] not in w.prompts[0]
-    assert "This photo shows 2 CD" in w.prompts[0] and LEAVE not in w.prompts[0]
+    out = w.run(sell=[0, 1], composition="shoes_side")
+    _multi_item_composite(w, out, ([], [CD_L["box"], CD_R["box"]]))
+
+
+def test_sell_one_of_two_generates_with_leave_out(w):
+    """2개라고 본 사진에서 1개만 고르면 한 개 — 생성으로 가고, 안 고른 키보드는 이름으로 뺀다."""
+    from app.services.compositions import BY_KEY
+    _cached(w, CD_L, KEYB, count=2)
+    out = w.run(sell=[0], composition="shoes_side")
+    assert out["mode"] == "generate" and out["composite_reason"] is None
+    assert "compose" not in w.calls and w.count("generate") == 1
+    p = w.prompts[0]
+    assert f'{LEAVE}: "keyboard".' in p and BY_KEY["shoes_side"]["prompt"] in p
+    assert "This photo shows" not in p and "Keep all" not in p     # 개수 문장은 없어졌다
+
+
+def test_sell_one_of_two_same_kind_generates(w):
+    _cached(w, CD_L, CD_R, count=2)
+    out = w.run(sell=[1])
+    assert out["mode"] == "generate" and w.count("generate") == 1 and "compose" not in w.calls
 
 
 def test_one_of_two_same_name_is_not_named_in_leave_out(w):
@@ -793,13 +883,15 @@ def test_one_of_two_same_name_is_not_named_in_leave_out(w):
 def test_selection_is_not_saved_into_cached_analysis(w):
     """고른 결과가 저장된 분석에 섞이면 다음 변환(다른 무드 · 다른 선택)이 옛 선택을 물려받는다."""
     _cached(w, CD_L, CD_R, KEYB, count=2)
-    w.run(sell=[0])
+    out = w.run(sell=[0])
+    assert out["mode"] == "generate"
     saved = json.loads(storage.load("quality", f"{FID}_analysis.json"))
     assert not {"leave_out", "leave_out_boxes", "sell_boxes"} & set(saved) and saved["item_count"] == 2
     w.prompts.clear()
-    w.run()                                              # 선택 없음
+    w.calls.clear()
+    out = w.run()                                        # 선택 없음 → 분석 판단(2개) 그대로
     assert "analyze" not in w.calls
-    assert LEAVE not in w.prompts[0] and "This photo shows 2 CD" in w.prompts[0]
+    _multi_item_composite(w, out, (None, None))
 
 
 def test_sell_picking_only_non_sale_object(w):
@@ -810,10 +902,10 @@ def test_sell_picking_only_non_sale_object(w):
 
 
 @pytest.mark.parametrize("sell", [[], [7], [True]])
-def test_sell_nothing_valid_keeps_analysis_prompt(w, sell):
+def test_sell_nothing_valid_keeps_analysis_count(w, sell):
     _cached(w, CD_L, CD_R, KEYB, count=2)
-    w.run(sell=sell)
-    assert LEAVE not in w.prompts[0] and "This photo shows 2 CD" in w.prompts[0]
+    out = w.run(sell=sell)
+    _multi_item_composite(w, out, (None, None))
 
 
 def test_sell_union_box_and_drop_keep_reach_composite(w):
@@ -837,15 +929,21 @@ def test_sell_with_detect_failed_does_not_crash(w):
     assert out["detect_failed"] is True and "generate" not in w.calls
 
 
-@pytest.mark.parametrize("answer,count_lock_on,comp_on", [(None, False, True), (1, False, True),
-                                                           (2, True, False), (0, False, True)])
-def test_answer_count_drives_count_lock_and_composition(w, answer, count_lock_on, comp_on):
-    """eval: 고르는 화면 없이 정답 개수만 — 새로 분석해도 적용된다. 개수 문장 · 구도 여부가 그것을 따른다."""
+@pytest.mark.parametrize("answer", [None, 1, 0])
+def test_answer_count_one_or_ignored_generates_with_composition(w, answer):
+    """eval: 고르는 화면 없이 정답 개수만 — 1개(또는 무시되는 값)면 생성 + 구도, 개수 문장 없음."""
     from app.services.compositions import BY_KEY
-    w.run(composition="shoes_side", answer_count=answer)
+    out = w.run(composition="shoes_side", answer_count=answer)
     p = w.prompts[0]
-    assert ("This photo shows 2 chair" in p) == count_lock_on
-    assert (BY_KEY["shoes_side"]["prompt"] in p) == comp_on
+    assert out["mode"] == "generate" and BY_KEY["shoes_side"]["prompt"] in p
+    assert "This photo shows" not in p
+
+
+@pytest.mark.parametrize("answer", [2, 5])
+def test_answer_count_many_goes_multi_item_even_on_fresh_analysis(w, answer):
+    out = w.run(composition="shoes_side", answer_count=answer)
+    assert w.calls[0] == "analyze"
+    _multi_item_composite(w, out, (None, None))
 
 
 def test_answer_count_one_overrides_analysis_many(w):

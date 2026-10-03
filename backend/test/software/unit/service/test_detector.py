@@ -841,7 +841,7 @@ def test_analyze_parses_full_response(monkeypatch):
         "item_box": {"x1": 200, "y1": 100, "x2": 800, "y2": 700},
         "photo_type": "product", "wear_level": "none", "watermark": "background",
         "text_level": "simple",
-        "item_count": 1, "objects": [],
+        "item_count": 1, "item_cut_off": False, "objects": [],
     }
 
 
@@ -896,7 +896,7 @@ def test_analyze_missing_keys_all_defaults(monkeypatch):
         "item": "object", "considered": [], "anchors": [], "item_box": None,
         "photo_type": "product", "wear_level": "light", "watermark": "none",
         "text_level": "simple",
-        "item_count": 1, "objects": [],
+        "item_count": 1, "item_cut_off": False, "objects": [],
     }
 
 
@@ -1200,6 +1200,30 @@ def test_analyze_photo_type_does_not_change_other_fields(monkeypatch):
 def test_analyze_item_count_is_positive_int_default_one(monkeypatch, raw, expected):
     _analyze_with(monkeypatch, {"marks": [], "item_count": raw})
     assert detector.analyze(b"x")["item_count"] == expected
+
+
+# ── 10-03: item_cut_off — 응답이 정확히 true(불리언)일 때만 True ──
+@pytest.mark.parametrize("raw,expected", [
+    (True, True), (False, False), (None, False),
+    ("true", False), ("True", False), (1, False), (1.0, False), ("yes", False), ([True], False), ({}, False),
+])
+def test_analyze_item_cut_off_only_exact_true(monkeypatch, raw, expected):
+    _analyze_with(monkeypatch, {"marks": [], "item_cut_off": raw})
+    out = detector.analyze(b"x")
+    assert out["item_cut_off"] is expected
+
+
+def test_analyze_item_cut_off_missing_is_false(monkeypatch):
+    """옛 프롬프트 응답(키 없음)은 예전 동작 — 잘리지 않은 것으로."""
+    _analyze_with(monkeypatch, {"marks": []})
+    assert detector.analyze(b"x")["item_cut_off"] is False
+
+
+def test_analyze_item_cut_off_does_not_change_other_fields(monkeypatch):
+    _analyze_with(monkeypatch, {**_ANALYZE_FULL, "item_cut_off": True, "item_count": 2})
+    out = detector.analyze(b"img")
+    assert out["item_cut_off"] is True and out["item_count"] == 2
+    assert out["photo_type"] == "product" and out["text_level"] == "simple" and len(out["anchors"]) == 2
 
 
 # ── 10-01: analyze 가 물건 위 글자(texts)까지 — 따로 부르던 글자 읽기를 합침 ──
