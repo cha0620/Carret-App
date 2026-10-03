@@ -308,7 +308,7 @@ def _cover_edge(cover: np.ndarray, side: str) -> tuple[tuple, tuple] | None:
     if lines is None:
         return None
     best = None
-    for x1, y1, x2, y2 in lines[:, 0]:
+    for x1, y1, x2, y2 in np.asarray(lines).reshape(-1, 4):   # OpenCV 버전마다 (N,1,4) · (N,4) 로 달라서
         if x1 == x2 or abs((y2 - y1) / (x2 - x1)) > PAGE_MAX_TILT:
             continue
         slope = (y2 - y1) / (x2 - x1)
