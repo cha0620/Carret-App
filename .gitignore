@@ -51,3 +51,4 @@ backend/eval/images/
 backend/eval/refs/
 phone_img/
 backend/eval/runs/
+backend/eval/dataset.json.lock

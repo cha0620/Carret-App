@@ -299,3 +299,105 @@ def test_add_pilot_goes_to_dev_outside_quota(intake_mod):
     _put(m.INBOX / "none_r.jpg", b"r")
     assert m.cmd_add(Namespace()) == 0
     assert m.load_dataset()[-1]["split"] == m.split_slots("none")[0]   # none 층의 첫 자리 그대로
+
+
+# ── save_dataset 원자성 · dataset_lock ──
+def test_save_dataset_leaves_no_temp_file(intake_mod, tmp_path):
+    m = intake_mod
+    m.save_dataset([_entry("none_a.jpg")])
+    m.save_dataset([_entry("none_b.jpg")])
+    assert [e["file"] for e in m.load_dataset()] == ["none_b.jpg"]
+    assert not list(tmp_path.glob(".dataset-*.tmp")) and not list(tmp_path.glob("*.json.tmp"))
+
+
+def test_save_dataset_failure_keeps_old_file_and_removes_temp(intake_mod, tmp_path, monkeypatch):
+    import pytest
+    m = intake_mod
+    m.save_dataset([_entry("none_a.jpg")])
+    before = m.DATASET.read_text(encoding="utf-8")
+
+    def boom(*a):
+        raise OSError("disk full")
+    monkeypatch.setattr(m.os, "replace", boom)
+    with pytest.raises(OSError):
+        m.save_dataset([_entry("none_b.jpg")])
+    assert m.DATASET.read_text(encoding="utf-8") == before
+    assert not list(tmp_path.glob(".dataset-*.tmp"))
+
+
+def test_save_dataset_failure_on_unserializable_does_not_touch_file(intake_mod, tmp_path):
+    import pytest
+    m = intake_mod
+    m.save_dataset([_entry("none_a.jpg")])
+    before = m.DATASET.read_text(encoding="utf-8")
+    with pytest.raises(TypeError):
+        m.save_dataset([{"file": object()}])
+    assert m.DATASET.read_text(encoding="utf-8") == before
+    assert not list(tmp_path.glob(".dataset-*.tmp"))
+
+
+def test_dataset_lock_is_exclusive_and_reusable(intake_mod):
+    import threading
+    import time
+    m = intake_mod
+    order = []
+    entered = threading.Event()
+
+    def holder():
+        with m.dataset_lock():
+            order.append("A in")
+            entered.set()
+            time.sleep(0.2)
+            order.append("A out")
+
+    t = threading.Thread(target=holder)
+    t.start()
+    entered.wait(5)
+    with m.dataset_lock():                 # 다른 열린 파일 → flock 이 A 가 놓을 때까지 기다린다
+        order.append("B in")
+    t.join()
+    assert order == ["A in", "A out", "B in"]
+    assert m.DATASET.with_suffix(".json.lock").exists()
+    with m.dataset_lock():                 # 놓은 뒤엔 다시 잡힌다
+        pass
+
+
+def test_dataset_lock_released_on_exception(intake_mod):
+    import pytest
+    m = intake_mod
+    with pytest.raises(RuntimeError):
+        with m.dataset_lock():
+            raise RuntimeError
+    with m.dataset_lock():
+        pass
+
+
+def _record_lock(m, monkeypatch):
+    import contextlib
+    state = {"held": False, "seen": []}
+    real = m.dataset_lock
+
+    @contextlib.contextmanager
+    def lock():
+        with real():
+            state["held"] = True
+            try:
+                yield
+            finally:
+                state["held"] = False
+    monkeypatch.setattr(m, "dataset_lock", lock)
+    return state
+
+
+def test_main_runs_add_and_merge_inside_lock_but_not_status_export(intake_mod, monkeypatch, capsys):
+    m = intake_mod
+    state = _record_lock(m, monkeypatch)
+    for name in ("cmd_add", "cmd_merge", "cmd_status", "cmd_export"):
+        monkeypatch.setattr(m, name, lambda a, n=name: state["seen"].append((n, state["held"])) or 7)
+    assert m.main(["add"]) == 7
+    assert m.main(["merge", "x.csv", "--by", "영희"]) == 7
+    assert m.main(["status"]) == 7
+    assert m.main(["export"]) == 7
+    assert state["seen"] == [("cmd_add", True), ("cmd_merge", True), ("cmd_status", False),
+                             ("cmd_export", False)]
+    assert state["held"] is False

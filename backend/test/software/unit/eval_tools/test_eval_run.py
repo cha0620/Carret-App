@@ -315,7 +315,7 @@ def test_main_lock_file_overrides_and_records_meta(run_mod, presets, tmp_path, m
     assert run_mod.main() == 0
     assert seen == ["Keep it. Do not repair."]                         # 공백·줄바꿈을 한 칸으로
     meta = json.loads((tmp_path / "runs" / "t" / "meta.json").read_text(encoding="utf-8"))
-    assert meta["lock_file"] == str(lock)
+    assert meta["lock_file"] == "lock.txt"                              # 경로가 아니라 파일 이름만 (기계마다 달라 비교 오탐)
 
 
 def test_main_without_lock_file_meta_none_and_lock_unchanged(run_mod, presets, tmp_path, monkeypatch):
@@ -360,3 +360,110 @@ def test_main_lock_file_missing_or_directory_returns_1(run_mod, tmp_path, monkey
     assert run_mod.main() == 1
     assert "잠금 파일이 없다: locks" in capsys.readouterr().out
     assert not (tmp_path / "runs").exists()
+
+
+# ── select ──────────────────────────────────────
+def _ds():
+    return [{"file": "a.webp", "split": "dev"}, {"file": "b.webp", "split": "test"},
+            {"file": "c.webp"}, {"file": "d.webp", "split": None, "set": "failure"},
+            {"file": "e.webp", "split": "test", "set": "failure"}]
+
+
+def _files(xs):
+    return [e["file"] for e in xs]
+
+
+def test_select_no_filters_returns_all(run_mod):
+    assert _files(run_mod.select(_ds())) == ["a.webp", "b.webp", "c.webp", "d.webp", "e.webp"]
+
+
+def test_select_only_trims_spaces_and_ignores_unknown(run_mod):
+    assert _files(run_mod.select(_ds(), only=" b.webp , zzz.webp,a.webp")) == ["a.webp", "b.webp"]
+
+
+def test_select_split_missing_is_dev(run_mod):
+    assert _files(run_mod.select(_ds(), split="dev")) == ["a.webp", "c.webp", "d.webp"]
+    assert _files(run_mod.select(_ds(), split="test")) == ["b.webp", "e.webp"]
+
+
+def test_select_set_failure_and_core(run_mod):
+    assert _files(run_mod.select(_ds(), set_="failure")) == ["d.webp", "e.webp"]
+    assert _files(run_mod.select(_ds(), set_="core")) == ["a.webp", "b.webp", "c.webp"]
+
+
+def test_select_conditions_stack(run_mod):
+    assert _files(run_mod.select(_ds(), only="a.webp,d.webp,e.webp", split="dev", set_="failure")) == ["d.webp"]
+    assert run_mod.select(_ds(), only="a.webp", set_="failure") == []
+
+
+def test_select_does_not_mutate_input(run_mod):
+    ds = _ds()
+    run_mod.select(ds, only="a.webp", split="dev", set_="core")
+    assert ds == _ds()
+
+
+# ── dataset_sha ─────────────────────────────────
+def test_dataset_sha_order_independent_and_stable(run_mod, tmp_path):
+    (tmp_path / "a.webp").write_bytes(b"A")
+    (tmp_path / "b.webp").write_bytes(b"B")
+    es = [{"file": "a.webp", "wear_level": "light"}, {"file": "b.webp", "photo_type": "product"}]
+    sha = run_mod.dataset_sha(es, tmp_path)
+    assert len(sha) == 10 and all(c in "0123456789abcdef" for c in sha)
+    assert run_mod.dataset_sha(list(reversed(es)), tmp_path) == sha
+    # 항목 안 키 순서도 상관없다
+    assert run_mod.dataset_sha([{"wear_level": "light", "file": "a.webp"}, es[1]], tmp_path) == sha
+
+
+def test_dataset_sha_changes_with_label(run_mod, tmp_path):
+    (tmp_path / "a.webp").write_bytes(b"A")
+    base = run_mod.dataset_sha([{"file": "a.webp", "wear_level": "light"}], tmp_path)
+    assert run_mod.dataset_sha([{"file": "a.webp", "wear_level": "heavy"}], tmp_path) != base
+
+
+@pytest.mark.parametrize("key", ["photo_type", "wear_level", "text_level", "key_texts", "item"])
+def test_dataset_sha_every_answer_label_counts(run_mod, tmp_path, key):
+    assert key in run_mod.DATASET_LABELS
+    base = run_mod.dataset_sha([{"file": "a.webp"}], tmp_path)
+    assert run_mod.dataset_sha([{"file": "a.webp", key: "x"}], tmp_path) != base
+
+
+@pytest.mark.parametrize("extra", [{"note": "x"}, {"labeled_by": "kim"}, {"set": "failure"}, {"split": "test"}])
+def test_dataset_sha_ignores_non_answer_fields(run_mod, tmp_path, extra):
+    (tmp_path / "a.webp").write_bytes(b"A")
+    base = run_mod.dataset_sha([{"file": "a.webp", "wear_level": "light"}], tmp_path)
+    assert run_mod.dataset_sha([{"file": "a.webp", "wear_level": "light", **extra}], tmp_path) == base
+
+
+def test_dataset_sha_missing_label_vs_none_same(run_mod, tmp_path):
+    """e.get(k) 라 칸이 없는 것과 None 은 같은 해시."""
+    assert run_mod.dataset_sha([{"file": "a"}], tmp_path) == run_mod.dataset_sha([{"file": "a", "item": None}], tmp_path)
+
+
+def test_dataset_sha_changes_with_image_bytes(run_mod, tmp_path):
+    p = tmp_path / "a.webp"
+    p.write_bytes(b"A")
+    before = run_mod.dataset_sha([{"file": "a.webp"}], tmp_path)
+    p.write_bytes(b"A2")
+    assert run_mod.dataset_sha([{"file": "a.webp"}], tmp_path) != before
+
+
+def test_dataset_sha_missing_image_is_handled_and_differs(run_mod, tmp_path):
+    es = [{"file": "ghost.webp"}]
+    missing = run_mod.dataset_sha(es, tmp_path)
+    assert missing == run_mod.dataset_sha(es, tmp_path)
+    (tmp_path / "ghost.webp").write_bytes(b"now here")
+    assert run_mod.dataset_sha(es, tmp_path) != missing
+
+
+def test_dataset_sha_subset_differs_and_empty_ok(run_mod, tmp_path):
+    (tmp_path / "a.webp").write_bytes(b"A")
+    (tmp_path / "b.webp").write_bytes(b"B")
+    both = run_mod.dataset_sha([{"file": "a.webp"}, {"file": "b.webp"}], tmp_path)
+    assert run_mod.dataset_sha([{"file": "a.webp"}], tmp_path) != both
+    assert len(run_mod.dataset_sha([], tmp_path)) == 10
+
+
+def test_dataset_sha_unicode_label(run_mod, tmp_path):
+    a = run_mod.dataset_sha([{"file": "x.webp", "key_texts": ["루이비통"]}], tmp_path)
+    b = run_mod.dataset_sha([{"file": "x.webp", "key_texts": ["샤넬"]}], tmp_path)
+    assert a != b

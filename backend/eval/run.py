@@ -5,6 +5,7 @@
     python eval/run.py                           # 전체 파이프라인 — 생성 포함, 사진당 약 $0.04
     python eval/run.py --repeat 2 --only book.webp,bike.webp
     python eval/run.py --split test --repeat 2   # 동결된 test 만 (dev 는 조정용)
+    python eval/run.py --set failure --repeat 2  # 실패 모음만 (dataset.json 의 set="failure")
     python eval/run.py --lock-file eval/locks/surface.txt   # 잠금 문구만 바꿔 보기 (코드는 그대로, meta 에 문구가 남는다)
 
 라벨(photo_type · wear_level · text_level)이 안 된 사진은 건너뛴다 — 정답 없이 돌리면 집계가 틀린다.
@@ -104,7 +105,14 @@ def _analyze_row(detector, e: dict, data: bytes) -> dict:
     return {k: out.get(k) for k in ("item", "photo_type", "wear_level", "watermark", "text_level")}
 
 
-def _full_row(e: dict, data: bytes, rep: int, preset: str, files_dir: Path) -> dict:
+def composition_for(e: dict, mode: str) -> str | None:
+    """--composition: "" = 안 씀, "auto" = dataset.json 의 target_composition, 그 밖 = 그 구도 키 하나."""
+    if not mode:
+        return None
+    return e.get("target_composition") or None if mode == "auto" else mode
+
+
+def _full_row(e: dict, data: bytes, rep: int, preset: str, files_dir: Path, composition: str | None = None) -> dict:
     from app.services import pipeline
     from app.services.persistence import storage, store
     fid = uuid.uuid4().hex
@@ -112,7 +120,7 @@ def _full_row(e: dict, data: bytes, rep: int, preset: str, files_dir: Path) -> d
     storage.save("original", f"{fid}{ext}", data)
     store.record_original(fid, ext, "eval", original_name=e["file"], size_bytes=len(data))
     t0 = time.time()
-    out = pipeline.run_transform(fid, preset)
+    out = pipeline.run_transform(fid, preset, composition=composition)
     elapsed = time.time() - t0
     name = f"{fid}_{preset}"
     inspect = json.loads(storage.load("quality", f"{name}_inspect.json") or b"{}")
@@ -139,6 +147,7 @@ def _full_row(e: dict, data: bytes, rep: int, preset: str, files_dir: Path) -> d
         "checks": inspect.get("checks") or [],
         "judge": {k: quality.get(k) for k in ("fidelity", "realism", "trust")} if quality else None,
         "prompt_used": out.get("prompt_used"),
+        "composition": composition,
     }
 
 
@@ -184,6 +193,36 @@ details{{margin-top:8px;color:#555}}.prompt{{white-space:pre-wrap;background:#f6
     print(f"채점: {run_dir / 'review.html'} · {rdir / 'TEMPLATE.csv'}")
 
 
+SETS = ("failure", "core")   # failure = 실패 모음 (dev 전용), core = 그 밖의 전부
+
+
+def select(dataset: list[dict], only: str = "", split: str = "", set_: str = "") -> list[dict]:
+    """돌릴 사진 고르기 — 조건은 모두 겹쳐 건다 (--set failure --only a.webp 면 실패 모음 안의 a 만)."""
+    if only:
+        keep = {s.strip() for s in only.split(",")}
+        dataset = [e for e in dataset if e["file"] in keep]
+    if split:
+        dataset = [e for e in dataset if (e.get("split") or "dev") == split]
+    if set_:
+        dataset = [e for e in dataset if (e.get("set") == "failure") == (set_ == "failure")]
+    return dataset
+
+
+# 정답으로 쓰는 칸만 — note · labeled_by · set(실패 모음) 같은 칸을 고쳐도 해시가 안 바뀌게
+DATASET_LABELS = ("photo_type", "wear_level", "text_level", "key_texts", "item")
+
+
+def dataset_sha(entries: list[dict], images: Path) -> str:
+    """돌린 사진들의 정답 라벨 + 사진 내용 해시 — 실행끼리 같은 데이터로 돌렸는지 (compare.py 가 대 본다)."""
+    h = hashlib.sha1()
+    for e in sorted(entries, key=lambda e: e["file"]):
+        label = {k: e.get(k) for k in ("file",) + DATASET_LABELS}
+        h.update(json.dumps(label, ensure_ascii=False, sort_keys=True).encode())
+        p = images / e["file"]
+        h.update(hashlib.sha1(p.read_bytes()).digest() if p.exists() else b"missing")
+    return h.hexdigest()[:10]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--analyze-only", action="store_true")
@@ -192,9 +231,13 @@ def main() -> int:
     ap.add_argument("--only", default="", help="쉼표로 구분한 파일 이름")
     ap.add_argument("--split", choices=("dev", "test"), default="",
                     help="이 split 만 (split 이 없는 옛 항목은 dev)")
+    ap.add_argument("--set", choices=SETS, default="", dest="set_",
+                    help="failure = 실패 모음만, core = 실패 모음을 뺀 나머지")
     ap.add_argument("--run-id", default="")
     ap.add_argument("--note", default="", help="이 실행에서 바꾼 것 (meta.json 에 남는다 — 코드에 없는 임시 변경은 꼭 적는다)")
     ap.add_argument("--yes", action="store_true", help="비용 확인을 건너뛴다")
+    ap.add_argument("--composition", default="",
+                    help="정석 구도 프롬프트를 붙인다 — auto = 사진마다 dataset.json 의 target_composition, 또는 구도 키 하나")
     ap.add_argument("--lock-file", default="", help="잠금 문구를 이 파일 내용으로 바꿔 돌린다 (프롬프트 실험용)")
     a = ap.parse_args()
     lock = ""
@@ -210,12 +253,7 @@ def main() -> int:
             print(f"{a.lock_file} 이 비었다")
             return 1
 
-    dataset = json.loads((HERE / "dataset.json").read_text(encoding="utf-8"))
-    if a.only:
-        keep = {s.strip() for s in a.only.split(",")}
-        dataset = [e for e in dataset if e["file"] in keep]
-    if a.split:
-        dataset = [e for e in dataset if (e.get("split") or "dev") == a.split]
+    dataset = select(json.loads((HERE / "dataset.json").read_text(encoding="utf-8")), a.only, a.split, a.set_)
     unlabeled = [e["file"] for e in dataset
                  if not all(e.get(k) in v for k, v in LABEL_VALUES.items())]
     if unlabeled:
@@ -251,9 +289,10 @@ def main() -> int:
         return 1
 
     meta = {"run_id": run_id, "full": full, "repeat": reps, "preset": a.preset,
-            "split": a.split or "all", "only": a.only, "note": a.note, "lock_file": a.lock_file or None,
+            "split": a.split or "all", "set": a.set_ or "all", "only": a.only, "composition": a.composition or None, "note": a.note, "lock_file": Path(a.lock_file).name if a.lock_file else None,
+            "dataset_sha": dataset_sha(dataset, IMAGES),
             "created": datetime.now().isoformat(timespec="seconds"), **_conditions()}
-    (run_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2))
+    (run_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     # 한 줄씩 바로 쓴다 — 중간에 멈춰도(Ctrl-C·한도) 끝난 실행은 남는다
     results = open(run_dir / "results.jsonl", "w", encoding="utf-8")
     rows = []
@@ -263,7 +302,7 @@ def main() -> int:
         for rep in range(1, reps + 1):
             row = {"file": e["file"], "repeat": rep}
             try:
-                row.update(_full_row(e, data, rep, a.preset, files_dir) if full
+                row.update(_full_row(e, data, rep, a.preset, files_dir, composition_for(e, a.composition)) if full
                            else _analyze_row(detector, e, data))
             except Exception as ex:
                 row["error"] = f"{type(ex).__name__}: {ex}"

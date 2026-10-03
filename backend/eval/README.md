@@ -26,7 +26,17 @@ python eval/run.py --only edge_clothes2.webp,wind.webp --repeat 2 \
   --lock-file eval/locks/surface.txt --run-id 20261002-lock-surface --note "무엇을 바꿨나"
 ```
 
-`meta.json` 에 잠금 문구 · 해시(`lock`, `lock_sha`) · `lock_file` 이 남는다. 실험 문구는 `eval/locks/`.
+`meta.json` 에 잠금 문구 · 해시(`lock`, `lock_sha`) · `lock_file` · 데이터셋 해시(`dataset_sha`)가 남는다. 실험 문구는 `eval/locks/`.
+
+실험 절차와 기록은 **`EXPERIMENTS.md`** (가설 먼저 → 작게 돌리기 → 채점 → 비교 → 판정):
+
+```bash
+python eval/run.py --set failure --repeat 2 ...    # 실패 모음만 (dataset.json set="failure"), --set core 는 나머지
+python eval/compare.py <기준 run> <실험 run>       # → runs/compare-<기준>-vs-<실험>.html + 숫자표
+```
+
+`compare.py` 는 사진 · repeat · `dataset_sha` · 평가자가 다르거나, 옛 실행이라 기록이 없거나, 채점이 덜 됐으면 맨 위에 경고한다.
+`dataset_sha` 는 정답 칸(photo_type · wear_level · text_level · key_texts · item)과 사진 내용만 본다 — note · set 을 고쳐도 안 바뀐다.
 
 - `images/`, `runs/` 는 git 에 올리지 않는다 — 남의 사진이고 번호판·얼굴이 찍혀 있을 수 있다
 - `dataset.json`(정답)과 `reviews/`(사람 채점)는 올린다 — 사진 없이도 숫자를 다시 낼 수 있게

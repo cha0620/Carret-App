@@ -55,3 +55,36 @@ def grade_mod(tmp_path, monkeypatch):
 @pytest.fixture
 def refs_mod():
     return _load("refs")
+
+
+@pytest.fixture
+def compare_mod(tmp_path, monkeypatch):
+    """compare 와 그 안의 report(rp) 의 HERE 를 tmp_path 로 — 실제 runs/·reviews/ 를 건드리지 않게.
+    compare 는 불러올 때 sys.path 에 eval/ 를 넣고 `import report` 를 한다 — 테스트 뒤 sys.path·sys.modules 를 되돌린다."""
+    import sys
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    had_report = "report" in sys.modules
+    mod = _load("compare")
+    monkeypatch.setattr(mod, "HERE", tmp_path)
+    monkeypatch.setattr(mod.rp, "HERE", tmp_path)
+    yield mod
+    if not had_report:
+        sys.modules.pop("report", None)
+
+
+@pytest.fixture
+def board_mod(tmp_path, monkeypatch):
+    """board 와 그 안의 report(rp) 의 HERE, intake.DATASET 를 tmp_path 로 — 실제 runs/·reviews/·dataset.json 을 건드리지 않게.
+    board 는 불러올 때 sys.path 에 eval/ 를 넣고 `import intake`, `import report` 를 한다 — 테스트 뒤 되돌린다."""
+    import sys
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    had = {m: m in sys.modules for m in ("intake", "report")}
+    mod = _load("board")
+    monkeypatch.setattr(mod, "HERE", tmp_path)
+    monkeypatch.setattr(mod.rp, "HERE", tmp_path)
+    monkeypatch.setattr(mod.intake, "DATASET", tmp_path / "dataset.json")
+    (tmp_path / "runs").mkdir()
+    yield mod
+    for m, was in had.items():
+        if not was:
+            sys.modules.pop(m, None)

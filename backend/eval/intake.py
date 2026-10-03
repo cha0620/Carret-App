@@ -15,7 +15,9 @@ dev/test: 층마다 목표 수만큼 자리(dev·test)를 미리 섞어 두고, 
 splits.jsonl 에 남기고, status 가 dataset.json 과 대 본다 (test 동결).
 """
 import argparse
+import contextlib
 import csv
+import fcntl
 import hashlib
 import json
 import os
@@ -23,6 +25,7 @@ import random
 import re
 import shutil
 import sys
+import tempfile
 from datetime import date
 from pathlib import Path
 
@@ -59,9 +62,28 @@ def save_dataset(entries: list[dict]) -> None:
     """한 항목 한 줄 — 라벨을 고친 diff 가 그 사진 줄만 바뀌게. 임시 파일에 쓰고 바꿔 끼운다
     (쓰는 도중 멈춰도 dataset.json 이 깨지지 않게)."""
     body = ",\n".join("  " + json.dumps(e, ensure_ascii=False) for e in entries)
-    tmp = DATASET.with_suffix(".json.tmp")
-    tmp.write_text(f"[\n{body}\n]\n" if entries else "[]\n", encoding="utf-8")
-    os.replace(tmp, DATASET)
+    fd, tmp = tempfile.mkstemp(dir=DATASET.parent, prefix=".dataset-", suffix=".tmp")   # 프로세스마다 다른 임시 파일
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(f"[\n{body}\n]\n" if entries else "[]\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, DATASET)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+@contextlib.contextmanager
+def dataset_lock():
+    """dataset.json 을 읽고 고쳐 쓰는 동안 다른 프로세스(board.py 등)가 끼어들지 못하게 — 파일 락."""
+    with open(DATASET.with_suffix(".json.lock"), "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def load_split_log() -> dict[str, str]:
@@ -441,6 +463,9 @@ def main(argv=None) -> int:
     p.add_argument("--relabel", action="store_true", help="test 사진의 사람 라벨을 바꾸는 것도 허용")
     p.set_defaults(fn=cmd_merge)
     a = ap.parse_args(argv)
+    if a.cmd in ("add", "merge"):          # dataset.json 을 고쳐 쓰는 명령 — 결과판(board.py) 체크와 겹치지 않게
+        with dataset_lock():
+            return a.fn(a)
     return a.fn(a)
 
 
