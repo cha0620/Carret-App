@@ -253,14 +253,13 @@ def with_secondhand_lock(prompt: str) -> str:
     return f"{body} {SECONDHAND_LOCK}" if body else SECONDHAND_LOCK
 
 
-MAX_LEAVE_OUT = 12
+LEAVE_OUT = ("\n\nOnly the item for sale belongs in the result: leave out the other objects that are in the "
+             "photo around it.")
 
 
 def leave_out(names: list[str]) -> str:
-    """사용자가 팔지 않는다고 고른 물건 — 결과에서 뺀다."""
-    names = [n for n in (prompt_safe(x) for x in names) if n][:MAX_LEAVE_OUT]
-    if not names:
-        return ""
-    return "\n\nLeave out these things that are not for sale: " + ", ".join(f'"{n}"' for n in names) + "."
+    """사용자가 팔지 않는다고 고른 물건 — 결과에서 뺀다. 물건 이름은 쓰지 않는다 (10-03: "CD case" 를 빼라고 쓰니
+    고른 CD 의 투명 케이스까지 벗겼고, 이름을 안 쓰니 케이스가 남았다). 정확히 지우는 건 배경 교체의 박스(drop_boxes)."""
+    return LEAVE_OUT if any(prompt_safe(x) for x in names) else ""
 
 

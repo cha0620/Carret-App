@@ -125,7 +125,7 @@ def test_get_preset_moves_lock_to_end_when_console_text_appends_after_it(monkeyp
 
 
 # ══ 10-03: 팔 물건 고르기 — leave_out (count_lock 은 효과가 없어 뺐다) ═══════
-from app.prompts.presets import MAX_LEAVE_OUT, TEXT_LOCK_MAX_CHARS, leave_out  # noqa: E402
+from app.prompts.presets import LEAVE_OUT, TEXT_LOCK_MAX_CHARS, leave_out  # noqa: E402
 
 
 @pytest.mark.parametrize("names", [[], ["", "  ", "\n"]])
@@ -133,24 +133,7 @@ def test_leave_out_nothing_usable_is_empty(names):
     assert leave_out(names) == ""
 
 
-def test_leave_out_lists_names_in_order():
-    assert leave_out(["keyboard", "mug"]) == \
-        "\n\nLeave out these things that are not for sale: \"keyboard\", \"mug\"."
-
-
-def test_leave_out_drops_blank_and_sanitizes():
-    out = leave_out(["", ' mouse "pad"\n', "  "])
-    assert out == "\n\nLeave out these things that are not for sale: \"mouse 'pad'\"."
-
-
-def test_leave_out_caps_at_max_after_dropping_blanks():
-    names = [""] * 5 + [f"o{i}" for i in range(MAX_LEAVE_OUT + 5)]
-    out = leave_out(names)
-    listed = [n.strip('"') for n in out.split(": ", 1)[1].rstrip(".").split(", ")]
-    assert listed == [f"o{i}" for i in range(MAX_LEAVE_OUT)]
-
-
-def test_leave_out_none_becomes_literal_none():
-    """현재 동작 기록: prompt_safe(None) == "None" 이라 None 이 이름으로 들어간다
-    (pipeline 이 넘기는 이름은 detector 가 비지 않은 문자열만 남기므로 실제로는 안 생김)."""
-    assert leave_out([None]).endswith(': "None".')
+def test_leave_out_never_names_the_objects():
+    """10-03: 이름을 쓰면 그 이름의 물건을 지운다 ("CD case" → 고른 CD 의 케이스까지) — 이름 없는 한 문장."""
+    out = leave_out(["keyboard", "CD case", ' mouse "pad"\n'])
+    assert out == LEAVE_OUT and "keyboard" not in out and "CD" not in out and "case" not in out.lower()

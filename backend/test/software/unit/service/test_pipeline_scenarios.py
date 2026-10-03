@@ -777,7 +777,7 @@ def test_keep_attempts_saves_every_generation(w, monkeypatch, keep):
 CD_L = {"what": "CD", "box": {"x1": 50, "y1": 100, "x2": 450, "y2": 900}, "for_sale": True}
 CD_R = {"what": "CD", "box": {"x1": 550, "y1": 100, "x2": 950, "y2": 900}, "for_sale": True}
 KEYB = {"what": "keyboard", "box": {"x1": 0, "y1": 0, "x2": 1000, "y2": 80}, "for_sale": False}
-LEAVE = "Leave out these things that are not for sale"
+LEAVE = "leave out the other objects that are in the photo"   # 이름 없는 한 문장 (10-03)
 
 
 def _cached(w, *objs, count=None, **extra):
@@ -863,7 +863,7 @@ def test_sell_one_of_two_generates_with_leave_out(w):
     assert out["mode"] == "generate" and out["composite_reason"] is None
     assert "compose" not in w.calls and w.count("generate") == 1
     p = w.prompts[0]
-    assert f'{LEAVE}: "keyboard".' in p and BY_KEY["shoes_side"]["prompt"] in p
+    assert LEAVE in p and "keyboard" not in p and BY_KEY["shoes_side"]["prompt"] in p
     assert "This photo shows" not in p and "Keep all" not in p     # 개수 문장은 없어졌다
 
 
@@ -897,7 +897,7 @@ def test_selection_is_not_saved_into_cached_analysis(w):
 def test_sell_picking_only_non_sale_object(w):
     _cached(w, CD_L, CD_R, KEYB, count=2)
     w.run(sell=[2])
-    assert f'{LEAVE}: "CD".' in w.prompts[0] and "This photo shows" not in w.prompts[0]
+    assert LEAVE in w.prompts[0] and '"CD"' not in w.prompts[0] and "This photo shows" not in w.prompts[0]
     assert w.row()["item"] == "keyboard"
 
 
