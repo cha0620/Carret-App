@@ -45,5 +45,13 @@ def intake_mod(tmp_path, monkeypatch):
 
 
 @pytest.fixture
+def grade_mod(tmp_path, monkeypatch):
+    """HERE 를 tmp_path 로 돌려 둔 grade — 실제 runs/·reviews/ 를 건드리지 않게."""
+    mod = _load("grade")
+    monkeypatch.setattr(mod, "HERE", tmp_path)
+    return mod
+
+
+@pytest.fixture
 def refs_mod():
     return _load("refs")

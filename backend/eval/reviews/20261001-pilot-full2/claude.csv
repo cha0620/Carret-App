@@ -1,0 +1,59 @@
+file,repeat,mode,reviewed,shape_color_changed,text_changed,wear_changed,background_issue,framing_issue,note
+book.webp,1,composite,y,,,,,,책갈피 끈이 빠짐(사소)
+book.webp,2,composite,y,,,,,,책갈피 끈이 빠짐(사소)
+book2.webp,1,composite,y,,,,,,
+book2.webp,2,composite,y,,,,,,
+car2.webp,1,original,y,,,,,,원본 그대로
+car2.webp,2,original,y,,,,,,원본 그대로
+bike.webp,1,generate,y,,,,,,탱크 옆 데칼 세부가 조금 다름
+bike.webp,2,generate,y,,,,,,"탱크 데칼 세부 다름, 윈드스크린에 작은 글자"
+car1.webp,1,generate,y,,,,,,
+car1.webp,2,generate,y,,,,,,
+knit1.webp,1,generate,y,,,,,,
+knit1.webp,2,generate,y,,,,,,
+tshirt.webp,1,generate,y,1,,,,,오른쪽 가슴 칼라 옆에 없던 'H4' 같은 표시가 생김
+tshirt.webp,2,generate,y,,,,,,
+wind.webp,1,generate,y,,,,,,
+wind.webp,2,generate,y,,,,,,
+doc_album1.webp,1,composite,y,,,,,,
+doc_album1.webp,2,composite,y,,,,,,
+doc_album2.webp,1,composite,y,,,,1,1,"왼쪽 끝에 뒤 분홍 CD 조각 남음, 두 장이 작고 납작하게 잘림"
+doc_album2.webp,2,composite,y,,,,1,1,"왼쪽 끝에 뒤 분홍 CD 조각 남음, 두 장이 작고 납작하게 잘림"
+doc_book1.webp,1,composite,y,,,,,,
+doc_book1.webp,2,composite,y,,,,,,
+doc_book2.webp,1,composite,y,,,,,,
+doc_book2.webp,2,composite,y,,,,,,
+doc_book3.webp,1,composite,y,,,,,,
+doc_book3.webp,2,composite,y,,,,,,
+doc_book4.webp,1,composite,y,,,,,,책갈피 끈이 빠짐(사소)
+doc_book4.webp,2,composite,y,,,,,,책갈피 끈이 빠짐(사소)
+edge_clothes2.webp,1,generate,y,1,,,,,"디스트레스 구멍이 전부 사라짐, 프린트 아래 작은 글자 생김"
+edge_clothes2.webp,2,generate,y,1,,,,,디스트레스 구멍이 전부 사라짐
+edge_manga1.webp,1,composite,y,,,,,,
+edge_manga1.webp,2,composite,y,,,,,,
+none_car2.webp,1,generate,y,1,1,,,,마스트에 없던 큰 글자 'S-OPS'가 생김
+none_car2.webp,2,composite,y,,,,,,
+none_car3.webp,1,composite,y,,,,1,,왼쪽 아래 케이블·잔해가 남고 오린 경계가 들쭉날쭉
+none_car3.webp,2,composite,y,,,,1,,왼쪽 아래 케이블·잔해가 남고 오린 경계가 들쭉날쭉
+none_car4.webp,1,generate,y,,,,,,
+none_car4.webp,2,generate,y,,,,,,
+none_clothes1.webp,1,generate,y,,,,,,
+none_clothes1.webp,2,generate,y,,,,,,
+none_clothes3.webp,1,generate,y,1,,,,,목 안쪽에 없던 'LifeWork' 글자가 생김
+none_clothes3.webp,2,generate,y,,,,,,
+none_clothes4.webp,1,generate,y,,,,,,
+none_clothes4.webp,2,generate,y,,,,,,
+none_shoes1.webp,1,composite,y,,,,,,"손 그대로, 왼쪽 끈 끝 일부 잘림"
+none_shoes1.webp,2,generate,y,,,,,,
+none_shoes2.webp,1,generate,y,,,1,,,앞코 고무의 긁힘·오염이 깨끗해짐
+none_shoes2.webp,2,generate,y,,,1,,,"앞코 고무의 긁힘·오염이 깨끗해짐, 왼쪽 앞코 글자 모양 다름"
+none_shoes4.webp,1,generate,y,,,,,,
+none_shoes4.webp,2,generate,y,,,,,,
+none_watch1.webp,1,composite,y,,,,1,,시곗줄 위쪽 오른편에 빨간 상자 조각이 남음
+none_watch1.webp,2,composite,y,,,,1,,시곗줄 위쪽 오른편에 빨간 상자 조각이 남음
+none_watch2.webp,1,composite,y,,,,,,줄 아래가 곧게 잘림 (원본도 화면 밖)
+none_watch2.webp,2,composite,y,,,,,,줄 아래가 곧게 잘림 (원본도 화면 밖)
+none_watch3.webp,1,composite,y,,,,,,
+none_watch3.webp,2,generate,y,1,1,1,1,,"바늘 위치(시각)가 바뀜, 다이얼에 없던 큰 QUARTZ, 다이얼 얼룩 지워짐, 손이 반투명 유령처럼 남음"
+none_watch4.webp,1,composite,y,,,,,,
+none_watch4.webp,2,composite,y,,,,,,

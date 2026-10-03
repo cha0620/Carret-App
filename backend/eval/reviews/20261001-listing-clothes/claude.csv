@@ -1,0 +1,21 @@
+file,repeat,mode,reviewed,shape_color_changed,text_changed,wear_changed,added_content,background_issue,framing_issue,failure_tags,photo_quality,note
+knit1.webp,1,generate,y,,,,1,,,text_added,,Claude 1차 (study 10-01 §2-2) — 목 라벨 글자를 가슴 프린트로 새로 그림
+knit1.webp,2,generate,,,,,,,,,,
+tshirt.webp,1,generate,,,,,,,,,,
+tshirt.webp,2,generate,,,,,,,,,,
+wind.webp,1,generate,y,1,,,,,,material_changed,,Claude 1차 (study 10-01 §2-2) — 여전히 무광
+wind.webp,2,generate,y,1,,,,,,material_changed,,Claude 1차 (study 10-01 §2-2) — 여전히 무광
+edge_clothes2.webp,1,generate,y,1,,,,,,detail_lost,,Claude 1차 (study 10-01 §2-2) — 디스트레스 구멍 메워짐
+edge_clothes2.webp,2,generate,y,1,,,,,,detail_lost,,Claude 1차 (study 10-01 §2-2) — 디스트레스 구멍 메워짐
+none_clothes1.webp,1,generate,,,,,,,,,,
+none_clothes1.webp,2,generate,,,,,,,,,,
+none_clothes3.webp,1,generate,,,,,,,,,,
+none_clothes3.webp,2,generate,,,,,,,,,,
+none_clothes4.webp,1,generate,,,,,,,,,,
+none_clothes4.webp,2,generate,,,,,,,,,,
+none_shoes1.webp,1,composite,,,,,,,,,,
+none_shoes1.webp,2,generate,y,,,,1,,,object_added,,Claude 1차 (study 10-01 §2-2) — 없던 셔츠
+none_shoes2.webp,1,generate,y,,,,1,,,object_added,,Claude 1차 (study 10-01 §2-2) — 없던 재킷
+none_shoes2.webp,2,generate,y,,,,1,,,object_added,,Claude 1차 (study 10-01 §2-2) — 없던 재킷
+none_shoes4.webp,1,composite,,,,,,,,,,
+none_shoes4.webp,2,composite,,,,,,,,,,
