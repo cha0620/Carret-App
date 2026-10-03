@@ -855,8 +855,6 @@ def test_answer_count_one_overrides_analysis_many(w):
     assert "This photo shows" not in w.prompts[0] and BY_KEY["shoes_side"]["prompt"] in w.prompts[0]
 
 
-@pytest.mark.xfail(strict=True, reason="버그 보고: 옛 분석(item_texts 없음)에 sell 을 주면 apply_selection 이 item_texts=[] 를 "
-                                       "만들어 read_text 를 건너뛰고 글자 잠금이 빠진다")
 def test_sell_on_old_analysis_without_texts_still_reads_text(w):
     _cached(w, CD_L, KEYB, text_level="simple")
     w.texts = [{"text": "SONY"}]
@@ -891,10 +889,11 @@ def test_added_text_alone_fails_gate_even_with_nothing_to_verify(w):
     assert "verify" not in w.calls and out["mode"] == "composite"
 
 
-def test_added_text_call_failure_is_verify_failed(w):
+def test_added_text_call_failure_does_not_block(w):
+    """덧붙인 검사라 호출이 안 돼도 막지 않는다 — 마크 검사는 그대로 (10-03 리뷰)."""
     w.added = [RuntimeError("down")] * 3
     out = w.run()
-    assert out["mode"] == "composite" and out["composite_reason"] == "verify_failed"
+    assert out["mode"] == "generate" and out["gate_passed"] is True and "verify" in w.calls
 
 
 def test_added_text_gate_off_skips_call(w, monkeypatch):

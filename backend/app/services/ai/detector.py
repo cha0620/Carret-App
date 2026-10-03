@@ -213,7 +213,7 @@ def _parse_objects(raw) -> list[dict]:
             continue
         what, box = _text(o.get("what")), _from_box_2d({"box_2d": o.get("box_2d")})
         if what and _has_box(box):
-            out.append({"what": what, "box": _box(box), "for_sale": o.get("for_sale") is not False})
+            out.append({"what": what, "box": _box(box), "for_sale": o.get("for_sale") not in (False, 0, "false", "False")})
         if len(out) >= MAX_OBJECTS:
             break
     return out

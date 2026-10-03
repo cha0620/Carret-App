@@ -82,6 +82,7 @@ class State(TypedDict, total=False):
     gate_retried: bool         # verify 게이트 실패로 재생성을 이미 1회 했나
     gate_note: str             # 그 재생성 때 프롬프트에 붙인 "사라진 하자" 목록
     added_text: list           # 생성본에 새로 생긴 글자 · 로고 (원본에 없던 것) — 있으면 게이트 실패
+    gate_added_text: list      # 게이트에서 떨어진 생성본의 added_text (재생성 · 배경 교체 뒤에도 남긴다)
     mode: str                  # "generate" | "composite"(원본 물건 + 배경만 교체) | "composite_failed"
                                #   | "original"(원본 그대로 — inside_view 등)
     composite_reason: str | None   # 생성하지 않은 이유: detect_failed | inside_view | document | text_dense
@@ -235,10 +236,10 @@ def apply_selection(a: dict, sell: list | None, answer_count: int | None = None)
             out["leave_out"] = list(dict.fromkeys(o["what"] for o in dropped if o["what"] not in names))
             out["leave_out_boxes"] = [o["box"] for o in dropped]
             out["sell_boxes"] = [o["box"] for o in picked]
-            texts = a.get("item_texts") or []
-            out["item_texts"] = [t for t in texts
-                                 if not (any(_inside(t, o["box"]) for o in dropped)
-                                         and not any(_inside(t, o["box"]) for o in picked))]
+            if "item_texts" in a:   # 옛 분석(글자 목록 없음)에 빈 목록을 만들면 read_text 가 "이미 읽음"으로 건너뛴다
+                out["item_texts"] = [t for t in a.get("item_texts") or []
+                                     if not (any(_inside(t, o["box"]) for o in dropped)
+                                             and not any(_inside(t, o["box"]) for o in picked))]
     if isinstance(answer_count, int) and not isinstance(answer_count, bool) and answer_count >= 1:
         out["item_count"] = answer_count
     return out
@@ -546,9 +547,11 @@ def verify(s: State) -> dict:
         # "verify 호출 실패 → 배경 교체"면 그 사실이 배지·inspect 에 남아야 한다.
         # 생성본 게이트에서 떨어진 checks(무엇이 사라졌나)는 gate_checks 로 옮겨 남긴다
         # (checks 는 말풍선 좌표라 생성본 기준 — 합성본 위에 그리면 안 된다)
-        out = {"checks": checks, "gate_passed": None}
+        out = {"checks": checks, "gate_passed": None, "added_text": []}
         if s.get("checks"):
             out["gate_checks"] = s["checks"]
+        if s.get("added_text"):
+            out["gate_added_text"] = s["added_text"]   # 생성본에 생겼던 글자 — 합성본 기준이 아님
         return out
     if s.get("detect_failed"):
         # 원본 마크 목록이 없으니 보존 여부를 확인할 수 없다 — 생성본은 통과로 치지 않는다
@@ -557,7 +560,8 @@ def verify(s: State) -> dict:
     saved = storage.load("result", s["result_name"])
     added = _added_text(s, saved)
     if added is None:
-        return {"checks": [], "verify_failed": True, "gate_passed": False, "added_text": []}
+        # 덧붙인 검사라 호출이 안 돼도 막지 않는다 — 마크 검사(verify)는 그대로 한다 (10-03 리뷰)
+        added = []
     if not targets:
         return {"checks": checks, "verify_failed": False, "added_text": added,
                 "gate_passed": False if added else gate_passed}
@@ -574,7 +578,7 @@ def verify(s: State) -> dict:
             if attempt < VERIFY_ATTEMPTS:
                 time.sleep(DETECT_RETRY_DELAY_S)
     # 호출 실패(타임아웃·429·장애)는 "보존됨"이 아니다 — 통과로 치지 않는다 (→ 배경 교체)
-    return {"checks": [], "verify_failed": True, "gate_passed": False}
+    return {"checks": [], "verify_failed": True, "gate_passed": False, "added_text": added}
 
 
 def _added_text(s: State, result: bytes) -> list | None:
@@ -588,7 +592,7 @@ def _added_text(s: State, result: bytes) -> list | None:
                 print(f"[verify] 없던 글자 · 로고: {[a['what'] for a in added]}")
             return added
         except Exception as e:
-            print(f"[added_text] 실패 ({attempt}/{VERIFY_ATTEMPTS}): {e}")
+            print(f"[added_text] 실패 ({attempt}/{VERIFY_ATTEMPTS}) — 막지 않음: {e}")
             if not retryable(e):
                 break
             if attempt < VERIFY_ATTEMPTS:
@@ -616,12 +620,13 @@ def mark_gate_retry(s: State) -> dict:
     note = ("\n\nIMPORTANT: a previous attempt lost or altered these marks on the "
             "product: " + "; ".join(f'"{w}"' for w in lost if w) +
             ". They MUST remain exactly as in the input image.") if lost else ""
-    if s.get("added_text"):
+    added = [a["what"] for a in s.get("added_text") or []]
+    if added:
         # 생긴 글자를 그대로 적지 않는다 — 단어를 쓰면 그걸 다시 그린다 (10-03)
         note += ("\n\nIMPORTANT: a previous attempt drew marks on the product that are not in the input "
                  "image. Every surface of the product must look exactly as in the input image.")
-    print(f"[gate] 실패 → 1회 재생성: {lost}")
-    return {"gate_retried": True, "gate_note": note,
+    print(f"[gate] 실패 → 1회 재생성: 사라짐 {lost} · 새로 생김 {added}")
+    return {"gate_retried": True, "gate_note": note, "gate_added_text": s.get("added_text") or [],
             "photo_check": None}
 
 
@@ -723,7 +728,7 @@ def save_inspect(s: State) -> dict:
             "text_level": s.get("text_level"),
             "item_box": s.get("item_box"),                     # 누끼 비교(그래프 밖)가 원본을 오릴 범위
             "item_count": s.get("item_count"),
-            "added_text": s.get("added_text") or [],
+            "added_text": s.get("added_text") or [], "gate_added_text": s.get("gate_added_text") or [],
             "sell": s.get("sell"), "leave_out": s.get("leave_out") or [],
             "mode": s.get("mode", "generate"),
             "composite_reason": s.get("composite_reason"),

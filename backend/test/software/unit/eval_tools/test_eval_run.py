@@ -79,7 +79,7 @@ def test_confirm_yes_skips_input(run_mod, monkeypatch, capsys):
     monkeypatch.setattr("builtins.input", boom)
     assert run_mod._confirm(10, True, True) is True
     out = capsys.readouterr().out
-    assert "사진 10번" in out and "$0.40" in out and "전체 파이프라인" in out
+    assert "사진 10번" in out and "$0.45" in out and "전체 파이프라인" in out
 
 
 def test_confirm_cost_analyze(run_mod, monkeypatch, capsys):

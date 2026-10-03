@@ -267,8 +267,6 @@ def test_apply_selection_without_choice_keeps_texts_as_is():
     assert pipeline_mod.apply_selection(_analysis(item_texts=texts), None)["item_texts"] == texts
 
 
-@pytest.mark.xfail(strict=True, reason="버그 보고: 옛 분석(item_texts 키 없음)에 sell 을 주면 item_texts=[] 가 생겨 "
-                                       "read_text 가 '이미 읽었다'로 보고 글자 읽기를 건너뛴다 → 글자 잠금이 사라짐")
 def test_apply_selection_keeps_item_texts_key_absent_when_analysis_has_none():
     a = _analysis()
     assert "item_texts" not in a

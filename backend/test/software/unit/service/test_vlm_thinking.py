@@ -53,7 +53,7 @@ def test_default_thinking_table_exact():
     assert vlm.DEFAULT_THINKING == {
         "verify": 2048, "item_text": 2048,
         "detect": 4096, "analyze": 4096, "judge": 4096, "check_photo": 4096, "match": 4096,
-        "classify": "minimal", "auto_feedback": "low", "views": 4096,
+        "classify": "minimal", "auto_feedback": "low", "views": 4096, "added_text": 2048,
     }
 
 

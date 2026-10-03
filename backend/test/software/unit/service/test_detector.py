@@ -1286,10 +1286,10 @@ def test_parse_objects_name_sanitized():
 
 
 @pytest.mark.parametrize("raw,expected", [
-    (False, False), (True, True), (None, True), ("false", True), (0, True), ("no", True),
+    (False, False), (True, True), (None, True), ("false", False), ("False", False), (0, False), ("no", True),
 ])
-def test_parse_objects_for_sale_only_literal_false_is_false(raw, expected):
-    """현재 동작: for_sale 은 정확히 False 일 때만 False — 문자열 "false" · 0 은 팔 물건으로 본다."""
+def test_parse_objects_for_sale_false_like_values(raw, expected):
+    """for_sale 은 False · 0 · "false" 면 팔지 않는 물건, 없거나 그 밖이면 팔 물건 (기본 체크)."""
     out = _parse_objects([{"what": "a", "box_2d": [0, 0, 10, 10], "for_sale": raw}])
     assert out[0]["for_sale"] is expected
 

@@ -32,7 +32,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 IMAGES = HERE / "data" / "images"
-COST_ANALYZE, COST_FULL = 0.005, 0.04   # 사진 1장 대략 (09-26 실측 기준)
+COST_ANALYZE, COST_FULL = 0.005, 0.045   # 사진 1장 대략 (09-26 실측 기준)
 LABEL_VALUES = {"photo_type": ("document", "inside_view", "product"),   # intake.ENUMS 와 같게
                 "wear_level": ("none", "light", "heavy"),
                 "text_level": ("none", "simple", "dense")}
@@ -178,6 +178,7 @@ def _full_row(e: dict, data: bytes, rep: int, preset: str, files_dir: Path, comp
             "visual_similarity", "item_similarity", "item_patch_similarity", "gen_attempts")},
         "gate_checks": inspect.get("gate_checks") or [],
         "added_text": inspect.get("added_text") or [],
+        "gate_added_text": inspect.get("gate_added_text") or [],
         "checks": inspect.get("checks") or [],
         "judge": {k: quality.get(k) for k in ("fidelity", "realism", "trust")} if quality else None,
         "prompt_used": out.get("prompt_used"),
