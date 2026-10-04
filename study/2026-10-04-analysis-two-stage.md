@@ -17,6 +17,8 @@
 15. 빈 곳 판정 — 네 방법 검토
 16. 노트북 생성 — 여러 장 + 정답 선 그림
 17. 남은 일
+18. 테스트를 1/5 로 — tester 기준부터 바꿨다
+19. 모델 · 파이프라인 점검 (Jev 글) · 옛 앵커 평가 경로 삭제 · 리팩토링
 
 ---
 
@@ -454,8 +456,83 @@ photo_type(document · inside_view)과 view(label · detail)는 둘 다 "어떤 
 - [ ] AI 원래 답(`ai`) 저장 · 고른 구도 저장 · 구성품 칸
 - [ ] 근거 사진 개인정보 가림 (일련번호 · UUID)
 - [ ] macbook2 상판이 빠진 면으로 나온 원인 확인
-- [ ] 단위 테스트 정리 (사용자) — subtype · state
+- [x] 단위 테스트 정리 → §18
 - [ ] wear_level → 넓은 흔적 있음 / 없음 (기준선 뒤)
 - [ ] 생성 뒤 비교 게이트에 사라진 것 · 개수
 - [ ] `other` · `electronics` 세분화 (시계 · 책 · 음반 · 폰)
 - [ ] 묶기 중 잠금 범위 (VLM 호출을 잠금 밖으로)
+- [ ] 구성품 분기 — `kind: accessory` + `part_of`, 물건별 구성품 목록 · 있음/없음/비정품 질문 · 판매글 문구 (노트북부터).
+  사용자 결정: 구성품 사진은 원본 그대로 (오려서 배치하지 않음) — 썸네일(본품 생성)이 가장 중요
+- [ ] 여러 물품을 한 번에 생성할지 — 당장은 대표 물건만 생성 + 기존 배치. 여러 장 + 선 그림으로 개수를 지키는지 시험 (CD 2장)
+
+## 18. 테스트를 1/5 로 — tester 기준부터 바꿨다
+
+문제: 기능마다 tester 가 "변경 함수마다 엣지 케이스"를 쓰다 보니 단위 테스트가 2871 케이스(약 2만 줄, 80초)로 불었다.
+상수 확인 · keyword-only 확인 · BOM · tracing 켬/끔 중복처럼 지킬 가치가 낮은 것이 대부분이었다.
+
+판단: 줄이기만 하면 다시 분다 — 쓰는 기준(`.claude/agents/tester.md`)을 먼저 바꿨다.
+
+- 깨진 테스트를 새 스펙에 맞게 고치는 게 1순위
+- 새 테스트는 동작(분기)당 대표 1개 · 실제 버그 회귀 · 보안 경계만, 변경당 5개 이하
+- 쓰지 않는다: 이미 지키는 것, 일어날 일 없는 입력, 없어진 이름 확인, 내부 구현
+
+한 것 (f80ecd7): 축소 폭은 사용자가 1/5 를 골랐다.
+
+| | 전 | 후 |
+| --- | --- | --- |
+| 케이스 | 2871 | 701 |
+| 함수 | 약 1,700 | 515 |
+| 시간 | 80초 | 24초 |
+
+회귀(좌표 전치 · CDN 500 HTML · 무한 왕복 · 글자 잠금 누락)와 보안(경로 탈출 · symlink · 토큰 · escape)은 남겼다.
+parametrize 는 앞 3개만 남겨, 예를 들어 배경 교체 사유 목록 일부는 이제 테스트가 없다.
+
+## 19. 모델 · 파이프라인 점검 (Jev 글) · 옛 앵커 평가 경로 삭제 · 리팩토링
+
+### 19-1. Jev 에서 가져온 생각
+
+Jev(TypeSafe AI)는 글을 쓰지 않는 판단 모델이다 — 고르기 · 점수 · 예/아니오를 **보정된 확률**로 돌려주고,
+경로는 코드가 그 확률로 정한다. 우리 VLM 호출 대부분(구도 검사 · 마크 보존 · 없던 글자)이 이런 판단인데,
+지금은 큰 생성형 모델에 JSON 을 쓰게 하고 확신도는 받지 않는다.
+
+### 19-2. 호출별 모델 (바꾸지 않음 — 후보만)
+
+| 호출 | 지금 | 의견 |
+| --- | --- | --- |
+| `check_photo` | 3.5-flash-lite | 판단이라 작은 모델이 맞다, 유지 |
+| `objects` | 3.8-flash | lite 후보 — 묶기가 어려워 eval 로 비교 먼저 |
+| `judge` · `auto_feedback` | 3.8-flash | 결정에 안 쓰는 관측값 → lite 후보 (judge 는 점수 기준선이 바뀜) |
+| `analyze` · `verify` | 3.8-flash | 잔글씨 · 좌표 → 큰 모델 유지 |
+| `added_text` | 3.8-flash | 유지, 헛탐지가 곧 게이트 오반려라 오탐률부터 잰다 |
+
+파이프라인 경로(분석 → plan → 생성/배경 교체/원본 → 검사 → 게이트) 자체는 그대로 둔다.
+
+### 19-3. 지운 것 · 바꾼 것 (978cfc6)
+
+- 옛 하자 앵커 평가 경로 통째로: detector `classify` · `detect_full` · `detect_defects` · `match_anchors` · `detect_with_boxes`,
+  `app/util/evaluator.py`, dev 라우트 `/detect` · `/eval-*` · `/pairs` · `/text-check`, `scripts/run_*.py`,
+  프롬프트 조각 9개 · 옛 `verify` 템플릿, 테스트 랩의 데이터셋 페어 · 텍스트 비교 탭. 범위는 사용자가 "전부"를 골랐다
+- `_with_retry` — analyze · verify · added_text 에 세 번 복사돼 있던 재시도 루프를 하나로
+- 없던 글자 검사를 verify 와 병렬로 — 생성 경로가 VLM 왕복 한 번만큼 짧아진다
+- `print` → `logger` (eval/run.py 에 `setup_logging`)
+- `confidence` 칸 — verify · check_photo · added_text 응답에 0~1 숫자가 오면 기록만 (게이트는 안 본다)
+
+### 19-4. tester · reviewer
+
+| 누가 | 잡은 것 | 처리 |
+| --- | --- | --- |
+| reviewer | dev `/verify` 리플레이가 글자 대상 · 물건 이름 · strict 없이 게이트와 다르게 판정 | 고침 — `_verify_targets` 재사용 |
+| reviewer | verify 실패 때도 added_text 를 기다려 배경 교체가 늦어짐 | 고침 — 취소하고 바로 반환 |
+| reviewer | 남은 참조 (local_ocr 주석 · Readme) | 고침 |
+| reviewer | 스레드풀이 차면 구도 · 없던 글자 검사가 시간 초과로 조용히 통과 | 원래 동작, 남김 |
+| reviewer | 확인할 마크가 없고 added_text 호출이 실패하면 gate None (통과 쪽) | 원래 동작, 남김 |
+| tester | confidence 거르기 1개(5케이스) · verify 실패 시 배경 교체 1개 추가 | 686 passed |
+
+내 실수: 안 쓰는 import 를 정리하다 judge · auto_feedback 의 `settings` 를 지웠는데 테스트가 그걸 패치하고 있었다 — 되돌렸다.
+
+### 19-5. 다음
+
+- [ ] 모델 교체 eval — `objects` · `judge` · `auto_feedback` 을 lite 로
+- [ ] 판단형 프롬프트(check_photo · added_text · verify)에 confidence 요청 → 확신도와 실제 정답률이 맞는지 재기
+- [ ] added_text 오탐률 측정
+- [ ] 풀 포화 시 조용히 통과 · gate None 경우를 inspect 에 "확인 못 함"으로 남기기
