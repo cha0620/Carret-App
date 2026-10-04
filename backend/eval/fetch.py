@@ -17,12 +17,17 @@ IMAGES = HERE / "data" / "images"
 def main() -> int:
     IMAGES.mkdir(exist_ok=True)
     missing = 0
+    not_photo = set()                    # 게시글 주소 — 게시글의 사진 여러 장이 같은 주소라 한 번만 확인한다
     for e in json.loads((HERE / "data" / "dataset.json").read_text(encoding="utf-8")):
         dst = IMAGES / e["file"]
         if dst.exists():
             continue
         if not e.get("url"):
             print(f"[없음] {e['file']} — url 이 없어 images/ 에 직접 넣어야 한다")
+            missing += 1
+            continue
+        if e["url"] in not_photo:
+            print(f"[없음] {e['file']} — 게시글 주소, images/ 에 직접 넣어야 한다")
             missing += 1
             continue
         req = urllib.request.Request(e["url"], headers={"User-Agent": "Mozilla/5.0"})
@@ -32,6 +37,7 @@ def main() -> int:
             if not ctype.startswith("image/"):
                 # COLLECT.md 는 게시글 주소를 적는다 — 게시글 HTML 을 사진 이름으로 저장하지 않는다
                 print(f"[없음] {e['file']} — url 이 사진이 아니다({ctype or '?'}), images/ 에 직접 넣어야 한다")
+                not_photo.add(e["url"])
                 missing += 1
                 continue
             dst.write_bytes(resp.read())

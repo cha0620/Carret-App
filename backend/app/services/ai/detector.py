@@ -135,6 +135,30 @@ def classify_views(images: list[bytes]) -> dict:
             "item": _text(data.get("item")) or "object", "photos": photos}
 
 
+def group_objects(images: list[bytes]) -> dict:
+    """여러 장 → 물건별 묶음 + 사진마다 각도 · 가림 · 흐림 (VLM 1회, 낮은 해상도) — 10-04, 업로드 단계.
+
+    반환: listing.normalize 결과 {"objects": [...], "photos": [입력 순서, 사진마다 object · view · …]}.
+    호출 자체가 실패하면 예외 (호출부가 "묶지 못했다"로 처리). classify_views 는 eval 이 한 장 각도에 쓴다."""
+    from app.services import listing
+    client = get_client()
+    prompt = P.objects_prompt(len(images))
+    parts = []
+    for i, img in enumerate(images):
+        parts += [f"Photo {i}:", image_part(img, "image/jpeg", "objects")]
+    with observe("objects", as_type="generation", model=vlm_model("objects"), input=prompt) as obs:
+        resp = client.models.generate_content(
+            model=vlm_model("objects"),
+            contents=[*parts, prompt],
+            config=types.GenerateContentConfig(temperature=0, response_mime_type="application/json",
+                                               thinking_config=thinking("objects")),
+        )
+        data = json.loads(resp.text)
+        if obs is not None:
+            obs.update(output=data, usage_details=_usage(resp))
+    return listing.normalize(data, len(images))
+
+
 TEXT_LEVELS = ("none", "simple", "dense")
 PHOTO_TYPES = ("document", "inside_view", "product")
 WEAR_LEVELS = ("none", "light", "heavy")

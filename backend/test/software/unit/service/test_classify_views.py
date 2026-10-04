@@ -1,4 +1,4 @@
-"""detector.classify_views — 여러 장을 VLM 1회로 (낮은 해상도 "views") + 응답 정규화.
+"""detector.classify_views · group_objects(10-04) — 여러 장을 VLM 1회로 (낮은 해상도) + 응답 정규화.
 
 test_detector.py 처럼 detector.get_client 를 가짜 클라이언트로 바꿔치기한다 (실제 호출 없음).
 views_prompt(n) · vlm 의 "views" 설정도 여기서 본다.
@@ -248,3 +248,127 @@ def test_views_prompt_matches_fragment():
 def test_views_media_resolution_low_and_thinking_budget():
     assert _res_level(vlm.image_part(b"x", "image/jpeg", "views")) == "MEDIA_RESOLUTION_LOW"
     assert vlm.thinking("views").thinking_budget == 4096
+
+
+# ── 10-04: group_objects (물건별로 묶기) ─────
+OBJ_RESP = {"objects": [{"id": "A", "kind": "product", "name": "sneakers", "label": "운동화", "desc": "",
+                         "category": "shoes", "for_sale": True},
+                        {"id": "B", "kind": "proof", "proof_type": "document", "proof_for": "A",
+                         "name": "warranty card", "label": "보증서"}],
+            "photos": [{"index": 0, "object": "A", "view": "side"}, {"index": 1, "object": "B", "view": "front"},
+                       {"index": 2, "object": "A", "view": "bottom", "blurry": True}]}
+
+
+def test_group_objects_single_call_low_res_with_objects_prompt(fake_vlm):
+    models = fake_vlm(OBJ_RESP)
+    detector.group_objects(IMGS)
+    assert models.calls == 1
+    c = models.last_kwargs["contents"]
+    assert len(c) == 2 * len(IMGS) + 1
+    assert c[0::2][:3] == ["Photo 0:", "Photo 1:", "Photo 2:"]
+    parts = c[1:-1:2]
+    assert [p.inline_data.data for p in parts] == IMGS
+    assert all(p.inline_data.mime_type == "image/jpeg" for p in parts)
+    assert all(_res_level(p) == "MEDIA_RESOLUTION_LOW" for p in parts)
+    assert c[-1] == P.objects_prompt(3)
+
+
+def test_group_objects_config(fake_vlm):
+    models = fake_vlm({"objects": []})
+    detector.group_objects([b"a"])
+    cfg = models.last_kwargs["config"]
+    assert cfg.temperature == 0 and cfg.response_mime_type == "application/json"
+    assert cfg.thinking_config.thinking_budget == 4096
+    assert models.last_kwargs["model"] == "base-model"
+
+
+def test_group_objects_model_override_uses_objects_key(fake_vlm, monkeypatch):
+    monkeypatch.setattr(settings, "vlm_models", {"views": "views-model", "objects": "objects-model"})
+    models = fake_vlm({"objects": []})
+    detector.group_objects([b"a"])
+    assert models.last_kwargs["model"] == "objects-model"
+
+
+def test_group_objects_settings_overrides_by_name(fake_vlm, monkeypatch):
+    monkeypatch.setattr(settings, "vlm_media_resolution", {"objects": "high", "views": "low"})
+    monkeypatch.setattr(settings, "vlm_thinking", {"objects": 512})
+    models = fake_vlm({"objects": []})
+    detector.group_objects([b"a"])
+    assert _res_level(models.last_kwargs["contents"][1]) == "MEDIA_RESOLUTION_HIGH"
+    assert models.last_kwargs["config"].thinking_config.thinking_budget == 512
+
+
+def test_group_objects_returns_normalized(fake_vlm):
+    from app.services import listing
+    fake_vlm(OBJ_RESP)
+    out = detector.group_objects(IMGS)
+    assert out == listing.normalize(OBJ_RESP, 3)
+    assert [o["id"] for o in out["objects"]] == ["o1", "o2"]
+    assert out["objects"][1]["proof_for"] == "o1"
+    assert [(p["object"], p["view"]) for p in out["photos"]] == [("o1", "side"), ("o2", None), ("o1", "bottom")]
+    assert out["photos"][2]["blurry"] is True
+
+
+def test_group_objects_list_wrapped(fake_vlm):
+    fake_vlm([OBJ_RESP])
+    assert len(detector.group_objects(IMGS)["objects"]) == 2
+
+
+@pytest.mark.parametrize("resp", [[], ["x"], "\"text\"", "3", "null"])
+def test_group_objects_non_dict_raises_value_error(fake_vlm, resp):
+    fake_vlm(resp)
+    with pytest.raises(ValueError, match="objects"):
+        detector.group_objects([b"a"])
+
+
+def test_group_objects_invalid_json_raises(fake_vlm):
+    fake_vlm("{not json")
+    with pytest.raises(ValueError):
+        detector.group_objects([b"a"])
+
+
+def test_group_objects_get_client_failure_propagates():
+    with pytest.raises(RuntimeError):
+        detector.group_objects([b"a"])
+
+
+def test_group_objects_old_shape_response_one_object(fake_vlm):
+    """옛 views 모양 응답(objects 없음)이 와도 물건 하나로 — 사진 모두 o1."""
+    fake_vlm({"category": "bag", "item": "tote", "photos": [{"index": 0, "view": "front"}]})
+    out = detector.group_objects([b"a", b"b"])
+    assert [o["name"] for o in out["objects"]] == ["tote"] and out["objects"][0]["category"] == "bag"
+    assert [p["object"] for p in out["photos"]] == ["o1", "o1"]
+    assert [p["view"] for p in out["photos"]] == ["front", None]       # 각도는 살린다
+
+
+def test_group_objects_ids_case_insensitive(fake_vlm):
+    fake_vlm({"objects": [{"id": "A", "name": "cup"}], "photos": [{"index": 0, "object": "a", "view": "top"}]})
+    assert detector.group_objects([b"a"])["photos"][0] == {"object": "o1", "view": "top", "state": None, "occluded": False,
+                                                          "blurry": False, "item_visible": True}
+
+
+def test_objects_prompt_fills_count_and_last_index():
+    text = P.objects_prompt(4)
+    assert "You see 4 photos" in text and "0 to 3" in text
+    assert "{{" not in text and "}}" not in text
+
+
+def test_objects_prompt_matches_fragment():
+    assert P.objects_prompt(2) == P.frag("objects").replace("{{n}}", "2").replace("{{n_last}}", "1")
+
+
+def test_objects_prompt_is_separate_from_views():
+    assert P.objects_prompt(3) != P.views_prompt(3)
+    assert '"objects"' in P.objects_prompt(3) and "proof_for" in P.objects_prompt(3)
+
+
+def test_objects_prompt_lists_all_kinds_views_categories():
+    from app.services import coverage, listing
+    text = P.objects_prompt(2)
+    for word in [*coverage.VIEWS, *coverage.CATEGORIES, *listing.KINDS, *listing.PROOF_TYPES]:
+        assert f'"{word}"' in text, word
+
+
+def test_objects_media_resolution_low_and_thinking_budget():
+    assert _res_level(vlm.image_part(b"x", "image/jpeg", "objects")) == "MEDIA_RESOLUTION_LOW"
+    assert vlm.thinking("objects").thinking_budget == 4096

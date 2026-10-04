@@ -48,7 +48,8 @@ python eval/compare.py <기준 run> <실험 run>       # → results/runs/compar
 ```
 
 `compare.py` 는 사진 · repeat · `dataset_sha` · 평가자가 다르거나, 옛 실행이라 기록이 없거나, 채점이 덜 됐으면 맨 위에 경고한다.
-`dataset_sha` 는 정답 칸(photo_type · wear_level · text_level · key_texts · item)과 사진 내용만 본다 — note · set 을 고쳐도 안 바뀐다.
+`dataset_sha` 는 정답 칸(photo_type · wear_level · text_level · key_texts · item · item_count)과 사진 내용만 본다 — note · set · edge_tags 를 고쳐도 안 바뀐다.
+item_count 는 10-04 에 넣었다 — 그 전 실행과는 사진 · 라벨이 같아도 해시가 다르다.
 
 - `data/images/`, `data/refs/`, `results/runs/`, `results/archive/` 는 git 에 올리지 않는다 — 남의 사진이고 번호판·얼굴이 찍혀 있을 수 있다
 - `data/dataset.json`(정답)과 `results/reviews/`(사람 채점)는 올린다 — 사진 없이도 숫자를 다시 낼 수 있게
@@ -70,13 +71,17 @@ python eval/compare.py <기준 run> <실험 run>       # → results/runs/compar
 | `file` | 파일 이름 | `data/images/` 안의 이름 |
 | `url` | 게시글 주소 | 출처 기록용. 사진 파일은 `data/images/` 에 직접 (없으면 빈 문자열) |
 | `item` | 짧은 영어 명사 | 참고용 |
+| `category` | 물건 종류 | 앱 종류(`coverage.CATEGORIES`) + `watch` · `media` (앱에선 other) |
+| `item_count` | 정수 | 팔 물건 개수 — 2 이상이면 배경 제거만 (앱의 여러 개 경로) |
+| `edge_tags` | 태그 목록 | 사진 성격 (투명 · 손에 듦 · 워터마크 …) — 값과 기준은 `docs/COLLECT.md` §2-1 |
 | `photo_type` | `document` / `inside_view` / `product` | 글자·표지가 곧 물건 / 물건 일부·내부만 / 그 밖 |
 | `wear_level` | `none` / `light` / `heavy` | 새것 같음 / 작은 하자 몇 개 / 하자가 보이는 면의 큰 부분 |
 | `text_level` | `none` / `simple` / `dense` | 글자 없음 / 큰 글자 몇 개 / 잔글씨 많음 — 시계 다이얼처럼 눈금·잔글씨가 물건의 일부면 dense (번호판·목 라벨은 안 셈) |
 | `key_texts` | 문자열 목록 | 결과에서 **반드시 그대로여야 할** 글자 (제목·브랜드·모델명) |
 | `note` | 자유 | 채점 때 볼 점 |
 | `labeled_by` | 이름 | `claude-draft` 는 초안 — 사람이 확인하면 이름으로 바꾼다 |
-| `stratum` | 층 코드 | 모을 때의 의도 (`docs/COLLECT.md`) — 집계는 라벨 기준. 기존 8장은 빈 값(`legacy_stratum` 에 옛 값) |
+| `stratum` | 층 코드 | 모을 때의 의도 (`docs/COLLECT.md`) — 집계는 라벨 기준. 기존 8장은 빈 값(`legacy_stratum` 에 옛 값). 10-04 에 light · heavy → `wear` |
+| `post` · `post_index` · `post_size` | 게시글 이름 · 몇 번째 사진(1부터) · 사진 수 | 10-04 부터 게시글 단위로 모은다. 첫 사진만 층 · 라벨 · 한 장 평가 대상, 나머지는 같은 split 을 따르고 `run.py` 가 빼고 돈다 (라벨이 없어 `--only` 로 이름을 대도 아직 안 돈다 — 여러 장 라벨이 정해지면). `dup_of` 는 앞에 나온 같은 사진, `post_total` 은 10장 넘는 게시글의 원래 장수 이 칸이 없는 옛 항목은 한 장짜리 게시글 |
 | `split` | `dev` / `test` | intake 가 층별로 나눈다. test 는 동결 (결과만 본다) |
 | `collected_at` | 날짜 | 모은 날 |
 | `ambiguous` | true / false | 판단이 애매한 사진 |

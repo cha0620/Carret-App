@@ -782,3 +782,27 @@ def test_server_post_unicode_file(board_mod, server):
     write_dataset(board_mod, [{"file": "신발.webp"}])
     assert post(server, {"file": "신발.webp", "on": True})[0] == 200
     assert read_dataset(board_mod)[0]["set"] == "failure"
+
+
+# ── 게시글 추가 사진 (10-04) ──
+def test_collect_unrun_skips_post_extras(board_mod, tmp_path):
+    write_dataset(board_mod, [{"file": "a_p01.jpg", "post": "a", "post_index": 1},
+                              {"file": "a_p02.jpg", "post": "a", "post_index": 2},
+                              {"file": "a_p03.jpg", "post": "a", "post_index": 3},
+                              {"file": "old.webp"}, {"file": "n.webp", "post_index": None}])
+    assert sorted(it["file"] for it in board_mod.collect()) == ["a_p01.jpg", "n.webp", "old.webp"]
+
+
+def test_collect_extra_with_results_still_shown(board_mod, tmp_path):
+    """--only 로 돌린 추가 사진은 결과가 있으니 보인다 — 안 돌린 것만 뺀다."""
+    entry = {"file": "a_p02.jpg", "post": "a", "post_index": 2}
+    write_dataset(board_mod, [entry, {"file": "a_p03.jpg", "post": "a", "post_index": 3}])
+    write_run(tmp_path, "r1", [R("a_p02.jpg")])
+    [it] = board_mod.collect()
+    assert it["file"] == "a_p02.jpg" and it["entry"] == entry and len(it["results"]) == 1
+
+
+def test_collect_without_unrun_unchanged_by_extras(board_mod, tmp_path):
+    write_dataset(board_mod, [{"file": "a_p01.jpg", "post_index": 1}, {"file": "a_p02.jpg", "post_index": 2}])
+    write_run(tmp_path, "r1", [R("a_p01.jpg")])
+    assert [it["file"] for it in board_mod.collect("r1", include_unrun=False)] == ["a_p01.jpg"]

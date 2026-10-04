@@ -122,6 +122,13 @@ def match_prompt(orig, result) -> str:
     return get_prompt_text("match", fallback=frag("match"), orig=orig, result=result)
 
 
+def objects_prompt(n: int) -> str:
+    """여러 장 → 물건별로 묶기 + 사진마다 각도 (10-04). Langfuse 에 옛 "views" 프롬프트가 있어도 섞이지 않게
+    이름을 따로 둔다 (응답 모양이 다르다)."""
+    text = get_prompt_text("objects", fallback=frag("objects"))
+    return text.replace("{{n}}", str(n)).replace("{{n_last}}", str(n - 1))
+
+
 def views_prompt(n: int) -> str:
     """여러 장 각도 분류 — 사진 수를 넣는다 (Langfuse "views" 가 있으면 그 내용)."""
     text = get_prompt_text("views", fallback=frag("views"))

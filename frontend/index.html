@@ -34,17 +34,35 @@
 
     <div id="item-box" class="item-box hidden">
       <p id="item-summary" class="item-summary"></p>
+      <div id="obj-wrap" class="obj-wrap hidden">
+        <p class="step-label">사진 속 물건 확인 <span class="step-sub">— AI 가 나눈 거예요. 틀리면 고쳐 주세요</span></p>
+        <div id="obj-list" class="obj-list"></div>
+        <div class="obj-actions">
+          <button id="obj-save" type="button" class="btn btn-ghost">이대로 맞아요</button>
+          <span id="obj-status" class="obj-status"></span>
+        </div>
+      </div>
+      <div id="target-wrap" class="hidden">
+        <p class="step-label">대표컷 만들 물건 <span class="step-sub">— 물건마다 따로 만들어요</span></p>
+        <div id="targets" class="targets" role="radiogroup" aria-label="대표컷 만들 물건"></div>
+      </div>
       <div id="comp-wrap" class="hidden">
-        <p class="step-label">구도 고르기</p>
+        <p id="comp-title" class="step-label">예시 구도 고르기</p>
         <div id="item-comps" class="item-comps" role="radiogroup" aria-label="구도"></div>
       </div>
       <p class="step-label">내 사진 <span class="step-sub">— 구도에 맞는 사진이 자동으로 골라져요. 직접 눌러도 돼요</span></p>
       <div id="sell-wrap" class="sell-wrap hidden">
-        <p class="sell-title">팔 물건 <span class="muted">— 여러 개 고를 수 있어요 (원본 사진의 번호)</span></p>
+        <p class="sell-title">이 사진에서 남길 물건 <span class="muted">— 안 고른 건 지워요 (원본 사진의 번호)</span></p>
         <div id="sell-objects" class="sell-objects" role="group" aria-label="팔 물건"></div>
       </div>
       <div id="item-photos" class="item-photos" role="radiogroup" aria-label="사진"></div>
       <div id="item-missing" class="item-missing hidden"></div>
+      <div id="arrange-wrap" class="arrange-wrap hidden">
+        <p class="step-label">여러 물건을 한 장에 <span class="step-sub">— 사진마다 물건을 오려 그대로 놓아요 (다시 그리지 않아요)</span></p>
+        <div id="arrange-objs" class="sell-objects" role="group" aria-label="놓을 물건"></div>
+        <div id="arrange-layouts" class="arrange-layouts" role="radiogroup" aria-label="배치"></div>
+        <button id="arrange-run" type="button" class="btn btn-ghost">한 장에 놓기</button>
+      </div>
       <button id="item-add" type="button" class="btn btn-ghost">사진 · 동영상 더 올리기</button>
       <input type="file" id="item-add-file" accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,.jpg,.jpeg,.png,.webp,.mp4,.mov,.m4v,.webm" multiple hidden>
     </div>

@@ -1,6 +1,7 @@
-"""POST /api/items · POST /api/items/{item_id}/files · GET /api/items/{item_id} (여러 각도 업로드).
+"""POST /api/items · POST /api/items/{item_id}/files · PUT /api/items/{item_id}/objects · GET /api/items/{item_id}
+(여러 각도 업로드 · 10-04 물건별 묶음).
 
-detector.classify_views 와 video.extract_frames 는 가짜로 바꿔치기 — 실제 VLM 호출·동영상 디코딩 없이
+detector.group_objects 와 video.extract_frames 는 가짜로 바꿔치기 — 실제 VLM 호출·동영상 디코딩 없이
 라우트가 무엇을 검사·저장·반환하는지만 본다. storage 는 test/conftest.py 의 isolated_storage(tmp).
 """
 import io
@@ -10,7 +11,7 @@ import pytest
 from PIL import Image
 
 from app.core.config import settings
-from app.services import video
+from app.services import listing, video
 
 UNKNOWN = "0123456789abcdef0123456789abcdef"
 
@@ -34,7 +35,7 @@ def _files(*named):
 
 @pytest.fixture()
 def views(monkeypatch):
-    """classify_views 가짜. rec["photos"] 로 사진별 답을, rec["fail"] 로 예외를 조절.
+    """group_objects 가짜 (물건 하나에 사진 전부 — 예전 classify_views 답과 같은 모양). rec["photos"] 로 사진별 답을, rec["fail"] 로 예외를 조절.
     rec["calls"] 에는 매 호출의 이미지 목록."""
     rec = {"calls": [], "category": "other", "item": "mug", "photos": None, "fail": False}
 
@@ -42,10 +43,14 @@ def views(monkeypatch):
         rec["calls"].append(list(images))
         if rec["fail"]:
             raise RuntimeError("VLM 장애")
+        if rec.get("raw") is not None:                     # 묶음 응답을 그대로 (여러 물건 시험)
+            return listing.normalize(rec["raw"], len(images))
         photos = rec["photos"] or [{"view": None, "occluded": False, "blurry": False,
                                     "item_visible": True}] * len(images)
-        return {"category": rec["category"], "item": rec["item"], "photos": photos[:len(images)]}
-    monkeypatch.setattr("app.services.ai.detector.classify_views", fake)
+        obj = {"id": "o1", "kind": "product", "proof_type": None, "proof_for": None, "name": rec["item"],
+               "label": rec["item"], "desc": "", "category": rec["category"], "for_sale": True}
+        return {"objects": [obj], "photos": [{**ph, "object": "o1"} for ph in photos[:len(images)]]}
+    monkeypatch.setattr("app.services.ai.detector.group_objects", fake)
     return rec
 
 
@@ -528,12 +533,12 @@ def test_add_files_concurrent_requests_keep_all_photos(client, views, monkeypatc
     real = views["calls"]
 
     from app.services.ai import detector
-    fake = detector.classify_views
+    fake = detector.group_objects          # views 픽스처의 가짜 (10-04 부터 라우트는 group_objects 를 부른다)
 
     def slow(images):
         time.sleep(0.2)                     # 분류 중에 다른 요청이 같은 묶음을 읽도록 틈을 둔다
         return fake(images)
-    monkeypatch.setattr(detector, "classify_views", slow)
+    monkeypatch.setattr(detector, "group_objects", slow)
     results = []
 
     def add(name):
@@ -576,3 +581,670 @@ def test_clothing_item_gets_top_front_composition(client, views):
     views["photos"] = [_v("front")]
     comps = client.post("/api/items", files=_files(("a.png", _png()))).json()["compositions"]
     assert [c["key"] for c in comps] == ["clothing_top_front"] and comps[0]["available"]
+
+
+# ── 10-04: 물건별 묶음 (objects · main_object · PUT /objects) ──
+def _o(id_, kind="product", **kw):
+    base = {"id": id_, "kind": kind, "name": f"thing {id_}", "label": f"물건 {id_}", "desc": "",
+            "category": "other" if kind == "product" else None, "for_sale": kind == "product"}
+    if kind == "proof":
+        base.update(proof_type="document", proof_for=None)
+    return {**base, **kw}
+
+
+def _p(i, obj, view=None, **kw):
+    return {"index": i, "object": obj, "view": view, **kw}
+
+
+SHOES_AND_CARD = {
+    "objects": [_o("A", name="sneakers", label="흰 운동화", category="shoes"),
+                _o("B", "proof", name="warranty card", label="보증서", proof_for="A")],
+    "photos": [_p(0, "A", "front_34"), _p(1, "B", "front"), _p(2, "A", "side")],
+}
+
+
+def _create_raw(client, views, raw, n):
+    views["raw"] = raw
+    r = client.post("/api/items", files=_files(*[(f"{i}.png", _png((i * 20, 0, 0))) for i in range(n)]))
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _edit_body(body, **changes):
+    """GET 응답 → PUT 본문 (지금 상태 그대로)."""
+    keys = ("id", "kind", "label", "desc", "category", "for_sale", "count", "proof_type", "proof_for")
+    out = {"objects": [{k: o[k] for k in keys} for o in body["objects"]],
+           "photos": [{"file_id": p["file_id"], "object": p["object"], "view": p["view"]} for p in body["photos"]]}
+    out.update(changes)
+    return out
+
+
+def _put(client, body, edit):
+    return client.put(f"/api/items/{body['item_id']}/objects", json=edit)
+
+
+def _saved(root, item_id):
+    return json.loads((root / "items" / f"{item_id}.json").read_text())
+
+
+def test_create_item_groups_objects(client, views, isolated_storage):
+    body = _create_raw(client, views, SHOES_AND_CARD, 3)
+    fids = [p["file_id"] for p in body["photos"]]
+    assert [o["id"] for o in body["objects"]] == ["o1", "o2"]
+    shoe, card = body["objects"]
+    assert shoe["photo_ids"] == [fids[0], fids[2]] and card["photo_ids"] == [fids[1]]
+    assert shoe["count"] == 1
+    assert card["kind"] == "proof" and card["proof_for"] == "o1" and card["proof_type_label"]
+    assert card["missing"] == [] and card["compositions"] == []
+    assert [p["object"] for p in body["photos"]] == ["o1", "o2", "o1"]
+    assert body["photos"][1]["view"] is None                 # 근거 사진엔 각도 없음
+    assert body["main_object"] == "o1"
+    assert body["user_edited"] is False and body["needs_review"] is False
+    # top-level 은 대표 물건(운동화) 기준
+    assert body["item"] == "sneakers" and body["category"] == "shoes"
+    assert [m["view"] for m in body["missing"]] == ["back", "bottom"] == [m["view"] for m in shoe["missing"]]
+    assert body["compositions"] == shoe["compositions"]
+    saved = _saved(isolated_storage, body["item_id"])
+    assert len(saved["objects"]) == 2 and all("unclassified" not in p for p in saved["photos"])
+
+
+def test_main_object_is_for_sale_product_with_most_photos(client, views):
+    raw = {"objects": [_o("A", name="mug", category="other"), _o("B", name="bag", category="bag"),
+                       _o("C", name="table", category="other", for_sale=False)],
+           "photos": [_p(0, "A"), _p(1, "B"), _p(2, "B"), _p(3, "C"), _p(4, "C"), _p(5, "C")]}
+    body = _create_raw(client, views, raw, 6)
+    assert body["main_object"] == "o2" and body["item"] == "bag" and body["category"] == "bag"
+    assert [m["view"] for m in body["missing"]] == ["front", "back", "bottom", "inside"]
+
+
+def test_only_proof_photos_have_no_main_object(client, views):
+    raw = {"objects": [_o("A", "proof", proof_type="screen")], "photos": [_p(0, "A"), _p(1, "A")]}
+    body = _create_raw(client, views, raw, 2)
+    assert body["main_object"] is None
+    assert body["item"] == "object" and body["category"] == "other"
+    assert body["missing"] == [] and body["compositions"] == [] and body["complete"] is False
+
+
+def test_top_level_retake_only_for_sale_product_photos(client, views):
+    raw = {"objects": [_o("A"), _o("B", "proof"), _o("C", for_sale=False)],
+           "photos": [_p(0, "A", "front", blurry=True), _p(1, "B", None, blurry=True, occluded=True),
+                      _p(2, None, None, blurry=True), _p(3, "A", "back"), _p(4, "C", "front", occluded=True)]}
+    body = _create_raw(client, views, raw, 5)
+    fids = [p["file_id"] for p in body["photos"]]
+    assert body["retake"] == [{"file_id": fids[0], "reason": "흐려요"}]
+    assert body["objects"][1]["retake"] == []
+    assert body["objects"][2]["retake"] == [{"file_id": fids[4], "reason": "손이나 다른 물건에 가려진 부분이 있어요"}]
+    assert body["complete"] is False
+
+
+def test_top_level_retake_includes_non_main_for_sale_product(client, views):
+    """대표 물건이 아닌 파는 상품 사진이 흐려도 top-level retake 에 나오고 complete 가 아니다."""
+    raw = {"objects": [_o("A"), _o("B")],
+           "photos": [_p(0, "A", "front"), _p(1, "A", "back"), _p(2, "B", "front", blurry=True)]}
+    body = _create_raw(client, views, raw, 3)
+    assert body["main_object"] == "o1" and body["missing"] == []
+    assert body["retake"] == [{"file_id": body["photos"][2]["file_id"], "reason": "흐려요"}]
+    assert body["complete"] is False
+
+
+def test_not_for_sale_retake_does_not_block_complete(client, views):
+    raw = {"objects": [_o("A"), _o("B", for_sale=False)],
+           "photos": [_p(0, "A", "front"), _p(1, "A", "back"), _p(2, "B", "front", blurry=True)]}
+    body = _create_raw(client, views, raw, 3)
+    assert body["retake"] == [] and body["complete"] is True
+
+
+def test_create_item_classify_failure_marks_unclassified(client, views, isolated_storage):
+    views["fail"] = True
+    body = client.post("/api/items", files=_files(("a.png", _png()))).json()
+    assert body["photos"][0]["object"] is None
+    assert body["views_failed"] is True and body["missing"] == [] and body["complete"] is False
+    saved = _saved(isolated_storage, body["item_id"])
+    assert saved["photos"][0]["unclassified"] is True
+    assert "unclassified" not in body["photos"][0]             # 응답 스키마엔 없다
+
+
+def test_create_item_classify_failure_has_no_phantom_object(client, views):
+    views["fail"] = True
+    body = client.post("/api/items", files=_files(("a.png", _png()))).json()
+    assert body["objects"] == [] and body["main_object"] is None
+
+
+# ── PUT /api/items/{item_id}/objects ──
+def test_put_objects_renames_moves_and_saves(client, views, isolated_storage):
+    body = _create_raw(client, views, SHOES_AND_CARD, 3)
+    fids = [p["file_id"] for p in body["photos"]]
+    edit = _edit_body(body)
+    edit["objects"][0].update(label="나이키 운동화", desc="밑창 약간 닳음", count=2)
+    edit["objects"].append({"id": "o3", "kind": "product", "label": "신발 상자", "desc": "", "category": "other",
+                            "for_sale": False})
+    edit["photos"][2].update(object="o3", view="top")
+    r = _put(client, body, edit)
+    assert r.status_code == 200, r.text
+    got = r.json()
+    assert got["user_edited"] is True and got["needs_review"] is False
+    assert [o["id"] for o in got["objects"]] == ["o1", "o2", "o3"]
+    o1, _, o3 = got["objects"]
+    assert o1["label"] == "나이키 운동화" and o1["name"] == "sneakers" and o1["count"] == 2
+    assert o1["photo_ids"] == [fids[0]] and o3["photo_ids"] == [fids[2]]
+    assert o3["name"] == "item" and o3["label"] == "신발 상자"     # 사용자 label 은 name 에 안 들어간다
+    assert [p["object"] for p in got["photos"]] == ["o1", "o2", "o3"]
+    assert got["photos"][2]["view"] == "top" and got["photos"][2]["view_label"] == "위에서"
+    assert got["main_object"] == "o1"                        # 신발 상자는 팔지 않음
+    assert client.get(f"/api/items/{body['item_id']}").json() == got
+    saved = _saved(isolated_storage, body["item_id"])
+    assert saved["user_edited"] is True and saved["needs_review"] is False and len(saved["objects"]) == 3
+
+
+def test_put_objects_category_change_renames_and_top_level(client, views):
+    body = _create_raw(client, views, SHOES_AND_CARD, 3)
+    edit = _edit_body(body)
+    edit["objects"][0]["category"] = "bag"
+    got = _put(client, body, edit).json()
+    assert got["objects"][0]["name"] == "bag" and got["item"] == "bag" and got["category"] == "bag"
+
+
+def test_put_objects_unsale_main_switches_main(client, views):
+    body = _create_raw(client, views, {"objects": [_o("A", name="mug"), _o("B", name="plate")],
+                                       "photos": [_p(0, "A"), _p(1, "A"), _p(2, "B")]}, 3)
+    assert body["main_object"] == "o1"
+    edit = _edit_body(body)
+    edit["objects"][0]["for_sale"] = False
+    got = _put(client, body, edit).json()
+    assert got["main_object"] == "o2" and got["item"] == "plate"
+
+
+def test_put_objects_removes_object_without_photos(client, views):
+    body = _create_raw(client, views, SHOES_AND_CARD, 3)
+    edit = _edit_body(body)
+    edit["photos"][1].update(object="o1", view="detail")    # 보증서 사진을 운동화로 옮김
+    got = _put(client, body, edit).json()
+    assert [o["id"] for o in got["objects"]] == ["o1"]
+    assert got["photos"][1]["view"] == "detail"
+
+
+def test_put_objects_minimal_body_defaults(client, views):
+    """label · for_sale 등을 빼면 스키마 기본값 — for_sale 기본 False, label 비면 name."""
+    body = _create_raw(client, views, SHOES_AND_CARD, 3)
+    edit = {"objects": [{"id": "o1", "kind": "product", "category": "shoes"}],
+            "photos": [{"file_id": p["file_id"], "object": "o1"} for p in body["photos"]]}
+    got = _put(client, body, edit)
+    assert got.status_code == 200, got.text
+    o = got.json()["objects"][0]
+    assert o["for_sale"] is False and o["label"] == "sneakers" and o["name"] == "sneakers" and o["count"] == 1
+    assert all(p["view"] is None for p in got.json()["photos"])
+    assert got.json()["main_object"] == "o1"                # 파는 게 없으면 상품 중에서
+
+
+@pytest.mark.parametrize("change,needle", [
+    (lambda e: e["photos"].pop(), "사진이 빠졌다"),
+    (lambda e: e["photos"][0].update(object="o9"), "없는 물건"),
+    (lambda e: e["photos"][0].update(file_id=UNKNOWN), "이 묶음에 없거나"),
+    (lambda e: e["photos"].append(dict(e["photos"][0])), "두 번"),
+    (lambda e: e["photos"][0].update(view="diagonal"), "view"),
+    (lambda e: e["objects"][0].update(category="toy"), "category"),
+    (lambda e: e["objects"][1].update(proof_type="receipt"), "proof_type"),
+    (lambda e: e["objects"][1].update(id="o1"), "물건 id"),
+])
+def test_put_objects_400_keeps_item(client, views, isolated_storage, change, needle):
+    body = _create_raw(client, views, SHOES_AND_CARD, 3)
+    before = (isolated_storage / "items" / f"{body['item_id']}.json").read_bytes()
+    edit = _edit_body(body)
+    change(edit)
+    r = _put(client, body, edit)
+    assert r.status_code == 400 and needle in r.json()["detail"], r.text
+    assert (isolated_storage / "items" / f"{body['item_id']}.json").read_bytes() == before
+
+
+def test_put_objects_400_detail_capped_at_five_errors(client, views):
+    body = _create_raw(client, views, {"objects": [_o("A")], "photos": [_p(i, "A") for i in range(8)]}, 8)
+    edit = _edit_body(body)
+    for ph in edit["photos"]:
+        ph["object"] = "o9"
+    r = _put(client, body, edit)
+    assert r.status_code == 400 and r.json()["detail"].count("없는 물건") == 5
+
+
+def test_put_objects_unknown_item_404(client, views):
+    r = client.put(f"/api/items/{UNKNOWN}/objects", json={"objects": [], "photos": []})
+    assert r.status_code == 404
+
+
+@pytest.mark.parametrize("bad", ["xyz", "0123456789ABCDEF0123456789ABCDEF", UNKNOWN + "0", "g" * 32])
+def test_put_objects_bad_item_id_422(client, views, bad):
+    assert client.put(f"/api/items/{bad}/objects", json={"objects": [], "photos": []}).status_code == 422
+
+
+_OK_OBJ = {"id": "o1", "kind": "product", "category": "other"}
+
+
+@pytest.mark.parametrize("payload", [
+    {"objects": [{"id": "o1", "kind": "thing"}], "photos": []},          # kind 는 Literal
+    {"objects": [{"kind": "product"}], "photos": []},                     # id 없음
+    {"objects": [{**_OK_OBJ, "id": "o12345678"}], "photos": []},          # id 8자 넘음
+    {"objects": [{**_OK_OBJ, "id": "x1"}], "photos": []},                 # id 패턴 (o 뒤에 숫자)
+    {"objects": [{**_OK_OBJ, "id": "o1\n"}], "photos": []},               # 끝 개행
+    {"objects": [], "photos": [{"file_id": UNKNOWN, "object": "x1"}]},
+    {"objects": [{**_OK_OBJ, "label": "가" * 41}], "photos": []},
+    {"objects": [{**_OK_OBJ, "desc": "가" * 201}], "photos": []},
+    {"objects": [{**_OK_OBJ, "category": "c" * 21}], "photos": []},
+    {"objects": [{**_OK_OBJ, "count": 0}], "photos": []},
+    {"objects": [{**_OK_OBJ, "count": 100}], "photos": []},
+    {"objects": [{**_OK_OBJ, "proof_for": "o123456789"}], "photos": []},
+    {"objects": [{**_OK_OBJ, "id": f"o{i}"} for i in range(21)], "photos": []},     # 물건 20개 넘음
+    {"objects": [], "photos": [{"file_id": UNKNOWN}] * 61},                         # 사진 60장 넘음
+    {"objects": [], "photos": [{"file_id": "nope"}]},                               # file_id 패턴
+    {"objects": [], "photos": [{"file_id": UNKNOWN.upper()}]},
+    {"objects": [], "photos": [{"file_id": UNKNOWN, "object": "o123456789"}]},
+    {"objects": [], "photos": [{"file_id": UNKNOWN, "view": "v" * 21}]},
+    {"objects": [], "photos": [{"object": "o1"}]},                                  # file_id 없음
+    {"objects": []},                                                                # photos 없음
+    {"photos": []},                                                                 # objects 없음
+    {"objects": "o1", "photos": []},
+])
+def test_put_objects_schema_422(client, views, isolated_storage, payload):
+    body = _create_raw(client, views, SHOES_AND_CARD, 3)
+    before = (isolated_storage / "items" / f"{body['item_id']}.json").read_bytes()
+    assert _put(client, body, payload).status_code == 422
+    assert (isolated_storage / "items" / f"{body['item_id']}.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("count", [1, 99])
+def test_put_objects_count_bounds_ok(client, views, count):
+    body = _create_raw(client, views, SHOES_AND_CARD, 3)
+    edit = _edit_body(body)
+    edit["objects"][0]["count"] = count
+    r = _put(client, body, edit)
+    assert r.status_code == 200 and r.json()["objects"][0]["count"] == count
+
+
+def test_put_objects_does_not_call_vlm(client, views):
+    body = _create_raw(client, views, SHOES_AND_CARD, 3)
+    n = len(views["calls"])
+    _put(client, body, _edit_body(body))
+    assert len(views["calls"]) == n
+
+
+# ── 고친 뒤 더 올리기 ──
+def test_add_files_after_edit_keeps_user_grouping(client, views):
+    """AI 는 사진 0·1·2 를 같은 물건으로 봤지만 사용자가 나눴다 → 더 올려도 나눈 대로, 새 사진은 다수결."""
+    body = _create_raw(client, views, {"objects": [_o("A", name="mug")],
+                                       "photos": [_p(0, "A", "front"), _p(1, "A", "back"), _p(2, "A", "side")]}, 3)
+    edit = _edit_body(body)
+    edit["objects"][0]["label"] = "내 컵"
+    edit["objects"].append({"id": "o2", "kind": "product", "label": "다른 컵", "category": "other",
+                            "for_sale": True})
+    edit["photos"][2]["object"] = "o2"
+    assert _put(client, body, edit).status_code == 200
+    views["raw"] = {"objects": [_o("A", name="mug", label="AI 컵")],
+                    "photos": [_p(i, "A", v) for i, v in enumerate(["front", "back", "side", "top"])]}
+    got = client.post(f"/api/items/{body['item_id']}/files", files=_files(("d.png", _png()))).json()
+    assert got["user_edited"] is True and got["needs_review"] is True
+    assert [o["label"] for o in got["objects"]] == ["내 컵", "다른 컵"]
+    assert [p["object"] for p in got["photos"]] == ["o1", "o1", "o2", "o1"]   # 다수결: AI A → 내 o1 (2표)
+    assert got["photos"][3]["view"] == "top"
+    # 다시 확인(PUT)하면 needs_review 가 꺼진다
+    again = _put(client, got, _edit_body(got)).json()
+    assert again["needs_review"] is False
+
+
+def test_add_files_after_edit_adds_new_ai_object(client, views):
+    body = _create_raw(client, views, SHOES_AND_CARD, 3)
+    _put(client, body, _edit_body(body))
+    views["raw"] = {"objects": [*SHOES_AND_CARD["objects"], _o("C", name="cap", label="모자", category="clothing")],
+                    "photos": [*SHOES_AND_CARD["photos"], _p(3, "C", "front"), _p(4, "C", "back")]}
+    got = client.post(f"/api/items/{body['item_id']}/files",
+                      files=_files(("d.png", _png()), ("e.png", _png()))).json()
+    assert [o["id"] for o in got["objects"]] == ["o1", "o2", "o3"]
+    assert got["objects"][2]["label"] == "모자" and got["objects"][2]["category"] == "clothing"
+    assert [p["object"] for p in got["photos"]] == ["o1", "o2", "o1", "o3", "o3"]
+    assert got["objects"][1]["proof_for"] == "o1"
+
+
+def test_add_files_not_edited_regroups_everything(client, views):
+    body = _create_raw(client, views, SHOES_AND_CARD, 3)
+    views["raw"] = {"objects": [_o("X", name="boots", category="shoes")],
+                    "photos": [_p(i, "X", "side") for i in range(4)]}
+    got = client.post(f"/api/items/{body['item_id']}/files", files=_files(("d.png", _png()))).json()
+    assert [o["name"] for o in got["objects"]] == ["boots"]
+    assert [p["object"] for p in got["photos"]] == ["o1"] * 4
+    assert got["user_edited"] is False and got["needs_review"] is False
+
+
+def test_add_files_after_edit_failure_keeps_grouping(client, views, isolated_storage):
+    body = _create_raw(client, views, SHOES_AND_CARD, 3)
+    _put(client, body, _edit_body(body))
+    views["fail"] = True
+    got = client.post(f"/api/items/{body['item_id']}/files", files=_files(("d.png", _png()))).json()
+    assert got["views_failed"] is True and got["user_edited"] is True
+    assert [p["object"] for p in got["photos"]] == ["o1", "o2", "o1", None]
+    assert [o["id"] for o in got["objects"]] == ["o1", "o2"]
+    saved = _saved(isolated_storage, body["item_id"])
+    assert [p.get("unclassified", False) for p in saved["photos"]] == [False, False, False, True]
+
+
+def test_add_files_after_edit_recovers_photo_from_failed_upload(client, views, isolated_storage):
+    """고친 묶음에 묶기 실패로 '모름'이 된 사진은 다음 업로드 때 새 사진처럼 다시 붙는다."""
+    body = _create_raw(client, views, {"objects": [_o("A")], "photos": [_p(0, "A", "front")]}, 1)
+    _put(client, body, _edit_body(body))
+    views["fail"] = True
+    client.post(f"/api/items/{body['item_id']}/files", files=_files(("b.png", _png())))
+    views["fail"] = False
+    views["raw"] = {"objects": [_o("A")], "photos": [_p(i, "A", v) for i, v in enumerate(["front", "back", "side"])]}
+    got = client.post(f"/api/items/{body['item_id']}/files", files=_files(("c.png", _png()))).json()
+    assert [p["object"] for p in got["photos"]] == ["o1", "o1", "o1"]
+    assert got["photos"][1]["view"] == "back" and got["views_failed"] is False and got["needs_review"] is True
+    assert all("unclassified" not in p for p in _saved(isolated_storage, body["item_id"])["photos"])
+
+
+def test_add_files_lost_original_photo_keeps_its_object(client, views, isolated_storage):
+    """원본이 사라진 사진은 다시 분류하지 않는다 — 고친 묶음이면 그 사진의 물건도 그대로."""
+    body = _create_raw(client, views, SHOES_AND_CARD, 3)
+    _put(client, body, _edit_body(body))
+    (isolated_storage / "original" / f"{body['photos'][1]['file_id']}.jpg").unlink()
+    views["raw"] = {"objects": [_o("A", category="shoes")], "photos": [_p(i, "A", "back") for i in range(3)]}
+    got = client.post(f"/api/items/{body['item_id']}/files", files=_files(("d.png", _png()))).json()
+    assert len(views["calls"][-1]) == 3
+    assert [p["object"] for p in got["photos"]] == ["o1", "o2", "o1", "o1"]
+
+
+def test_add_files_lost_original_pointing_to_vanished_object_cleared(client, views, isolated_storage):
+    """고치지 않은 묶음을 다시 묶었더니 원본 없는 사진이 가리키던 물건이 사라졌다 → 그 사진은 object None."""
+    body = _create_raw(client, views, SHOES_AND_CARD, 3)        # 사진 1 → o2 (보증서)
+    (isolated_storage / "original" / f"{body['photos'][1]['file_id']}.jpg").unlink()
+    views["raw"] = {"objects": [_o("A", category="shoes")], "photos": [_p(i, "A", "side") for i in range(3)]}
+    got = client.post(f"/api/items/{body['item_id']}/files", files=_files(("d.png", _png()))).json()
+    assert [o["id"] for o in got["objects"]] == ["o1"]
+    assert [p["object"] for p in got["photos"]] == ["o1", None, "o1", "o1"]
+
+
+# ── 옛 형식 묶음 (objects 없음, 10-04 이전) ──
+def _make_old_item(client, views, isolated_storage, n=2):
+    views["photos"] = [_v("front"), _v("back", blurry=True)][:n]
+    views["category"], views["item"] = "bag", "tote"
+    body = _create(client, n)
+    saved = _saved(isolated_storage, body["item_id"])
+    for k in ("objects", "user_edited", "needs_review"):
+        saved.pop(k, None)
+    saved.update(category="bag", item="tote")
+    for p in saved["photos"]:
+        p.pop("object", None)
+    (isolated_storage / "items" / f"{body['item_id']}.json").write_text(json.dumps(saved))
+    return body
+
+
+def test_get_old_format_item_becomes_one_object(client, views, isolated_storage):
+    body = _make_old_item(client, views, isolated_storage)
+    before = (isolated_storage / "items" / f"{body['item_id']}.json").read_bytes()
+    r = client.get(f"/api/items/{body['item_id']}")
+    assert r.status_code == 200, r.text
+    got = r.json()
+    assert [(o["id"], o["name"], o["category"]) for o in got["objects"]] == [("o1", "tote", "bag")]
+    assert got["main_object"] == "o1" and got["user_edited"] is False and got["needs_review"] is False
+    assert got["item"] == "tote" and got["category"] == "bag"
+    assert [p["object"] for p in got["photos"]] == ["o1", "o1"]
+    assert [p["view"] for p in got["photos"]] == ["front", "back"]
+    assert [m["view"] for m in got["missing"]] == ["back", "bottom", "inside"]     # 흐린 뒷면은 안 친다
+    assert got["retake"] == [{"file_id": got["photos"][1]["file_id"], "reason": "흐려요"}]
+    assert (isolated_storage / "items" / f"{body['item_id']}.json").read_bytes() == before   # GET 은 저장 안 함
+
+
+def test_put_objects_on_old_format_item(client, views, isolated_storage):
+    body = _make_old_item(client, views, isolated_storage)
+    edit = {"objects": [{"id": "o1", "kind": "product", "label": "가방", "category": "bag", "for_sale": True}],
+            "photos": [{"file_id": p["file_id"], "object": "o1", "view": p["view"]} for p in body["photos"]]}
+    r = _put(client, body, edit)
+    assert r.status_code == 200, r.text
+    got = r.json()
+    assert got["main_object"] == "o1" and got["category"] == "bag" and got["user_edited"] is True
+    assert got["objects"][0]["name"] == "tote" and got["objects"][0]["label"] == "가방"   # 옛 item 이름 유지
+    assert len(_saved(isolated_storage, body["item_id"])["objects"]) == 1
+
+
+def test_add_files_to_old_format_item_groups(client, views, isolated_storage):
+    body = _make_old_item(client, views, isolated_storage)
+    views["raw"] = {"objects": [_o("A", name="tote", category="bag")],
+                    "photos": [_p(0, "A", "front"), _p(1, "A", "back"), _p(2, "A", "bottom")]}
+    got = client.post(f"/api/items/{body['item_id']}/files", files=_files(("c.png", _png()))).json()
+    assert [p["object"] for p in got["photos"]] == ["o1"] * 3 and got["main_object"] == "o1"
+    assert [m["view"] for m in got["missing"]] == ["inside"]
+
+
+# ── POST /api/items/{item_id}/arrange (10-04) ──
+TWO_SHOES_AND_CARD = {
+    "objects": [_o("A", name="sneakers", category="shoes"), _o("B", name="bag", category="bag"),
+                _o("C", "proof", proof_for="A"), _o("D", name="table", for_sale=False)],
+    "photos": [_p(0, "A", "bottom"), _p(1, "A", "front_34"), _p(2, "B", "front"), _p(3, "B", "back"),
+               _p(4, "C"), _p(5, "D", "front")],
+}
+
+
+@pytest.fixture()
+def arrange_rec(monkeypatch):
+    """compositor.arrange · pipeline.load_analysis 가짜. rec["analysis"]: file_id → 분석 dict, rec["error"]: ValueError."""
+    from app.services import pipeline
+    from app.services.ai import compositor
+    rec = {"calls": [], "analysis": {}, "error": None, "analysis_calls": []}
+
+    def fake_arrange(parts, bg_color, layout="row"):
+        rec["calls"].append({"parts": parts, "bg": bg_color, "layout": layout})
+        if rec["error"]:
+            raise ValueError(rec["error"])
+        return _jpeg((1, 2, 3))
+
+    def fake_load(fid):
+        rec["analysis_calls"].append(fid)
+        return rec["analysis"].get(fid)
+    monkeypatch.setattr(compositor, "arrange", fake_arrange)
+    monkeypatch.setattr(pipeline, "load_analysis", fake_load)
+    return rec
+
+
+def _arr_item(client, views):
+    return _create_raw(client, views, TWO_SHOES_AND_CARD, 6)
+
+
+def _arrange(client, body, payload):
+    return client.post(f"/api/items/{body['item_id']}/arrange", json=payload)
+
+
+def _results(root):
+    return sorted(p.name for p in (root / "result").iterdir())
+
+
+def test_arrange_success_saves_result(client, views, arrange_rec, isolated_storage):
+    from app.prompts.presets import PRESETS
+    body = _arr_item(client, views)
+    fids = [p["file_id"] for p in body["photos"]]
+    n_calls = len(views["calls"])
+    r = _arrange(client, body, {"objects": ["o2", "o1"], "layout": "grid"})
+    assert r.status_code == 200, r.text
+    out = r.json()
+    # 물건 순서대로 — 가방은 구도 후보가 없어 문제 없는 첫 사진, 운동화는 대표컷(front_34) 구도 사진
+    assert out["photo_ids"] == [fids[2], fids[1]]
+    name = out["result_url"].rsplit("/", 1)[1]
+    assert out["result_url"] == f"/storage/result/{name}"
+    assert name.startswith(f"{body['item_id']}_arrange_grid_") and name.endswith(".jpg")
+    assert _results(isolated_storage) == [name]
+    with Image.open(isolated_storage / "result" / name) as img:       # 가짜 arrange 의 48x48 JPEG
+        assert img.format == "JPEG" and img.size == (48, 48)
+    call = arrange_rec["calls"][0]
+    assert call["layout"] == "grid" and call["bg"] == PRESETS["studio_white"]["bg_color"]
+    stored = isolated_storage / "original"
+    assert [p["image"] for p in call["parts"]] == [(stored / f"{f}.jpg").read_bytes() for f in out["photo_ids"]]
+    # 미리 분석이 없으면 박스 없음. 가방(하나)은 single, 운동화(켤레)는 아님
+    assert [{k: v for k, v in p.items() if k != "image"} for p in call["parts"]] == [
+        {"box": None, "drop": [], "keep": [], "single": True},
+        {"box": None, "drop": [], "keep": [], "single": False}]
+    assert len(views["calls"]) == n_calls                         # VLM 을 부르지 않는다
+    assert client.get(out["result_url"]).status_code == 200
+
+
+def test_arrange_default_layout_row(client, views, arrange_rec):
+    body = _arr_item(client, views)
+    r = _arrange(client, body, {"objects": ["o1", "o2"]})
+    assert r.status_code == 200 and "_arrange_row_" in r.json()["result_url"]
+    assert arrange_rec["calls"][0]["layout"] == "row"
+
+
+def test_arrange_uses_saved_analysis_boxes(client, views, arrange_rec):
+    body = _arr_item(client, views)
+    fids = [p["file_id"] for p in body["photos"]]
+    box = {"x1": 100, "y1": 120, "x2": 800, "y2": 900}
+    sold, other = {"x1": 0, "y1": 0, "x2": 500, "y2": 500}, {"x1": 500, "y1": 0, "x2": 1000, "y2": 500}
+    arrange_rec["analysis"][fids[1]] = {"item_box": box, "objects": [
+        {"box": sold, "for_sale": True}, {"box": other, "for_sale": False}, {"box": other},   # for_sale 없음 = 지움
+        {"for_sale": False}, "junk", {"box": None, "for_sale": False}]}                       # 박스 없는 건 무시
+    _arrange(client, body, {"objects": ["o1", "o2"]})
+    p1, p2 = arrange_rec["calls"][0]["parts"]
+    assert p1["box"] == box and p1["keep"] == [sold] and p1["drop"] == [other, other]
+    assert p2["box"] is None and p2["drop"] == [] and p2["keep"] == []
+    assert arrange_rec["analysis_calls"] == [fids[1], fids[2]]
+
+
+def test_arrange_single_follows_count_and_category(client, views, arrange_rec):
+    """물건 하나(count 1, 신발 아님)만 single — 여러 개 · 신발(켤레)은 덩어리를 다 둔다."""
+    body = _arr_item(client, views)
+    edit = _edit_body(body)
+    edit["objects"][1]["count"] = 2
+    assert _put(client, body, edit).status_code == 200
+    _arrange(client, body, {"objects": ["o1", "o2"]})
+    assert [p["single"] for p in arrange_rec["calls"][0]["parts"]] == [False, False]
+
+
+def test_arrange_busy_429(client, views, arrange_rec, monkeypatch, isolated_storage):
+    from app.api.routes import items
+    import threading
+    monkeypatch.setattr(items, "_ARRANGE_SLOTS", threading.BoundedSemaphore(1))
+    body = _arr_item(client, views)
+    items._ARRANGE_SLOTS.acquire()
+    try:
+        r = _arrange(client, body, {"objects": ["o1", "o2"]})
+        assert r.status_code == 429 and "다른 배치" in r.json()["detail"]
+        assert arrange_rec["calls"] == [] and _results(isolated_storage) == []
+    finally:
+        items._ARRANGE_SLOTS.release()
+    assert _arrange(client, body, {"objects": ["o1", "o2"]}).status_code == 200
+
+
+def test_arrange_slot_released_after_error(client, views, arrange_rec, monkeypatch):
+    from app.api.routes import items
+    import threading
+    monkeypatch.setattr(items, "_ARRANGE_SLOTS", threading.BoundedSemaphore(1))
+    body = _arr_item(client, views)
+    arrange_rec["error"] = "빈 알파"
+    assert _arrange(client, body, {"objects": ["o1", "o2"]}).status_code == 422
+    arrange_rec["error"] = None
+    assert _arrange(client, body, {"objects": ["o1", "o2"]}).status_code == 200
+
+
+def test_arrange_photos_override(client, views, arrange_rec):
+    body = _arr_item(client, views)
+    fids = [p["file_id"] for p in body["photos"]]
+    r = _arrange(client, body, {"objects": ["o1", "o2"], "photos": {"o1": fids[0], "o2": fids[3]}})
+    assert r.status_code == 200 and r.json()["photo_ids"] == [fids[0], fids[3]]
+
+
+def test_arrange_photos_for_other_objects_ignored(client, views, arrange_rec):
+    body = _arr_item(client, views)
+    fids = [p["file_id"] for p in body["photos"]]
+    r = _arrange(client, body, {"objects": ["o1", "o2"], "photos": {"o3": fids[4]}})
+    assert r.status_code == 200 and r.json()["photo_ids"] == [fids[1], fids[2]]
+
+
+@pytest.mark.parametrize("payload_fn,needle", [
+    (lambda f: {"objects": ["o1", "o1"]}, "두 번"),
+    (lambda f: {"objects": ["o1", "o3"]}, "파는 물건이 아니에요: o3"),          # 근거 사진
+    (lambda f: {"objects": ["o1", "o4"]}, "파는 물건이 아니에요: o4"),          # for_sale False
+    (lambda f: {"objects": ["o1", "o9"]}, "파는 물건이 아니에요: o9"),          # 없는 물건
+    (lambda f: {"objects": ["o1", "o2"], "photos": {"o1": f[2]}}, "사진이 아니에요"),   # 가방 사진
+    (lambda f: {"objects": ["o1", "o2"], "photos": {"o2": UNKNOWN}}, "사진이 아니에요"),
+])
+def test_arrange_400(client, views, arrange_rec, isolated_storage, payload_fn, needle):
+    body = _arr_item(client, views)
+    fids = [p["file_id"] for p in body["photos"]]
+    r = _arrange(client, body, payload_fn(fids))
+    assert r.status_code == 400 and needle in r.json()["detail"], r.text
+    assert arrange_rec["calls"] == [] and _results(isolated_storage) == []
+
+
+def test_arrange_after_edit_unsale_is_400(client, views, arrange_rec):
+    body = _arr_item(client, views)
+    edit = _edit_body(body)
+    edit["objects"][1]["for_sale"] = False
+    assert _put(client, body, edit).status_code == 200
+    assert _arrange(client, body, {"objects": ["o1", "o2"]}).status_code == 400
+
+
+def test_arrange_unknown_item_404(client, views, arrange_rec):
+    r = client.post(f"/api/items/{UNKNOWN}/arrange", json={"objects": ["o1", "o2"]})
+    assert r.status_code == 404
+
+
+def test_arrange_missing_original_404(client, views, arrange_rec, isolated_storage):
+    body = _arr_item(client, views)
+    (isolated_storage / "original" / f"{body['photos'][2]['file_id']}.jpg").unlink()
+    r = _arrange(client, body, {"objects": ["o1", "o2"]})
+    assert r.status_code == 404 and "사진을 찾을 수 없어요" in r.json()["detail"]
+    assert arrange_rec["calls"] == [] and _results(isolated_storage) == []
+
+
+def test_arrange_cutout_failure_422(client, views, arrange_rec, isolated_storage):
+    arrange_rec["error"] = "물건을 찾지 못함 (알파가 비어 있음)"
+    body = _arr_item(client, views)
+    r = _arrange(client, body, {"objects": ["o1", "o2"]})
+    assert r.status_code == 422 and "물건을 오리지 못했어요" in r.json()["detail"]
+    assert "알파가 비어" in r.json()["detail"]
+    assert _results(isolated_storage) == []
+
+
+@pytest.mark.parametrize("payload", [
+    {"objects": ["o1"]},                                          # 2개 미만
+    {"objects": [f"o{i}" for i in range(1, 8)]},                 # 6개 초과
+    {"objects": []},
+    {"objects": ["o1", "o2"], "layout": "circle"},
+    {"objects": ["o1", "o2"], "photos": ["x"]},
+    {"objects": "o1,o2"},
+    {},
+    {"objects": ["o1", "A"]},                                    # id 패턴
+    {"objects": ["o1", "o1\n"]},
+    {"objects": ["o1", "o2"], "photos": {"o1": ""}},             # file_id 패턴
+    {"objects": ["o1", "o2"], "photos": {"o1": "nope"}},
+    {"objects": ["o1", "o2"], "photos": {"x": UNKNOWN}},
+    {"objects": ["o1", "o2"], "photos": {f"o{i}": UNKNOWN for i in range(7)}},   # 6개 넘음
+])
+def test_arrange_schema_422(client, views, arrange_rec, payload):
+    body = _arr_item(client, views)
+    assert _arrange(client, body, payload).status_code == 422
+    assert arrange_rec["calls"] == []
+
+
+@pytest.mark.parametrize("bad", ["xyz", "0123456789ABCDEF0123456789ABCDEF", UNKNOWN + "0"])
+def test_arrange_bad_item_id_422(client, views, arrange_rec, bad):
+    assert client.post(f"/api/items/{bad}/arrange", json={"objects": ["o1", "o2"]}).status_code == 422
+
+
+def test_arrange_old_format_item_has_one_object(client, views, arrange_rec, isolated_storage):
+    body = _make_old_item(client, views, isolated_storage)
+    r = _arrange(client, body, {"objects": ["o1", "o2"]})
+    assert r.status_code == 400 and "o2" in r.json()["detail"]
+
+
+def test_arrange_real_compositor_end_to_end(client, views, monkeypatch, isolated_storage):
+    """compositor.arrange 는 진짜로, 오리기(original_alpha)만 가짜 — 정사각 JPEG 가 저장된다."""
+    import numpy as np
+    from app.services import pipeline
+    from app.services.ai import compositor
+    monkeypatch.setattr(pipeline, "load_analysis", lambda fid: None)
+
+    def fake_alpha(image_bytes, img):
+        a = np.zeros((img.height, img.width), np.uint8)
+        a[img.height // 4: img.height * 3 // 4, img.width // 4: img.width * 3 // 4] = 255
+        return a
+    monkeypatch.setattr(compositor, "original_alpha", fake_alpha)
+    body = _arr_item(client, views)
+    r = _arrange(client, body, {"objects": ["o1", "o2"], "layout": "overlap"})
+    assert r.status_code == 200, r.text
+    name = r.json()["result_url"].rsplit("/", 1)[1]
+    with Image.open(isolated_storage / "result" / name) as img:
+        assert img.format == "JPEG" and img.size == (compositor.CANVAS, compositor.CANVAS)

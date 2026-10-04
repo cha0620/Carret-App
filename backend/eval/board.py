@@ -143,7 +143,7 @@ def collect(only_run: str | None = None, include_unrun: bool = True) -> list[dic
                 "composition": r.get("composition"), "composition_skipped": r.get("composition_skipped"),
                 "prompt": r.get("prompt_used") or ""})
     for f, e in dataset.items():      # 아직 안 돌린 사진도 체크할 수 있게
-        if include_unrun:
+        if include_unrun and (e.get("post_index") or 1) == 1:    # 게시글 추가 사진은 한 장 평가 밖
             by_file.setdefault(f, {"file": f, "entry": e, "orig": None, "results": []})
 
     def rank(it):

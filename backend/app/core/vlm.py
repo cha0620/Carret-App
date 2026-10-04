@@ -38,6 +38,7 @@ DEFAULT_THINKING: dict[str, str | int] = {
     "classify": "minimal",        # lite 모델에서 돈다 (3.8-flash 는 minimal 을 거부)
     "auto_feedback": "low",       # 기본 모델(3.8-flash)이 minimal 을 400 으로 거부 — low 는 둘 다 받는다
     "views": 4096,                # 여러 장의 각도 — 사진이 많으면 생각이 길어질 수 있어 상한만
+    "objects": 4096,              # 여러 장을 물건별로 묶기 + 각도 (10-04, views 를 대신)
     "added_text": 2048,           # 없던 글자 검사 (두 장 비교) — verify 와 같은 상한
 }
 
@@ -88,6 +89,7 @@ DEFAULT_MEDIA_RESOLUTION: dict[str, str] = {
     "classify": "low",
     "check_photo": "low",
     "views": "low",               # 각도 · 가림만 본다 (10-01, 여러 장 업로드 — 장당 268 토큰)
+    "objects": "low",             # 물건 묶기 · 각도 (10-04) — views 와 같은 눈
 }
 
 

@@ -70,22 +70,49 @@ COMPOSITIONS: dict[str, list[dict]] = {
          "prompt": _ref("a music album listing shot — the front cover toward the camera. Keep the packaging exactly as photographed")},
     ],
 }
-BY_KEY = {c["key"]: c for cs in COMPOSITIONS.values() for c in cs}
+# 종류보다 좁은 물건 (coverage.SUBTYPES) — 있으면 종류의 구도 대신 이것만. 구도마다 "states" 가 있으면
+# 각도와 상태가 둘 다 맞는 사진만 쓴다 (닫은 노트북 정면 사진으로 "펼쳐서 정면"을 고르지 않게).
+# 각도 · 상태는 생성이 바꾸지 않는다 — 문장도 그 상태를 이미 찍은 사진에만 붙는다.
+SUBTYPE_COMPOSITIONS: dict[str, list[dict]] = {
+    "laptop": [
+        {"key": "laptop_open34", "label": "노트북 · 펼쳐서 비스듬히",
+         "desc": "펼친 노트북을 앞쪽에서 비스듬히 — 화면 · 키보드 · 옆면이 함께",
+         "views": {"front_34"}, "states": {"open"},
+         "prompt": _ref("a three-quarter laptop listing shot — screen and keyboard toward the camera")},
+        {"key": "laptop_open_front", "label": "노트북 · 펼쳐서 정면",
+         "desc": "펼친 노트북을 정면에서 — 화면과 키보드 전체",
+         "views": {"front"}, "states": {"open"},
+         "prompt": _ref("a straight-on laptop listing shot — screen and keyboard facing the camera")},
+        {"key": "laptop_lid", "label": "노트북 · 닫은 상판",
+         "desc": "닫은 노트북을 위에서 — 상판의 찍힘 · 흠집이 보이게",
+         "views": {"top"}, "states": {"closed"},
+         "prompt": _ref("a top-down laptop listing shot — the lid seen from above")},
+    ],
+}
+BY_KEY = {c["key"]: c for cs in [*COMPOSITIONS.values(), *SUBTYPE_COMPOSITIONS.values()] for c in cs}
 
 
-def options(category: str, photos: list[dict]) -> list[dict]:
-    """종류의 정석 구도 목록 + 구도마다 쓸 수 있는 사진(file_id, 다시 찍을 필요 없는 것 먼저).
+def _hint(c: dict) -> str:
+    views = " · ".join(coverage.VIEWS[v] for v in sorted(c["views"]))
+    if c.get("states"):
+        sub = next(s for s, cs in SUBTYPE_COMPOSITIONS.items() if c in cs)
+        views = f"{' · '.join(coverage.STATES[sub][s] for s in sorted(c['states']))} 상태로 {views}"
+    return f"{views} 사진이 없어요 — 이 각도로 찍어 올려 주세요"
+
+
+def options(category: str, photos: list[dict], subtype: str | None = None) -> list[dict]:
+    """종류(또는 subtype)의 정석 구도 목록 + 구도마다 쓸 수 있는 사진(file_id, 다시 찍을 필요 없는 것 먼저).
     쓸 수 있는 사진이 없으면 photo_ids 가 비고 hint 로 무엇을 찍으면 되는지."""
     out = []
-    for c in COMPOSITIONS.get(coverage.norm_category(category), []):
-        match = [p for p in photos if p.get("view") in c["views"]]
+    table = SUBTYPE_COMPOSITIONS.get(subtype or "") or COMPOSITIONS.get(coverage.norm_category(category), [])
+    for c in table:
+        match = [p for p in photos if coverage.matches(p, c["views"], c.get("states"))]
         good = [p for p in match if not coverage.problems(p)]
         ids = [p["file_id"] for p in good + [p for p in match if p not in good]]
-        views = " · ".join(coverage.VIEWS[v] for v in sorted(c["views"]))
         out.append({"key": c["key"], "label": c["label"], "desc": c["desc"],
                     "image": f"/img/compositions/{c['key']}.svg",
                     "photo_ids": ids, "available": bool(ids),
-                    "hint": None if ids else f"{views} 사진이 없어요 — 이 각도로 찍어 올려 주세요"})
+                    "hint": None if ids else _hint(c)})
     return out
 
 

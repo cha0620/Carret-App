@@ -5,9 +5,9 @@
 2. /docs 문서 자동 생성
 3. 1차 보안 게이트 (나쁜 입력은 함수까지 못 옴)
 """
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, field_validator, Field
+from pydantic import BaseModel, Field, StringConstraints, field_validator
 
 class Bubble(BaseModel):
     what: str
@@ -163,9 +163,12 @@ class ItemPhoto(BaseModel):
     source: Literal["photo", "video"] = Field(description="올린 사진 | 동영상에서 뽑은 장면")
     view: str | None = Field(default=None, description="각도 (coverage.VIEWS) — 모르면 None")
     view_label: str | None = None
+    state: str | None = Field(default=None, description="놓인 모양 (coverage.STATES — 노트북 open | closed), 아니면 None")
+    state_label: str | None = None
     occluded: bool = False
     blurry: bool = False
     item_visible: bool = True
+    object: str | None = Field(default=None, description="이 사진이 어느 물건인지 (ItemObject.id) — 모르면 None")
 
 
 class MissingView(BaseModel):
@@ -189,6 +192,67 @@ class CompositionOption(BaseModel):
     hint: str | None = Field(default=None, description="쓸 사진이 없을 때 — 무엇을 찍으면 되는지")
 
 
+class ItemObject(BaseModel):
+    """사진 묶음 속 물건 하나 (10-04). AI 가 제안하고 사용자가 고친다."""
+    id: str
+    kind: Literal["product", "proof"] = Field(description="product 팔거나 보여 주는 물건 | proof 상품을 보증하는 사진")
+    proof_type: str | None = Field(default=None, description="proof 만: document | internals | screen | other")
+    proof_type_label: str | None = None
+    proof_for: str | None = Field(default=None, description="proof 만: 어느 상품을 보증하나 (id)")
+    name: str = Field(description="짧은 영어 명사 (프롬프트용)")
+    label: str = Field(description="사용자에게 보이는 이름")
+    desc: str = ""
+    category: str | None = Field(default=None, description="product 만: coverage.CATEGORIES")
+    subtype: str | None = Field(default=None, description="종류보다 좁은 물건 (coverage.SUBTYPES — laptop), 아니면 None")
+    for_sale: bool = False
+    count: int = Field(default=1, description="같은 물건 몇 개 (product 만)")
+    photo_ids: list[str] = Field(default_factory=list)
+    missing: list[MissingView] = Field(default_factory=list)
+    retake: list[Retake] = Field(default_factory=list)
+    complete: bool = True
+    compositions: list[CompositionOption] = Field(default_factory=list)
+
+
+class ItemObjectEdit(BaseModel):
+    id: str = Field(pattern=r"^o[0-9]{1,3}$")
+    kind: Literal["product", "proof"]
+    label: str = Field(default="", max_length=40)
+    desc: str = Field(default="", max_length=200)
+    category: str | None = Field(default=None, max_length=20)
+    for_sale: bool = False
+    count: int = Field(default=1, ge=1, le=99)
+    proof_type: str | None = Field(default=None, max_length=20)
+    proof_for: str | None = Field(default=None, pattern=r"^o[0-9]{1,3}$")
+
+
+class ItemPhotoEdit(BaseModel):
+    file_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    object: str | None = Field(default=None, pattern=r"^o[0-9]{1,3}$")
+    view: str | None = Field(default=None, max_length=20)
+    state: str | None = Field(default=None, max_length=20)
+
+
+class ItemObjectsUpdate(BaseModel):
+    """사용자가 고친 묶음 — 물건 목록 전체와 사진 전부의 물건 · 각도."""
+    objects: list[ItemObjectEdit] = Field(max_length=20)
+    photos: list[ItemPhotoEdit] = Field(max_length=60)
+
+
+class ArrangeRequest(BaseModel):
+    """파는 물건 여러 개를 한 장에 (10-04) — 물건마다 원본에서 오려 코드로 놓는다 (생성 없음)."""
+    objects: list[Annotated[str, StringConstraints(pattern=r"^o[0-9]{1,3}$")]] = Field(
+        min_length=2, max_length=6, description="놓을 물건 id (놓는 순서 — 왼쪽부터, 첫 물건이 겹칠 때 맨 위)")
+    layout: Literal["row", "grid", "overlap"] = "row"
+    photos: dict[Annotated[str, StringConstraints(pattern=r"^o[0-9]{1,3}$")],
+                 Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{32}$")]] = Field(
+        default_factory=dict, max_length=6, description="물건 id → 쓸 사진 file_id (없으면 물건의 대표 사진)")
+
+
+class ArrangeResponse(BaseModel):
+    result_url: str
+    photo_ids: list[str] = Field(description="물건마다 쓴 사진 (objects 순서)")
+
+
 class ItemResponse(BaseModel):
     item_id: str
     item: str = "object"
@@ -200,3 +264,9 @@ class ItemResponse(BaseModel):
     views_failed: bool = Field(default=False, description="각도 분류 실패 — 빠진 면을 모른다")
     compositions: list[CompositionOption] = Field(default_factory=list,
                                                   description="이 종류의 정석 구도 (지금은 신발만)")
+    objects: list[ItemObject] = Field(default_factory=list,
+                                      description="사진 속 물건들 (10-04). 위의 item · category · missing · "
+                                                  "compositions 는 대표 물건(파는 상품 중 사진이 가장 많은 것) 기준")
+    main_object: str | None = Field(default=None, description="대표 물건 id")
+    user_edited: bool = Field(default=False, description="사용자가 묶음을 확인 · 수정했나")
+    needs_review: bool = Field(default=False, description="확인한 뒤 더 올린 사진을 AI 가 붙였다 — 다시 확인받는다")

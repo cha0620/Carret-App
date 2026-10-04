@@ -53,14 +53,14 @@ def test_default_thinking_table_exact():
     assert vlm.DEFAULT_THINKING == {
         "verify": 2048, "item_text": 2048,
         "detect": 4096, "analyze": 4096, "judge": 4096, "check_photo": 4096, "match": 4096,
-        "classify": "minimal", "auto_feedback": "low", "views": 4096, "added_text": 2048,
+        "classify": "minimal", "auto_feedback": "low", "views": 4096, "objects": 4096, "added_text": 2048,
     }
 
 
 @pytest.mark.parametrize("name,budget", [
     ("verify", 2048), ("item_text", 2048),
     ("detect", 4096), ("analyze", 4096), ("judge", 4096), ("check_photo", 4096),
-    ("match", 4096),
+    ("match", 4096), ("views", 4096), ("objects", 4096),
 ])
 def test_default_budgets_are_caps(monkeypatch, name, budget):
     monkeypatch.setattr(settings, "vlm_thinking", {})
@@ -85,12 +85,14 @@ def _level(res):
 
 def test_media_levels_and_defaults():
     assert vlm.MEDIA_LEVELS == {"low", "medium", "high"}
-    assert vlm.DEFAULT_MEDIA_RESOLUTION == {"classify": "low", "check_photo": "low", "views": "low"}
+    assert vlm.DEFAULT_MEDIA_RESOLUTION == {"classify": "low", "check_photo": "low", "views": "low",
+                                          "objects": "low"}
 
 
 @pytest.mark.parametrize("name,expected", [
     ("classify", "MEDIA_RESOLUTION_LOW"),
     ("check_photo", "MEDIA_RESOLUTION_LOW"),
+    ("views", "MEDIA_RESOLUTION_LOW"), ("objects", "MEDIA_RESOLUTION_LOW"),
     ("detect", None), ("verify", None), ("item_text", None), ("judge", None),
     ("some_new_call", None),
 ])

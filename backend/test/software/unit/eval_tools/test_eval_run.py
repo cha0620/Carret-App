@@ -420,18 +420,26 @@ def test_dataset_sha_changes_with_label(run_mod, tmp_path):
     assert run_mod.dataset_sha([{"file": "a.webp", "wear_level": "heavy"}], tmp_path) != base
 
 
-@pytest.mark.parametrize("key", ["photo_type", "wear_level", "text_level", "key_texts", "item"])
+@pytest.mark.parametrize("key", ["photo_type", "wear_level", "text_level", "key_texts", "item",
+                                 "item_count"])
 def test_dataset_sha_every_answer_label_counts(run_mod, tmp_path, key):
     assert key in run_mod.DATASET_LABELS
     base = run_mod.dataset_sha([{"file": "a.webp"}], tmp_path)
     assert run_mod.dataset_sha([{"file": "a.webp", key: "x"}], tmp_path) != base
 
 
-@pytest.mark.parametrize("extra", [{"note": "x"}, {"labeled_by": "kim"}, {"set": "failure"}, {"split": "test"}])
+@pytest.mark.parametrize("extra", [{"note": "x"}, {"labeled_by": "kim"}, {"set": "failure"}, {"split": "test"},
+                                   {"edge_tags": ["prop"]}, {"category": "bag"}])
 def test_dataset_sha_ignores_non_answer_fields(run_mod, tmp_path, extra):
     (tmp_path / "a.webp").write_bytes(b"A")
     base = run_mod.dataset_sha([{"file": "a.webp", "wear_level": "light"}], tmp_path)
     assert run_mod.dataset_sha([{"file": "a.webp", "wear_level": "light", **extra}], tmp_path) == base
+
+
+def test_dataset_sha_item_count_1_differs_from_missing(run_mod, tmp_path):
+    """item_count 를 처음 채우면(옛 항목 없음 → 1) 해시가 바뀐다 — 현재 동작 고정."""
+    assert run_mod.dataset_sha([{"file": "a"}], tmp_path) != \
+        run_mod.dataset_sha([{"file": "a", "item_count": 1}], tmp_path)
 
 
 def test_dataset_sha_missing_label_vs_none_same(run_mod, tmp_path):
@@ -518,3 +526,54 @@ def test_full_row_composition_recorded_only_when_in_prompt(full_row):
 ])
 def test_composition_in_edge_cases(run_mod, key, prompt, expected):
     assert run_mod._composition_in(key, prompt) is expected
+
+
+# ── select: 게시글 추가 사진 (10-04) ──
+def _post_ds():
+    return [{"file": "a_p01.jpg", "split": "test", "post": "a", "post_index": 1},
+            {"file": "a_p02.jpg", "split": "test", "post": "a", "post_index": 2},
+            {"file": "b_p01.jpg", "split": "dev", "post": "b", "post_index": 1, "set": "failure"},
+            {"file": "b_p02.jpg", "split": "dev", "post": "b", "post_index": 2, "set": "failure"},
+            {"file": "old.webp"},                                    # 옛 항목 — post 칸 없음 = 첫 사진
+            {"file": "n.webp", "post_index": None}, {"file": "z.webp", "post_index": 0}]
+
+
+def test_select_without_only_drops_extras(run_mod):
+    assert _files(run_mod.select(_post_ds())) == ["a_p01.jpg", "b_p01.jpg", "old.webp", "n.webp", "z.webp"]
+    assert _files(run_mod.select(_post_ds(), split="test")) == ["a_p01.jpg"]
+    assert _files(run_mod.select(_post_ds(), set_="failure")) == ["b_p01.jpg"]
+    assert _files(run_mod.select(_post_ds(), split="dev", set_="core")) == ["old.webp", "n.webp", "z.webp"]
+
+
+def test_select_only_names_extras_explicitly(run_mod):
+    assert _files(run_mod.select(_post_ds(), only="a_p02.jpg")) == ["a_p02.jpg"]
+    assert _files(run_mod.select(_post_ds(), only="b_p02.jpg, a_p01.jpg")) == ["a_p01.jpg", "b_p02.jpg"]
+    # 다른 조건은 그대로 겹친다
+    assert _files(run_mod.select(_post_ds(), only="a_p02.jpg,b_p02.jpg", split="dev")) == ["b_p02.jpg"]
+    assert _files(run_mod.select(_post_ds(), only="a_p02.jpg,b_p02.jpg", set_="failure")) == ["b_p02.jpg"]
+
+
+def test_select_only_blank_is_no_only(run_mod):
+    assert _files(run_mod.select(_post_ds(), only="")) == _files(run_mod.select(_post_ds()))
+
+
+def test_select_extras_does_not_mutate_input(run_mod):
+    ds = _post_ds()
+    run_mod.select(ds)
+    run_mod.select(ds, only="a_p02.jpg")
+    assert ds == _post_ds()
+
+
+def test_main_skips_extras_unless_named(run_mod, tmp_path, monkeypatch, capsys):
+    entries = [_lab("a_p01.jpg", split="dev", post="a", post_index=1),
+               _lab("a_p02.jpg", split="dev", post="a", post_index=2),      # 라벨이 있어도 기본은 빠진다
+               _lab("old.jpg", split="dev")]
+    calls = _setup_main(run_mod, tmp_path, monkeypatch, entries, ["--analyze-only"])
+    assert run_mod.main() == 1
+    assert calls == [(2, False, False)]
+    assert "a_p02.jpg" not in capsys.readouterr().out
+
+    (tmp_path / "b").mkdir()
+    calls = _setup_main(run_mod, tmp_path / "b", monkeypatch, entries, ["--analyze-only", "--only", "a_p02.jpg"])
+    assert run_mod.main() == 1
+    assert calls == [(1, False, False)]

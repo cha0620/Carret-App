@@ -233,10 +233,13 @@ SETS = ("failure", "core")   # failure = 실패 모음 (dev 전용), core = 그 
 
 
 def select(dataset: list[dict], only: str = "", split: str = "", set_: str = "") -> list[dict]:
-    """돌릴 사진 고르기 — 조건은 모두 겹쳐 건다 (--set failure --only a.webp 면 실패 모음 안의 a 만)."""
+    """돌릴 사진 고르기 — 조건은 모두 겹쳐 건다 (--set failure --only a.webp 면 실패 모음 안의 a 만).
+    게시글의 두 번째 사진부터(post_index > 1)는 한 장 평가 대상이 아니라 빼고, --only 로 이름을 대면 넣는다."""
     if only:
         keep = {s.strip() for s in only.split(",")}
         dataset = [e for e in dataset if e["file"] in keep]
+    else:
+        dataset = [e for e in dataset if (e.get("post_index") or 1) == 1]
     if split:
         dataset = [e for e in dataset if (e.get("split") or "dev") == split]
     if set_:
@@ -245,7 +248,7 @@ def select(dataset: list[dict], only: str = "", split: str = "", set_: str = "")
 
 
 # 정답으로 쓰는 칸만 — note · labeled_by · set(실패 모음) 같은 칸을 고쳐도 해시가 안 바뀌게
-DATASET_LABELS = ("photo_type", "wear_level", "text_level", "key_texts", "item")
+DATASET_LABELS = ("photo_type", "wear_level", "text_level", "key_texts", "item", "item_count")   # item_count: 여러 개면 경로가 바뀐다
 
 
 def dataset_sha(entries: list[dict], images: Path) -> str:
