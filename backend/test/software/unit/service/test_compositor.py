@@ -954,3 +954,92 @@ def test_trim_page_edges_works_on_each_side():
     qr = np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], np.float32)
     out = compositor.trim_page_edges(rot, qr)
     assert abs(out[1][0] - 400) <= 4 and abs(out[2][0] - 400) <= 4
+
+
+# ══ 10-03: drop_boxes — 팔지 않는다고 고른 물건 자리를 지운다 (고른 물건과 겹친 곳은 남김) ═══════
+import pytest  # noqa: E402
+
+
+def _full(h=100, w=200):
+    return np.full((h, w), 255, np.uint8)
+
+
+@pytest.mark.parametrize("drop", [None, []])
+def test_drop_boxes_nothing_to_drop_returns_same_alpha(drop):
+    a = _full()
+    assert compositor.drop_boxes(a, drop, keep=[{"x1": 0, "y1": 0, "x2": 1000, "y2": 1000}]) is a
+
+
+def test_drop_boxes_clears_box_scaled_to_pixels_and_leaves_rest():
+    a = _full()                                         # 200x100 — 0-1000 → x/5, y/10
+    out = compositor.drop_boxes(a, [{"x1": 0, "y1": 0, "x2": 500, "y2": 500}])
+    assert (out[:50, :100] == 0).all()
+    assert (out[50:, :] == 255).all() and (out[:, 100:] == 255).all()
+
+
+def test_drop_boxes_does_not_mutate_input():
+    a = _full()
+    compositor.drop_boxes(a, [{"x1": 0, "y1": 0, "x2": 1000, "y2": 1000}])
+    assert (a == 255).all()
+
+
+def test_drop_boxes_keep_overlap_survives():
+    out = compositor.drop_boxes(_full(), [{"x1": 0, "y1": 0, "x2": 1000, "y2": 1000}],
+                                keep=[{"x1": 500, "y1": 0, "x2": 1000, "y2": 1000}])
+    assert (out[:, :100] == 0).all() and (out[:, 100:] == 255).all()
+
+
+def test_drop_boxes_keep_wins_over_any_number_of_drops():
+    box = {"x1": 250, "y1": 250, "x2": 750, "y2": 750}
+    out = compositor.drop_boxes(_full(), [box, box, {"x1": 0, "y1": 0, "x2": 1000, "y2": 1000}], keep=[box])
+    assert (out[25:75, 50:150] == 255).all() and out[0, 0] == 0 and out[99, 199] == 0
+
+
+def test_drop_boxes_out_of_range_box_is_clamped():
+    out = compositor.drop_boxes(_full(), [{"x1": -100, "y1": -100, "x2": 2000, "y2": 2000}])
+    assert (out == 0).all()
+
+
+def test_drop_boxes_inverted_box_drops_nothing():
+    """현재 동작: x1>x2 인 박스는 빈 슬라이스라 아무것도 지우지 않는다 (detector 가 _box 로 정렬해 주므로 실제로는 안 옴)."""
+    out = compositor.drop_boxes(_full(), [{"x1": 800, "y1": 800, "x2": 200, "y2": 200}])
+    assert (out == 255).all()
+
+
+def test_drop_boxes_float_and_string_coords_are_truncated():
+    out = compositor.drop_boxes(_full(), [{"x1": 0, "y1": 0, "x2": "500", "y2": 999.9}])
+    assert (out[:99, :100] == 0).all() and (out[:, 100:] == 255).all()
+
+
+def test_drop_boxes_missing_key_raises():
+    with pytest.raises(KeyError):
+        compositor.drop_boxes(_full(), [{"x1": 0, "y1": 0, "x2": 10}])
+
+
+def test_drop_boxes_preserves_partial_alpha_values_outside_drop():
+    a = np.full((100, 200), 128, np.uint8)
+    out = compositor.drop_boxes(a, [{"x1": 0, "y1": 0, "x2": 100, "y2": 100}])
+    assert out.dtype == np.uint8 and out[50, 150] == 128 and out[0, 0] == 0
+
+
+def test_compose_drop_removes_unchosen_item_from_canvas():
+    """두 물건 중 오른쪽(파랑)을 빼면 결과에 파랑이 없다."""
+    img = Image.new("RGB", (200, 100), (200, 30, 30))
+    img.paste((30, 30, 200), (110, 0, 200, 100))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    a = np.zeros((100, 200), np.uint8)
+    a[20:80, 10:90] = 255
+    a[20:80, 120:190] = 255
+    out = compositor.compose(buf.getvalue(), (255, 255, 255), alpha=a,
+                             drop=[{"x1": 550, "y1": 0, "x2": 1000, "y2": 1000}])
+    px = np.asarray(Image.open(io.BytesIO(out)).convert("RGB")).reshape(-1, 3).astype(int)
+    blue = (px[:, 2] > 150) & (px[:, 0] < 80)
+    red = (px[:, 0] > 150) & (px[:, 2] < 80)
+    assert red.sum() > 1000 and blue.sum() == 0
+
+
+def test_compose_dropping_everything_raises_like_empty_alpha():
+    with pytest.raises(ValueError):
+        compositor.compose(_img(), (255, 255, 255), alpha=_alpha(),
+                           drop=[{"x1": 0, "y1": 0, "x2": 1000, "y2": 1000}])

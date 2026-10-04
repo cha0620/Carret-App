@@ -5,7 +5,7 @@
     python eval/compare.py <base> <exp> --rater cha0620     # 이 평가자 채점만 (기본: 모든 평가자 다수결)
 
 나오는 것:
-  runs/compare-<base>-vs-<exp>.html   브라우저로 (runs/ 를 띄운 서버에서 열면 사진이 보인다)
+  results/runs/compare-<base>-vs-<exp>.html   브라우저로 (runs/ 를 띄운 서버에서 열면 사진이 보인다)
   stdout                              숫자표 (markdown) — EXPERIMENTS.md 에 붙인다
 
 사람 판정은 report.py 와 같은 규칙 (물건 표시 없으면 보존 통과, 평가자 여럿이면 다수결 · 동점은 실패).
@@ -35,7 +35,7 @@ CONDITION_KEYS = ("gen_model", "gen_steps", "vlm_model", "preset", "lock_sha", "
 
 # ── 읽기 ────────────────────────────────────────
 def load_run(run_id: str) -> tuple[dict, list[dict]]:
-    run_dir = HERE / "runs" / run_id
+    run_dir = HERE / "results" / "runs" / run_id
     if not (run_dir / "results.jsonl").exists():
         raise SystemExit(f"runs/{run_id}/results.jsonl 이 없다 — 끝까지 안 돈 실행인지 확인")
     meta_path = run_dir / "meta.json"
@@ -318,7 +318,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("base")
     ap.add_argument("exp")
-    ap.add_argument("--rater", default="", help="이 평가자 채점만 (reviews/<run_id>/<이름>.csv)")
+    ap.add_argument("--rater", default="", help="이 평가자 채점만 (results/reviews/<run_id>/<이름>.csv)")
     a = ap.parse_args(argv)
     mb, rb = load_run(a.base)
     me, re_ = load_run(a.exp)
@@ -329,7 +329,7 @@ def main(argv=None) -> int:
         raise SystemExit(f"평가자 {rater!r} 의 채점이 두 실행 어디에도 없다 (있는 평가자: {', '.join(known) or '없음'})")
     raters_b, raters_e = raters_of(rv_b, rater), raters_of(rv_e, rater)
     vb, ve = verdicts(rb, rv_b, rater), verdicts(re_, rv_e, rater)
-    out = HERE / "runs" / f"compare-{a.base}-vs-{a.exp}.html"
+    out = HERE / "results" / "runs" / f"compare-{a.base}-vs-{a.exp}.html"
     out.write_text(build_html(a.base, a.exp, mb, me, rb, re_, vb, ve, rater, raters_b, raters_e), encoding="utf-8")
     for w in warnings(mb, me, rb, re_, vb, ve, raters_b, raters_e):
         print(f"⚠ {w}")

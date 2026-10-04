@@ -122,3 +122,18 @@ def test_get_preset_moves_lock_to_end_when_console_text_appends_after_it(monkeyp
     assert prompt.endswith(SECONDHAND_LOCK)
     assert prompt.count(SECONDHAND_LOCK) == 1
 
+
+
+# ══ 10-03: 팔 물건 고르기 — leave_out (count_lock 은 효과가 없어 뺐다) ═══════
+from app.prompts.presets import LEAVE_OUT, TEXT_LOCK_MAX_CHARS, leave_out  # noqa: E402
+
+
+@pytest.mark.parametrize("names", [[], ["", "  ", "\n"]])
+def test_leave_out_nothing_usable_is_empty(names):
+    assert leave_out(names) == ""
+
+
+def test_leave_out_never_names_the_objects():
+    """10-03: 이름을 쓰면 그 이름의 물건을 지운다 ("CD case" → 고른 CD 의 케이스까지) — 이름 없는 한 문장."""
+    out = leave_out(["keyboard", "CD case", ' mouse "pad"\n'])
+    assert out == LEAVE_OUT and "keyboard" not in out and "CD" not in out and "case" not in out.lower()

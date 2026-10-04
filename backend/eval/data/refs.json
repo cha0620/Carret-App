@@ -4,5 +4,5 @@
   {"file": "watch_front34_1.jpg", "category": "other", "composition": "watch_front34", "view": "front_34", "applies_to": "손목시계", "note": "다이얼이 보이게 비스듬히 세움, 줄이 뒤로 둥글게, 흰 배경"},
   {"file": "book_cover34_1.jpg", "category": "other", "composition": "book_cover34", "view": "front_34", "applies_to": "책 한 권", "note": "앞표지 + 책등이 보이게 비스듬히 세움, 흰 배경"},
   {"file": "book_stack_1.jpg", "category": "other", "composition": "book_stack", "view": "side", "applies_to": "책 · 만화 세트 (여러 권)", "note": "책등이 보이게 쌓음 — 배경이 서점이라 구도만 참고"},
-  {"file": "cd_front_1.jpg", "category": "other", "composition": "cd_front", "view": "front", "applies_to": "CD · 음반", "note": "케이스 앞면 정면, 비닐 · 띠지 그대로"}
+  {"file": "album_front_1.jpg", "category": "other", "composition": "album_front", "view": "front", "applies_to": "음반 (LP · CD · 테이프)", "note": "케이스 앞면 정면, 비닐 · 띠지 그대로"}
 ]

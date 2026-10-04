@@ -1,4 +1,4 @@
-"""브라우저 채점 — 원본 | 결과를 보면서 체크하면 reviews/<run_id>/<이름>.csv 에 바로 저장된다.
+"""브라우저 채점 — 원본 | 결과를 보면서 체크하면 results/reviews/<run_id>/<이름>.csv 에 바로 저장된다.
 
     cd backend
     python eval/grade.py 20261001-pilot-full2 --name cha0620     # http://localhost:8765
@@ -58,7 +58,7 @@ MAX_BODY = 64 * 1024
 def load_rows(run_id: str) -> list[dict]:
     """results.jsonl 에서 채점할 줄 — 실패한 실행은 뺀다 (TEMPLATE.csv 와 같은 기준)."""
     rows = []
-    with open(HERE / "runs" / run_id / "results.jsonl", encoding="utf-8") as f:
+    with open(HERE / "results" / "runs" / run_id / "results.jsonl", encoding="utf-8") as f:
         for line in f:
             r = json.loads(line)
             if not r.get("error") and r.get("orig") and r.get("result"):   # analyze 만 돌린 줄은 이미지가 없다
@@ -244,7 +244,7 @@ progress();
 
 
 def make_handler(run_id: str, name: str, rows: list[dict], gt: dict, sheet_path: Path):
-    run_dir = (HERE / "runs" / run_id).resolve()
+    run_dir = (HERE / "results" / "runs" / run_id).resolve()
     items = order(rows, name)
     token = os.urandom(16).hex()   # 다른 웹페이지가 localhost 로 저장 요청을 보내지 못하게
 
@@ -306,21 +306,21 @@ def make_handler(run_id: str, name: str, rows: list[dict], gt: dict, sheet_path:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("run_id")
-    ap.add_argument("--name", required=True, help="평가자 이름 — reviews/<run_id>/<이름>.csv 에 저장")
+    ap.add_argument("--name", required=True, help="평가자 이름 — results/reviews/<run_id>/<이름>.csv 에 저장")
     ap.add_argument("--port", type=int, default=8765)
     a = ap.parse_args()
     if a.name.lower() == "template" or not (a.name.isascii() and a.name.replace("-", "").replace("_", "").isalnum()):
         print("이름은 영문·숫자·-·_ 만 (TEMPLATE 은 안 됨)")
         return 1
-    if not (HERE / "runs" / a.run_id / "results.jsonl").exists():
+    if not (HERE / "results" / "runs" / a.run_id / "results.jsonl").exists():
         print(f"runs/{a.run_id}/results.jsonl 이 없다")
         return 1
     rows = load_rows(a.run_id)
     if not rows:
         print("채점할 이미지가 없다 — 전체 실행(--analyze-only 아님)의 run_id 인가?")
         return 1
-    gt = {e["file"]: e for e in json.loads((HERE / "dataset.json").read_text(encoding="utf-8"))}
-    sheet_path = HERE / "reviews" / a.run_id / f"{a.name}.csv"
+    gt = {e["file"]: e for e in json.loads((HERE / "data" / "dataset.json").read_text(encoding="utf-8"))}
+    sheet_path = HERE / "results" / "reviews" / a.run_id / f"{a.name}.csv"
     sheet_path.parent.mkdir(parents=True, exist_ok=True)
     srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(a.run_id, a.name, rows, gt, sheet_path))
     print(f"채점: http://localhost:{a.port} → {sheet_path}")

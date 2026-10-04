@@ -110,12 +110,23 @@ def item_text_prompt(item: str) -> str:
     return get_prompt_text("item_text", fallback=frag("item_text"), item=item)
 
 
+def added_text_prompt() -> str:
+    return get_prompt_text("added_text", fallback=frag("added_text"))
+
+
 def check_photo_prompt() -> str:
     return get_prompt_text("check_photo", fallback=check_photo_template())
 
 
 def match_prompt(orig, result) -> str:
     return get_prompt_text("match", fallback=frag("match"), orig=orig, result=result)
+
+
+def objects_prompt(n: int) -> str:
+    """여러 장 → 물건별로 묶기 + 사진마다 각도 (10-04). Langfuse 에 옛 "views" 프롬프트가 있어도 섞이지 않게
+    이름을 따로 둔다 (응답 모양이 다르다)."""
+    text = get_prompt_text("objects", fallback=frag("objects"))
+    return text.replace("{{n}}", str(n)).replace("{{n_last}}", str(n - 1))
 
 
 def views_prompt(n: int) -> str:

@@ -6,17 +6,18 @@
 - 첫 페이지: 사진마다 원본 + 모든 실행의 결과 (사람 판정 배지 · 채점 메모). 보존 실패 비율이 높은 사진부터
   (모든 실행을 합친 비율 — 옛 실행 · 기각한 실험도 들어간다)
 - 사진마다 "실패 모음" 체크 → dataset.json 의 set="failure" 를 바로 고친다 (해제하면 set · failure_added 를 지운다, 태그 · 근거 메모는 남긴다)
-- 그 밖에 여는 것: runs/*.html (compare · failures), runs/<id>/review.html · report.md, runs/<id>/files/ 의 사진만
+- 그 밖에 여는 것: runs/*.html (compare · failures), results/runs/<id>/review.html · report.md, results/runs/<id>/files/ 의 사진만
   (results.jsonl · carret.db · storage/ · 폴더 목록은 열지 않는다)
 
 사람 판정은 report.py 와 같은 규칙 (물건 표시 없으면 보존 통과, 평가자 여럿이면 다수결 · 동점은 실패, 오류난 회차는 판정 안 함).
-로컬 전용: 127.0.0.1 에만 열고, Host 가 localhost · 127.0.0.1 · Codespaces 포워딩 주소가 아니면 거절한다 (DNS rebinding).
+로컬 전용: 127.0.0.1 에 연다 (Codespaces 안에서는 포워딩 때문에 0.0.0.0 — --host). Host 가 localhost · 127.0.0.1 · Codespaces 포워딩 주소가 아니면 거절한다 (DNS rebinding).
 """
 import argparse
 import contextlib
 import csv
 import html
 import json
+import os
 import secrets
 import sys
 import threading
@@ -43,7 +44,7 @@ ALLOWED_HOST_SUFFIXES = (".app.github.dev",)    # Codespaces 포트 포워딩
 def _notes(run_id: str) -> dict:
     """{(file, repeat): ["평가자: 메모"]} — 채점표의 note 칸."""
     out = defaultdict(list)
-    for p in sorted((HERE / "reviews" / run_id).glob("*.csv")):
+    for p in sorted((HERE / "results" / "reviews" / run_id).glob("*.csv")):
         if p.stem == "TEMPLATE":
             continue
         try:
@@ -67,7 +68,7 @@ def _results(run_id: str) -> list[dict]:
     """results.jsonl — 깨진 줄(중간에 멈춘 실행의 마지막 줄 등)은 건너뛴다."""
     out = []
     try:
-        text = (HERE / "runs" / run_id / "results.jsonl").read_text(encoding="utf-8")
+        text = (HERE / "results" / "runs" / run_id / "results.jsonl").read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return out
     for line in text.splitlines():
@@ -78,12 +79,37 @@ def _results(run_id: str) -> list[dict]:
     return out
 
 
-def collect() -> list[dict]:
-    """사진별 [{file, entry, orig, results:[{run, repeat, mode, result, preserved, flags, tags, notes}]}]."""
+def viewable_runs() -> list[str]:
+    """결과판에 나오는 실행 — 이미지가 남아 있는 것만, 최신 먼저 (지운 옛 실행 · analyze 만 한 실행은 빠진다)."""
+    out = []
+    for p in (HERE / "results" / "runs").glob("*"):
+        if (p / "results.jsonl").exists() and (p / "files").is_dir() and any(
+                r.get("result") or r.get("error") for r in _results(p.name)):
+            out.append(p.name)
+    # 이름순이 아니라 만든 시각순 (같은 날 실행은 이름이 시각 순서가 아니다)
+    return sorted(out, key=lambda r: (run_meta(r).get("created") or "",
+                                      (HERE / "results" / "runs" / r / "results.jsonl").stat().st_mtime), reverse=True)
+
+
+def run_meta(run_id: str) -> dict:
+    try:
+        m = json.loads((HERE / "results" / "runs" / run_id / "meta.json").read_text(encoding="utf-8"))
+        return m if isinstance(m, dict) else {}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+
+
+def collect(only_run: str | None = None, include_unrun: bool = True) -> list[dict]:
+    """사진별 [{file, entry, orig, results:[{run, repeat, mode, result, preserved, flags, tags, notes}]}].
+    only_run 이면 그 실행만, include_unrun 이면 아직 안 돌린 사진도 (실패 모음 체크용)."""
     dataset = {e["file"]: e for e in intake.load_dataset()}
     by_file: dict[str, dict] = {}
-    runs = sorted(p.name for p in (HERE / "runs").glob("*") if (p / "results.jsonl").exists())
+    runs = sorted(p.name for p in (HERE / "results" / "runs").glob("*") if (p / "results.jsonl").exists())
+    if only_run is not None:
+        runs = [r for r in runs if r == only_run]
     for run_id in runs:
+        if not (HERE / "results" / "runs" / run_id / "files").is_dir():
+            continue              # 이미지를 지운 옛 실행 (EXPERIMENTS.md 에 없는 것 — 10-03 정리)
         rows = _results(run_id)
         if not any(r.get("result") or r.get("error") for r in rows):
             continue              # analyze 만 한 실행은 결과 사진이 없다 (전부 오류난 실행은 보여 준다)
@@ -113,9 +139,12 @@ def collect() -> list[dict]:
                 "quality_flags": [x for x in flags if x not in rp.OBJECT_FLAGS],
                 "tags": sorted({x for v in vs for x in v.get("tags", ())}),
                 "raters": [] if r.get("error") else sorted(p for p in reviews if key in reviews[p]),
-                "notes": [] if r.get("error") else notes.get(key, [])})
+                "notes": [] if r.get("error") else notes.get(key, []),
+                "composition": r.get("composition"), "composition_skipped": r.get("composition_skipped"),
+                "prompt": r.get("prompt_used") or ""})
     for f, e in dataset.items():      # 아직 안 돌린 사진도 체크할 수 있게
-        by_file.setdefault(f, {"file": f, "entry": e, "orig": None, "results": []})
+        if include_unrun and (e.get("post_index") or 1) == 1:    # 게시글 추가 사진은 한 장 평가 밖
+            by_file.setdefault(f, {"file": f, "entry": e, "orig": None, "results": []})
 
     def rank(it):
         rated = [x for x in it["results"] if x["preserved"] is not None]
@@ -143,26 +172,83 @@ def set_failure(file: str, on: bool) -> bool:
     return True
 
 
+# ── 프롬프트 한국어 (10-03 — 결과 옆에 늘 보이게) ──────
+# 고정 문장은 미리 옮겨 두고, 사진마다 바뀌는 부분(글자 · 물건 이름)은 원문 그대로 둔다.
+_KO_SENTENCES = {
+    "professional product photography, pure white studio background, soft even lighting, subtle shadow.":
+        "전문 상품 사진, 순백색 스튜디오 배경, 부드럽고 고른 조명, 은은한 그림자.",
+    "Tidy it into a clean listing photo: place it near the center with comfortable margins, smooth out wrinkles, "
+    "and leave out hangers, hands and props that are not part of the product.":
+        "깔끔한 판매 사진으로 정리해: 가운데 근처에 여백은 넉넉히, 주름은 펴고, 상품이 아닌 옷걸이 · 손 · 소품은 빼.",
+    "Tidy it into a clean listing photo: center it, fill most of the frame, smooth out wrinkles, and leave out "
+    "hangers, hands and props that are not part of the product.":
+        "깔끔한 판매 사진으로 정리해: 가운데에 놓고 화면 대부분을 채우고, 주름은 펴고, 상품이 아닌 옷걸이 · 손 · 소품은 빼.",
+    "Do not add anything that is not in the original photo.": "원본에 없는 건 아무것도 더하지 마.",
+    "Do not add anything that is not in the original photo — no other items and no text.":
+        "원본에 없는 건 아무것도 더하지 마 — 다른 물건도, 글자도.",
+    "Keep the product itself exactly as it is: its shape, color, pattern, texture, parts, logos and printed text, "
+    "any packaging or tags, and every stain, scratch, tear, hole, fading and wear mark in the same place and at "
+    "the same size.":
+        "상품 자체는 정확히 그대로: 모양 · 색 · 무늬 · 질감 · 부품 · 로고와 인쇄 글자 · 포장이나 택, 그리고 모든 얼룩 · "
+        "긁힘 · 찢김 · 구멍 · 바램 · 사용 흔적을 같은 자리에 같은 크기로.",
+    "Do not repair, clean or restore it.": "고치거나 닦거나 복원하지 마.",
+}
+_KO_PATTERNS = [
+    (r"As a loose reference for the layout, think of (.+?)\. Follow it only as far as this photo already allows: "
+     r"keep the item's angle, shape, size, number and packaging exactly as photographed, and add nothing that is "
+     r"not in the original photo\.",
+     "[구도 · 느슨한 참고] {0} — 이 사진이 이미 허락하는 만큼만 따라. 각도 · 모양 · 크기 · 개수 · 포장은 찍힌 그대로, "
+     "원본에 없는 건 더하지 마."),
+    (r"Leave out these things that are not for sale: (.+)\.$", "[뺄 물건] 판매하지 않는 이것들은 빼: {0}"),
+    (r"Text printed on the product — keep each one exactly as in the input image.*?add any text: (.+)$",
+     "[글자 잠금] 상품에 인쇄된 글자를 입력 사진과 한 글자도 다르지 않게 같은 글꼴 · 크기 · 위치로 — "
+     "다시 쓰거나 바꾸거나 옮기거나 겹치거나 더하지 마: {0}"),
+    (r"IMPORTANT: a previous attempt lost or altered these marks on the product: (.+?)\. They MUST remain "
+     r"exactly as in the input image\.", "[재생성 메모] 앞 시도에서 이 표시가 사라지거나 바뀌었어: {0} — 입력 사진과 똑같이."),
+    (r"IMPORTANT: a previous attempt drew marks on the product that are not in the input image\. Every surface "
+     r"of the product must look exactly as in the input image\.",
+     "[재생성 메모] 앞 시도에서 입력 사진에 없던 표시를 그렸어 — 상품의 모든 면을 입력 사진과 똑같이."),
+]
+
+
+def prompt_ko(prompt: str) -> str:
+    """생성 프롬프트 → 한국어 (아는 문장만 옮기고, 모르는 문장은 원문 그대로)."""
+    import re
+    out = []
+    for block in [b.strip() for b in (prompt or "").split("\n\n") if b.strip()]:
+        for pat, tmpl in _KO_PATTERNS:
+            m = re.match(pat, block, re.S)
+            if m:
+                out.append(tmpl.format(*m.groups()))
+                break
+        else:
+            text = block
+            for en, ko in sorted(_KO_SENTENCES.items(), key=lambda kv: -len(kv[0])):
+                text = text.replace(en, ko)
+            out.append(text)
+    return "\n\n".join(out)
+
+
 # ── 파일 ────────────────────────────────────────
 def _image(run_id: str, rel) -> Path | None:
-    """runs/<run_id>/files/ 아래 실제 사진만 (심볼릭 링크로 밖을 가리키면 None)."""
+    """results/runs/<run_id>/files/ 아래 실제 사진만 (심볼릭 링크로 밖을 가리키면 None)."""
     rel = str(rel or "")
     if not rel or not run_id or "/" in run_id or run_id in (".", ".."):
         return None
-    runs = (HERE / "runs").resolve()
-    run_dir, files = HERE / "runs" / run_id, HERE / "runs" / run_id / "files"
+    runs = (HERE / "results" / "runs").resolve()
+    run_dir, files = HERE / "results" / "runs" / run_id, HERE / "results" / "runs" / run_id / "files"
     if run_dir.is_symlink() or files.is_symlink():      # files/ 자체가 밖을 가리키는 링크면 막는다
         return None
     base = runs / run_id / "files"
-    p = (HERE / "runs" / run_id / rel).resolve()
+    p = (HERE / "results" / "runs" / run_id / rel).resolve()
     return p if p.is_relative_to(base) and p.is_file() and p.suffix.lower() in IMAGE_TYPES else None
 
 
 def static_file(url_path: str) -> Path | None:
-    """열어 주는 파일: runs/*.html · runs/<id>/review.html · report.md · runs/<id>/files/<사진>. 나머지는 None."""
+    """열어 주는 파일: runs/*.html · results/runs/<id>/review.html · report.md · results/runs/<id>/files/<사진>. 나머지는 None."""
     from urllib.parse import unquote
     parts = [x for x in unquote(url_path).split("/") if x]
-    runs = (HERE / "runs").resolve()
+    runs = (HERE / "results" / "runs").resolve()
     if len(parts) == 1 and parts[0].endswith(".html"):
         p = (runs / parts[0]).resolve()
         return p if p.parent == runs and p.is_file() else None
@@ -182,9 +268,9 @@ def _src(run_id: str, rel) -> str | None:
     return html.escape("/" + quote(f"{run_id}/{rel}"), quote=True)
 
 
-def page(items: list[dict], token: str) -> str:
+def page(items: list[dict], token: str, runs: list[str] | None = None, current: str | None = None) -> str:
+    """runs · current 를 주면 위에 실험 탭과 그 실험의 메모(무엇을 바꿨나)가 나온다."""
     e = html.escape
-    runs = sorted({x["run"] for it in items for x in it["results"]})
     cards = []
     for it in items:
         rated = [x for x in it["results"] if x["preserved"] is not None]
@@ -192,7 +278,8 @@ def page(items: list[dict], token: str) -> str:
         ent = it["entry"]
         on = ent.get("set") == "failure"
         o = _src(*it["orig"]) if it["orig"] else None
-        orig_img = f'<img loading="lazy" src="{o}">' if o else '<div class="small muted">원본 없음</div>'
+        orig_img = (f'<a href="{o}" target="_blank"><img loading="lazy" src="{o}"></a>' if o   # 결과처럼 눌러서 크게
+                    else '<div class="small muted">원본 없음</div>')
         figs = [f'<figure><div class="who">원본</div>{orig_img}</figure>']
         for x in it["results"]:
             s = _src(x["run"], x["result"]) if not x["error"] else None
@@ -206,6 +293,11 @@ def page(items: list[dict], token: str) -> str:
                 + f'<div class="badge {state[0]}">{e(str(x["mode"] or ""))} · {state[1]}</div>'
                 + (f'<div class="small">{e(detail)}</div>' if detail else "")
                 + (f'<div class="small muted">배경·구도: {e(qual)}</div>' if qual else "")
+                + (f'<div class="small muted">구도 {e(x["composition"])}</div>' if x.get("composition") else "")
+                + (f'<div class="prompt"><div class="ko">{e(prompt_ko(x["prompt"]))}</div>'
+                   f'<details><summary>영어 원문</summary><div class="en">{e(x["prompt"])}</div></details></div>'
+                   if x.get("prompt") else "")
+                + (f'<div class="small muted">{e(x["composition_skipped"])}</div>' if x.get("composition_skipped") else "")
                 + (f'<div class="small muted">채점 {e(", ".join(x["raters"]))}</div>' if x["raters"] else "")
                 + "".join(f'<div class="small note">{e(n)}</div>' for n in x["notes"])
                 + "</figure>")
@@ -217,9 +309,15 @@ def page(items: list[dict], token: str) -> str:
             f' · {e(str(ent.get("item", "")))}</span></div>'
             + (f'<p class="muted small">{e(str(ent.get("note", "")))}</p>' if ent.get("note") else "")
             + f'<div class="grid">{"".join(figs)}</div></section>')
-    links = " · ".join(f'<a href="/{e(quote(r), quote=True)}/review.html">{e(r)}</a>' for r in runs)
-    compares = sorted(p.name for p in (HERE / "runs").glob("compare-*.html"))
-    clinks = " · ".join(f'<a href="/{e(quote(c), quote=True)}">{e(c[8:-5])}</a>' for c in compares)
+    tabs = " ".join(
+        f'<a class="tab{" on" if r == current else ""}" href="/?run={e(quote(r), quote=True)}">{e(r)}</a>'
+        for r in (runs or []))
+    m = run_meta(current) if current else {}
+    info = (f'<section class="small"><b>{e(current)}</b> — {e(str(m.get("note") or "메모 없음"))}'
+            f'<div class="muted">사진 {len(items)}장 · repeat {e(str(m.get("repeat", "?")))}'
+            f'{" · 구도 " + e(str(m["composition"])) if m.get("composition") else ""}'
+            f' · <a href="/{e(quote(current), quote=True)}/review.html">원본 · 결과 · 프롬프트</a></div></section>'
+            if current else "")
     return f"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>eval 결과판</title>
 <style>
@@ -237,25 +335,27 @@ img{{width:100%;border-radius:6px;border:1px solid var(--line);background:#fff}}
 .badge{{font-size:12px}} .badge.good{{color:var(--good)}} .badge.bad{{color:var(--bad);font-weight:600}} .badge.none{{color:var(--muted)}}
 .err{{font-size:11px;color:var(--bad)}} .note{{margin-top:2px}} body.onlyfail section.item:not(.fail){{display:none}}
 #msg{{margin-left:8px;color:var(--muted)}}
+.prompt{{margin-top:6px;font-size:11px;line-height:1.45;border-top:1px dashed var(--line);padding-top:4px}}
+.prompt .ko,.prompt .en{{white-space:pre-wrap}} .prompt .en{{color:var(--muted)}} .prompt summary{{cursor:pointer;color:var(--muted)}}
+.grid{{grid-template-columns:repeat(auto-fill,minmax(240px,1fr))!important}} .tabs{{margin-top:6px;display:flex;gap:6px;flex-wrap:wrap}}
+.tab{{font-size:12px;padding:2px 8px;border:1px solid var(--line);border-radius:12px;text-decoration:none}} .tab.on{{background:var(--fg);color:var(--bg)}}
 </style>
 <main>
-<header><b>eval 결과판</b> — 사진 {len(items)}장 · 실패 모음 <span id="cnt">{sum(it["entry"].get("set") == "failure" for it in items)}</span>장
- <label><input type="checkbox" id="onlyfail"> 실패 있는 사진만</label><span id="msg"></span></header>
-<section class="small"><div>실행별 원본·결과·프롬프트: {links or "없음"}</div><div>비교 페이지: {clinks or "없음"}</div>
-<div class="muted">보존 판정은 사람 채점 다수결 (동점은 실패). 정렬은 모든 실행을 합친 실패 비율 순 — 옛 실행 · 기각한 실험도 들어간다. 체크하면 dataset.json 에 바로 저장된다.</div></section>
+<header><b>eval 결과판</b> <label><input type="checkbox" id="onlyfail"> 실패 있는 사진만</label><span id="msg"></span>
+<div class="tabs">{tabs}</div></header>
+{info}
 {"".join(cards)}
 </main>
 <script>
 const TOKEN = {json.dumps(token)};
 document.getElementById('onlyfail').addEventListener('change', ev => document.body.classList.toggle('onlyfail', ev.target.checked));
-const msg = document.getElementById('msg'), cnt = document.getElementById('cnt');
+const msg = document.getElementById('msg');
 document.querySelectorAll('input[data-file]').forEach(box => box.addEventListener('change', async () => {{
   box.disabled = true;
   try {{
     const r = await fetch('/api/failure', {{method: 'POST', headers: {{'Content-Type': 'application/json', 'X-Board-Token': TOKEN}},
       body: JSON.stringify({{file: box.dataset.file, on: box.checked}})}});
     if (!r.ok) throw new Error(await r.text());
-    cnt.textContent = document.querySelectorAll('input[data-file]:checked').length;
     msg.textContent = '저장됨: ' + box.dataset.file + (box.checked ? ' → 실패 모음' : ' → 뺌');
   }} catch (err) {{ box.checked = !box.checked; msg.textContent = '저장 실패: ' + err.message; }}
   box.disabled = false;
@@ -285,9 +385,14 @@ def make_handler(token: str):
         def _get(self, head: bool):
             if not self._host_ok():
                 return self._send(403, b"forbidden host", "text/plain", head)
-            path = self.path.split("?", 1)[0]
+            path, _, query = self.path.partition("?")
             if path in ("/", "/index.html"):
-                return self._send(200, page(collect(), token).encode(), "text/html; charset=utf-8", head)
+                from urllib.parse import parse_qs
+                runs = viewable_runs()
+                want = (parse_qs(query).get("run") or [""])[0]
+                current = want if want in runs else (runs[0] if runs else None)
+                items = collect(current, include_unrun=False) if current else []
+                return self._send(200, page(items, token, runs, current).encode(), "text/html; charset=utf-8", head)
             f = static_file(path)
             if f is None:
                 return self._send(404, b"not found", "text/plain", head)
@@ -328,8 +433,11 @@ def make_handler(token: str):
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8766)
+    # Codespaces 포트 포워딩은 127.0.0.1 로 들어오지 않는다 (10-03: 링크가 안 열림) — 그 안에서만 0.0.0.0.
+    # 포워딩 주소는 기본 비공개(GitHub 로그인)이고, Host 검사 · 토큰은 그대로다
+    ap.add_argument("--host", default="0.0.0.0" if os.environ.get("CODESPACES") == "true" else "127.0.0.1")
     a = ap.parse_args(argv)
-    srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(secrets.token_urlsafe(16)))
+    srv = ThreadingHTTPServer((a.host, a.port), make_handler(secrets.token_urlsafe(16)))
     print(f"결과판: http://localhost:{a.port}")
     try:
         srv.serve_forever()

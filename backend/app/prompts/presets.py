@@ -13,6 +13,10 @@ from app.core.prompt_registry import get_prompt_text
 # 모든 프리셋 프롬프트에 공통으로 붙인다. (README "change the background,
 # never the truth" 원칙의 실제 구현 지점. 이게 없으면 편집 모델이 얼룩/흠집을
 # 지워버릴 수 있고, Wear Gate 는 사후에만 잡아낼 뿐 생성 자체를 막지 못한다.)
+# 10-03: 틀 지시를 약하게 — "center it, fill most of the frame" 에 맞추려다 개수 · 모양을 바꿨다 (CD 2장 → 1 · 3장).
+#   "가운데 근처 · 여백 넉넉히" 정도로만 (구도는 참고).
+# 10-03: "— no other items and no text" 를 뺐다 — 금지하려고 단어를 쓰면 그게 그릴 단서가 된다
+#   (구도 문장의 "CD case" · "shrink wrap" 이 그대로 그려졌다). 원본에 없는 건 더하지 말라는 말만 남긴다.
 # 10-01 사용자 결정: 쇼핑몰 진열 사진처럼 "정리"는 한다 (자세·구김·옷걸이·손) — 상태(하자·포장)는 그대로.
 # 정리와 하자 삭제는 모델에게 같은 동작이라, 하자 쪽 문장을 구체적으로(같은 자리·같은 크기) 적는다.
 # 10-01 저녁: 구도를 다시 연출하게 한 잠금(listing)은 실패로 정리 — 한 장으로 각도를 바꾸면 안 보이던 면을
@@ -21,15 +25,29 @@ from app.core.prompt_registry import get_prompt_text
 # 10-01 밤: 각도 유지 · 손 가림 문장은 뺐다 — 빠진 각도와 가려진 사진은 업로드 단계(services/coverage.py)가
 # 다시 찍어 달라고 안내한다. 잠금은 "정리는 하되 없는 걸 더하지 말고, 물건 자체는 그대로" 세 덩어리만.
 SECONDHAND_LOCK = (
-    "Tidy it into a clean listing photo: center it, fill most of the frame, smooth out wrinkles, and "
-    "leave out hangers, hands and props that are not part of the product. "
-    "Do not add anything that is not in the original photo — no other items and no text. "
+    "Tidy it into a clean listing photo: place it near the center with comfortable margins, smooth out "
+    "wrinkles, and leave out hangers, hands and props that are not part of the product. "
+    "Do not add anything that is not in the original photo. "
     "Keep the product itself exactly as it is: its shape, color, pattern, texture, parts, logos and "
     "printed text, any packaging or tags, and every stain, scratch, tear, hole, fading and wear mark "
     "in the same place and at the same size. Do not repair, clean or restore it."
 )
 # 예전 잠금 — Langfuse 에 이 문구가 들어간 옛 프롬프트가 남아 있으면 떼어낸다 ("배경만 바꿔라"가 남아 새 잠금과 부딪치지 않게)
 LEGACY_LOCKS = (
+    # 10-03 낮 ("no text" 를 뺀 뒤, 틀 지시가 아직 셌던 판)
+    "Tidy it into a clean listing photo: center it, fill most of the frame, smooth out wrinkles, and "
+    "leave out hangers, hands and props that are not part of the product. "
+    "Do not add anything that is not in the original photo. "
+    "Keep the product itself exactly as it is: its shape, color, pattern, texture, parts, logos and "
+    "printed text, any packaging or tags, and every stain, scratch, tear, hole, fading and wear mark "
+    "in the same place and at the same size. Do not repair, clean or restore it.",
+    # 10-01 ~ 10-03 ("no other items and no text" 가 있던 판)
+    "Tidy it into a clean listing photo: center it, fill most of the frame, smooth out wrinkles, and "
+    "leave out hangers, hands and props that are not part of the product. "
+    "Do not add anything that is not in the original photo — no other items and no text. "
+    "Keep the product itself exactly as it is: its shape, color, pattern, texture, parts, logos and "
+    "printed text, any packaging or tags, and every stain, scratch, tear, hole, fading and wear mark "
+    "in the same place and at the same size. Do not repair, clean or restore it.",
     # viewpoint (10-01 저녁, 각도 유지 · 손 조건부) — 과하고 넓어서 정리
     "Keep the camera angle and viewpoint of this photo: do not rotate the product or show it from "
     "another side. Tidy it into a clean listing photo: center it, fill most of the frame, smooth out "
@@ -233,3 +251,15 @@ def with_secondhand_lock(prompt: str) -> str:
         body = body.replace(lock, "")
     body = body.strip()
     return f"{body} {SECONDHAND_LOCK}" if body else SECONDHAND_LOCK
+
+
+LEAVE_OUT = ("\n\nOnly the item for sale belongs in the result: leave out the other objects that are in the "
+             "photo around it.")
+
+
+def leave_out(names: list[str]) -> str:
+    """사용자가 팔지 않는다고 고른 물건 — 결과에서 뺀다. 물건 이름은 쓰지 않는다 (10-03: "CD case" 를 빼라고 쓰니
+    고른 CD 의 투명 케이스까지 벗겼고, 이름을 안 쓰니 케이스가 남았다). 정확히 지우는 건 배경 교체의 박스(drop_boxes)."""
+    return LEAVE_OUT if any(prompt_safe(x) for x in names) else ""
+
+

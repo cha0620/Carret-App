@@ -164,7 +164,7 @@ def _write_csv(path, rows):
 
 def test_load_reviews(report_mod, tmp_path, monkeypatch):
     monkeypatch.setattr(report_mod, "HERE", tmp_path)
-    d = tmp_path / "reviews" / "run1"
+    d = tmp_path / "results" / "reviews" / "run1"
     _write_csv(d / "TEMPLATE.csv", [{"file": "a.webp", "repeat": "1", "reviewed": "1"}])
     _write_csv(d / "a.csv", [
         {"file": "a.webp", "repeat": "1", "reviewed": "1", "text_changed": "x"},
@@ -191,20 +191,20 @@ def test_load_reviews_missing_dir(report_mod, tmp_path, monkeypatch):
 def test_load_reviews_skips_broken_repeat_rows(report_mod, tmp_path, monkeypatch):
     """reviewed 는 채웠는데 repeat 가 비거나 이상한 줄은 건너뛴다 (보고서 전체가 죽지 않게)."""
     monkeypatch.setattr(report_mod, "HERE", tmp_path)
-    _write_csv(tmp_path / "reviews" / "r" / "a.csv", [
+    _write_csv(tmp_path / "results" / "reviews" / "r" / "a.csv", [
         {"file": "a.webp", "repeat": "", "reviewed": "1"},
         {"file": "a.webp", "repeat": "x", "reviewed": "1"},
         {"file": "a.webp", "repeat": "1.5", "reviewed": "1"},
         {"file": "b.webp", "repeat": "2", "reviewed": "1"},
     ])
     assert set(report_mod.load_reviews("r")["a"]) == {("b.webp", 2)}
-    _write_csv(tmp_path / "reviews" / "s" / "a.csv", [{"file": "a.webp", "repeat": "", "reviewed": "1"}])
+    _write_csv(tmp_path / "results" / "reviews" / "s" / "a.csv", [{"file": "a.webp", "repeat": "", "reviewed": "1"}])
     assert report_mod.load_reviews("s") == {}                        # 전부 깨졌으면 평가자 빠짐
 
 
 def test_load_reviews_missing_file_column_skipped(report_mod, tmp_path, monkeypatch):
     monkeypatch.setattr(report_mod, "HERE", tmp_path)
-    p = tmp_path / "reviews" / "r" / "a.csv"
+    p = tmp_path / "results" / "reviews" / "r" / "a.csv"
     p.parent.mkdir(parents=True)
     p.write_text("repeat,reviewed\n1,y\n", encoding="utf-8")
     assert report_mod.load_reviews("r") == {}
@@ -212,7 +212,7 @@ def test_load_reviews_missing_file_column_skipped(report_mod, tmp_path, monkeypa
 
 def test_load_reviews_accepts_excel_bom(report_mod, tmp_path, monkeypatch):
     monkeypatch.setattr(report_mod, "HERE", tmp_path)
-    p = tmp_path / "reviews" / "r" / "a.csv"
+    p = tmp_path / "results" / "reviews" / "r" / "a.csv"
     p.parent.mkdir(parents=True)
     p.write_text("file,repeat,reviewed,failure_tags\nbag.webp,1,y,tag_lost\n", encoding="utf-8-sig")
     assert p.read_bytes().startswith(b"\xef\xbb\xbf")
@@ -223,9 +223,9 @@ def test_latest_run(report_mod, tmp_path, monkeypatch):
     monkeypatch.setattr(report_mod, "HERE", tmp_path)
     assert report_mod.latest_run() is None
     for name, has in (("20260101-0000-full", True), ("20260201-0000-analyze", True), ("20260301-0000-full", False)):
-        (tmp_path / "runs" / name).mkdir(parents=True)
+        (tmp_path / "results" / "runs" / name).mkdir(parents=True)
         if has:
-            (tmp_path / "runs" / name / "results.jsonl").write_text("")
+            (tmp_path / "results" / "runs" / name / "results.jsonl").write_text("")
     assert report_mod.latest_run() == "20260201-0000-analyze"
 
 
@@ -518,7 +518,7 @@ def _write_tag_csv(path, rows):
 
 def test_load_reviews_reads_tags(report_mod, tmp_path, monkeypatch):
     monkeypatch.setattr(report_mod, "HERE", tmp_path)
-    _write_tag_csv(tmp_path / "reviews" / "r" / "a.csv", [
+    _write_tag_csv(tmp_path / "results" / "reviews" / "r" / "a.csv", [
         {"file": "a.webp", "repeat": "1", "reviewed": "y", "failure_tags": "tag_lost;detail_lost"},
         {"file": "a.webp", "repeat": "2", "reviewed": "", "failure_tags": "detail_lost"},   # 안 봄 → 빠짐
     ])
@@ -642,19 +642,19 @@ def test_tag_summary_old_verdict_without_tags_key(report_mod):
 # ── main --tags ──
 def test_main_tags_mode(report_mod, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(report_mod, "HERE", tmp_path)
-    _write_tag_csv(tmp_path / "reviews" / "20261001-a" / "x.csv",
+    _write_tag_csv(tmp_path / "results" / "reviews" / "20261001-a" / "x.csv",
                    [{"file": "bag.webp", "repeat": "1", "reviewed": "y", "failure_tags": "tag_lost"}])
-    _write_tag_csv(tmp_path / "reviews" / "20261001-a" / "TEMPLATE.csv",
+    _write_tag_csv(tmp_path / "results" / "reviews" / "20261001-a" / "TEMPLATE.csv",
                    [{"file": "bag.webp", "repeat": "1", "reviewed": "y", "failure_tags": "color_changed"}])
-    _write_tag_csv(tmp_path / "reviews" / "20261002-b" / "y.csv",
+    _write_tag_csv(tmp_path / "results" / "reviews" / "20261002-b" / "y.csv",
                    [{"file": "bag.webp", "repeat": "1", "reviewed": "y", "failure_tags": "tag_lost"}])
-    (tmp_path / "reviews" / "stray.csv").write_text("x", encoding="utf-8")   # 디렉터리 아닌 건 무시
+    (tmp_path / "results" / "reviews" / "stray.csv").write_text("x", encoding="utf-8")   # 디렉터리 아닌 건 무시
     monkeypatch.setattr(report_mod.sys, "argv", ["report.py", "--tags"])
     assert report_mod.main() == 0
     out = capsys.readouterr().out
     assert "| tag_lost | 2 | 1 | 20261001-a/bag.webp r1, 20261002-b/bag.webp r1 |" in out
     assert "color_changed" not in out                                    # TEMPLATE 은 뺀다
-    assert not (tmp_path / "runs").exists()                              # runs/ 는 안 건드린다
+    assert not (tmp_path / "results" / "runs").exists()                              # runs/ 는 안 건드린다
 
 
 def test_main_tags_mode_without_reviews_dir(report_mod, tmp_path, monkeypatch, capsys):

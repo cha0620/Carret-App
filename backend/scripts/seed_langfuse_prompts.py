@@ -40,9 +40,11 @@ def prompts_to_seed() -> dict:
         "verify_v2": verify_marks_template(),   # 파이프라인(마크만) — 옛 "verify" 는 eval·dev 리플레이용
         "item_text": frag("item_text"),
         "check_photo": check_photo_template(),
+        "added_text": frag("added_text"),
         "match": frag("match"),
         "analyze_v2": analyze_template(),   # 10-01 글자(texts)까지 — 옛 "analyze" 는 배포된 옛 서버용으로 그대로 둔다
         "views": frag("views"),           # {{n}} · {{n_last}} 는 호출 시점에 채워짐 (여러 각도, 10-01)
+        "objects": frag("objects"),       # 여러 장을 물건별로 묶기 (10-04) — {{n}} · {{n_last}} 같음
         "judge_system": _SYSTEM_TEMPLATE,  # {{rubric}} 는 호출 시점에 채워짐
         "auto_feedback_system": AUTO_FEEDBACK_TEMPLATE,
     }

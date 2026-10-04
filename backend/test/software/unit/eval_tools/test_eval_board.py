@@ -26,7 +26,7 @@ def R(file, repeat=1, **kw):
 
 
 def write_run(root, run_id, results, raw_extra="", images=()):
-    d = root / "runs" / run_id
+    d = root / "results" / "runs" / run_id
     (d / "files").mkdir(parents=True, exist_ok=True)
     (d / "results.jsonl").write_text(
         "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in results) + raw_extra, encoding="utf-8")
@@ -36,7 +36,7 @@ def write_run(root, run_id, results, raw_extra="", images=()):
 
 
 def write_review(root, run_id, rater, rows, raw_extra=""):
-    d = root / "reviews" / run_id
+    d = root / "results" / "reviews" / run_id
     d.mkdir(parents=True, exist_ok=True)
     with open(d / f"{rater}.csv", "w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=COLS)
@@ -69,7 +69,7 @@ def test_import_puts_eval_dir_on_sys_path_and_paths_are_redirected(board_mod, tm
     assert board_mod.rp.__file__ == str(EVAL_DIR / "report.py")
     assert board_mod.intake.__file__ == str(EVAL_DIR / "intake.py")
     assert board_mod.HERE == tmp_path and board_mod.rp.HERE == tmp_path
-    assert board_mod.intake.DATASET == tmp_path / "dataset.json"
+    assert board_mod.intake.DATASET == tmp_path / "data" / "dataset.json"
     assert board_mod.intake.load_dataset() == []          # 실제 dataset.json 이 아니다
 
 
@@ -97,7 +97,7 @@ def test_notes_skips_broken_rows(board_mod, tmp_path):
 
 
 def test_notes_missing_repeat_column_and_bom(board_mod, tmp_path):
-    d = tmp_path / "reviews" / "r1"
+    d = tmp_path / "results" / "reviews" / "r1"
     d.mkdir(parents=True)
     (d / "kim.csv").write_text("﻿file,reviewed,note\na.webp,1,repeat 없음\n", encoding="utf-8")
     (d / "lee.csv").write_text("﻿file,repeat,reviewed,note\na.webp,2,1,BOM 있음\n", encoding="utf-8")
@@ -106,7 +106,7 @@ def test_notes_missing_repeat_column_and_bom(board_mod, tmp_path):
 
 def test_notes_ignores_undecodable_csv(board_mod, tmp_path):
     write_review(tmp_path, "r1", "kim", [ok("a.webp", note="정상")])
-    (tmp_path / "reviews" / "r1" / "broken.csv").write_bytes(b"file,repeat,reviewed,note\n\xff\xfe\xfa,1,1,x\n")
+    (tmp_path / "results" / "reviews" / "r1" / "broken.csv").write_bytes(b"file,repeat,reviewed,note\n\xff\xfe\xfa,1,1,x\n")
     assert dict(board_mod._notes("r1")) == {("a.webp", 1): ["kim: 정상"]}
 
 
@@ -122,8 +122,8 @@ def test_results_skips_broken_blank_and_non_dict_lines(board_mod, tmp_path):
 
 def test_results_missing_or_undecodable(board_mod, tmp_path):
     assert board_mod._results("없음") == []
-    d = tmp_path / "runs" / "bin"
-    d.mkdir()
+    d = tmp_path / "results" / "runs" / "bin"
+    d.mkdir(parents=True)
     (d / "results.jsonl").write_bytes(b"\xff\xfe\x00")
     assert board_mod._results("bin") == []
 
@@ -205,7 +205,7 @@ def test_collect_unreviewed_row_is_not_a_vote(board_mod, tmp_path):
 def test_collect_survives_undecodable_review_csv(board_mod, tmp_path):
     write_run(tmp_path, "r1", [R("a.webp")])
     write_review(tmp_path, "r1", "kim", [bad("a.webp")])
-    (tmp_path / "reviews" / "r1" / "broken.csv").write_bytes(b"file,repeat,reviewed\n\xff\xfe,1,1\n")
+    (tmp_path / "results" / "reviews" / "r1" / "broken.csv").write_bytes(b"file,repeat,reviewed\n\xff\xfe,1,1\n")
     [it] = board_mod.collect()                                    # 예외 없이 열린다
     assert len(it["results"]) == 1
 
@@ -224,7 +224,7 @@ def test_collect_orig_only_if_real_image_under_files(board_mod, tmp_path):
                                R("a.webp", 3, orig="results.jsonl"), R("a.webp", 4, orig="files/o1.webp")],
               images=["files/o1.webp"])
     write_run(tmp_path, "r2", [R("a.webp", orig="files/o2.webp")], images=["files/o2.webp"])
-    (tmp_path / "runs" / "no_results").mkdir()
+    (tmp_path / "results" / "runs" / "no_results").mkdir(parents=True)
     [it] = board_mod.collect()
     assert [(x["run"], x["repeat"]) for x in it["results"]] == [("r1", 1), ("r1", 2), ("r1", 3), ("r1", 4), ("r2", 1)]
     assert it["orig"] == ("r1", "files/o1.webp")
@@ -352,7 +352,7 @@ def test_set_failure_concurrent_writes_do_not_lose_updates(board_mod, tmp_path):
 # ── _image · static_file ────────────────────────
 @pytest.fixture
 def run_files(board_mod, tmp_path):
-    runs = tmp_path / "runs"
+    runs = tmp_path / "results" / "runs"
     (runs / "r1" / "files" / "sub").mkdir(parents=True)
     for rel in ("files/a.webp", "files/b.JPG", "files/sub/c.png", "files/note.txt", "orig.webp",
                 "review.html", "report.md", "results.jsonl", "carret.db", "storage/x.webp"):
@@ -515,7 +515,6 @@ def test_page_checkbox_state_and_counts(board_mod):
     assert '<input type="checkbox" data-file="a.webp" checked>' in h
     assert '<input type="checkbox" data-file="b.webp">' in h
     assert '<input type="checkbox" data-file="c.webp">' in h
-    assert '사진 3장' in h and '<span id="cnt">1</span>' in h
     assert '보존 실패 1 / 채점 2 · 결과 3개' in h
     assert 'class="item fail" data-fails="1"' in h and 'class="item" data-fails="0"' in h
     assert "보존 ✗" in h and "보존 ✓" in h and "채점 전" in h
@@ -525,16 +524,53 @@ def test_page_token_embedded_as_json(board_mod):
     h = board_mod.page([], "abc-DEF_123")
     assert 'const TOKEN = "abc-DEF_123";' in h
     assert "'X-Board-Token': TOKEN" in h
-    assert "사진 0장" in h
 
 
-def test_page_links_runs_and_compares(board_mod, tmp_path):
-    (tmp_path / "runs" / "compare-r1-vs-r2.html").write_text("x")
-    (tmp_path / "runs" / "other.html").write_text("x")
-    h = board_mod.page([_item(results=[_res(run="r 1"), _res(run="r2")])], "tok")
-    assert '<a href="/r%201/review.html">r 1</a>' in h and '<a href="/r2/review.html">r2</a>' in h
-    assert '<a href="/compare-r1-vs-r2.html">r1-vs-r2</a>' in h
-    assert "other.html" not in h
+def test_page_tabs_and_current_run_note(board_mod, tmp_path):
+    (tmp_path / "results" / "runs" / "r 1").mkdir(parents=True)
+    (tmp_path / "results" / "runs" / "r 1" / "meta.json").write_text(json.dumps({"note": "<b>바꾼 것</b>", "repeat": 2,
+                                                                     "composition": "auto"}))
+    h = board_mod.page([_item(results=[_res(run="r 1")])], "tok", runs=["r2", "r 1"], current="r 1")
+    assert '<a class="tab" href="/?run=r2">r2</a>' in h
+    assert '<a class="tab on" href="/?run=r%201">r 1</a>' in h
+    assert "&lt;b&gt;바꾼 것&lt;/b&gt;" in h and "<b>바꾼 것</b>" not in h
+    assert "repeat 2" in h and "구도 auto" in h and '<a href="/r%201/review.html">' in h
+
+
+def test_page_without_runs_has_no_tabs_or_note(board_mod):
+    h = board_mod.page([], "tok")
+    assert 'class="tab"' not in h and 'class="tab on"' not in h and "메모 없음" not in h
+
+
+def _run(tmp_path, run_id, created, rows, files=True):
+    d = tmp_path / "results" / "runs" / run_id
+    d.mkdir(parents=True)
+    (d / "meta.json").write_text(json.dumps({"created": created, "note": run_id}))
+    (d / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    if files:
+        (d / "files").mkdir()
+
+
+def test_viewable_runs_newest_first_and_skips_pruned_or_analyze_only(board_mod, tmp_path):
+    ok = [{"file": "a.webp", "repeat": 1, "result": "files/a.jpg"}]
+    _run(tmp_path, "zzz-old", "2026-10-01T09:00:00", ok)
+    _run(tmp_path, "aaa-new", "2026-10-03T09:00:00", ok)
+    _run(tmp_path, "pruned", "2026-10-04T09:00:00", ok, files=False)          # 이미지 지운 실행
+    _run(tmp_path, "analyze", "2026-10-05T09:00:00", [{"file": "a.webp", "repeat": 1, "photo_type": "product"}])
+    assert board_mod.viewable_runs() == ["aaa-new", "zzz-old"]
+
+
+def test_collect_only_run_and_without_unrun_photos(board_mod, tmp_path):
+    write_dataset(board_mod, [{"file": "a.webp"}, {"file": "b.webp"}])
+    _run(tmp_path, "r1", "2026-10-03T09:00:00", [{"file": "a.webp", "repeat": 1, "result": "files/a.jpg",
+                                                  "composition": "album_front"}])
+    _run(tmp_path, "r2", "2026-10-03T10:00:00", [{"file": "b.webp", "repeat": 1, "result": "files/b.jpg",
+                                                  "composition_skipped": "각도 side 는 아님"}])
+    items = board_mod.collect("r1", include_unrun=False)
+    assert [it["file"] for it in items] == ["a.webp"] and items[0]["results"][0]["composition"] == "album_front"
+    assert {it["file"] for it in board_mod.collect()} == {"a.webp", "b.webp"}
+    h = board_mod.page(board_mod.collect("r2", include_unrun=False), "tok")
+    assert "각도 side 는 아님" in h
 
 
 # ── 서버 ────────────────────────────────────────
@@ -572,13 +608,24 @@ def post(port, payload, token=TOKEN, ctype="application/json", raw=None, headers
     return req(port, "POST", "/api/failure", body=body, headers=h)[:2]
 
 
-def test_server_get_index(board_mod, server):
-    write_dataset(board_mod, [{"file": "a.webp", "set": "failure"}])
-    for path in ("/", "/index.html", "/?x=1"):
+def test_server_get_index(board_mod, server, tmp_path):
+    write_dataset(board_mod, [{"file": "a.webp", "set": "failure"}, {"file": "b.webp"}])
+    _run(tmp_path, "old", "2026-10-01T09:00:00", [{"file": "b.webp", "repeat": 1, "result": "files/b.jpg"}])
+    _run(tmp_path, "new", "2026-10-03T09:00:00", [{"file": "a.webp", "repeat": 1, "result": "files/a.jpg"}])
+    for path in ("/", "/index.html", "/?x=1", "/?run=nope"):          # 기본 · 모르는 실행 = 최신
         st, body, hd = req(server, "GET", path)
         assert st == 200 and hd["Content-Type"] == "text/html; charset=utf-8" and hd["Cache-Control"] == "no-store"
         h = body.decode()
         assert "eval 결과판" in h and 'data-file="a.webp" checked' in h and json.dumps(TOKEN) in h
+        assert 'data-file="b.webp"' not in h                           # 다른 실행 · 안 돌린 사진은 안 나온다
+    h = req(server, "GET", "/?run=old")[1].decode()
+    assert 'data-file="b.webp"' in h and 'data-file="a.webp"' not in h and 'class="tab on" href="/?run=old"' in h
+
+
+def test_server_get_index_without_runs(board_mod, server):
+    write_dataset(board_mod, [{"file": "a.webp"}])
+    st, body, _ = req(server, "GET", "/")
+    assert st == 200 and 'data-file="a.webp"' not in body.decode()
 
 
 def test_server_head_index_has_no_body(server):
@@ -735,3 +782,27 @@ def test_server_post_unicode_file(board_mod, server):
     write_dataset(board_mod, [{"file": "신발.webp"}])
     assert post(server, {"file": "신발.webp", "on": True})[0] == 200
     assert read_dataset(board_mod)[0]["set"] == "failure"
+
+
+# ── 게시글 추가 사진 (10-04) ──
+def test_collect_unrun_skips_post_extras(board_mod, tmp_path):
+    write_dataset(board_mod, [{"file": "a_p01.jpg", "post": "a", "post_index": 1},
+                              {"file": "a_p02.jpg", "post": "a", "post_index": 2},
+                              {"file": "a_p03.jpg", "post": "a", "post_index": 3},
+                              {"file": "old.webp"}, {"file": "n.webp", "post_index": None}])
+    assert sorted(it["file"] for it in board_mod.collect()) == ["a_p01.jpg", "n.webp", "old.webp"]
+
+
+def test_collect_extra_with_results_still_shown(board_mod, tmp_path):
+    """--only 로 돌린 추가 사진은 결과가 있으니 보인다 — 안 돌린 것만 뺀다."""
+    entry = {"file": "a_p02.jpg", "post": "a", "post_index": 2}
+    write_dataset(board_mod, [entry, {"file": "a_p03.jpg", "post": "a", "post_index": 3}])
+    write_run(tmp_path, "r1", [R("a_p02.jpg")])
+    [it] = board_mod.collect()
+    assert it["file"] == "a_p02.jpg" and it["entry"] == entry and len(it["results"]) == 1
+
+
+def test_collect_without_unrun_unchanged_by_extras(board_mod, tmp_path):
+    write_dataset(board_mod, [{"file": "a_p01.jpg", "post_index": 1}, {"file": "a_p02.jpg", "post_index": 2}])
+    write_run(tmp_path, "r1", [R("a_p01.jpg")])
+    assert [it["file"] for it in board_mod.collect("r1", include_unrun=False)] == ["a_p01.jpg"]

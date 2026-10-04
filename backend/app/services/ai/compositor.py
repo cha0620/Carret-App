@@ -153,6 +153,28 @@ def _drop_thin(binary: np.ndarray) -> np.ndarray:
                             cv2.getStructuringElement(cv2.MORPH_RECT, (k, k)))
 
 
+def _px(b: dict, w: int, h: int) -> tuple[int, int, int, int]:
+    return (max(0, int(b["x1"]) * w // 1000), max(0, int(b["y1"]) * h // 1000),
+            min(w, int(b["x2"]) * w // 1000), min(h, int(b["y2"]) * h // 1000))
+
+
+def drop_boxes(alpha: np.ndarray, drop: list[dict] | None, keep: list[dict] | None = None) -> np.ndarray:
+    """사용자가 팔지 않는다고 고른 물건 자리를 지운다 (10-03) — 고른 물건 박스와 겹치는 곳은 남긴다."""
+    if not drop:
+        return alpha
+    h, w = alpha.shape
+    gone = np.zeros_like(alpha, dtype=bool)
+    for b in drop:
+        x1, y1, x2, y2 = _px(b, w, h)
+        gone[y1:y2, x1:x2] = True
+    for b in keep or []:
+        x1, y1, x2, y2 = _px(b, w, h)
+        gone[y1:y2, x1:x2] = False
+    out = alpha.copy()
+    out[gone] = 0
+    return out
+
+
 def clean_alpha(alpha: np.ndarray, item_box: dict | None = None, *, flat: bool = False) -> np.ndarray:
     """오리기 잔여물 정리: 물건 박스 밖은 지우고, 가장 큰 덩어리(와 그 5% 이상인
     덩어리)만 남긴다 — 어수선한 배경에서 벽 조각이 뿌옇게 남는 문제 대응.
@@ -428,12 +450,14 @@ def compose_flat(image_bytes: bytes, bg_color: tuple, item_box: dict | None = No
 
 
 def compose(image_bytes: bytes, bg_color: tuple, item_box: dict | None = None,
-            alpha: np.ndarray | None = None, *, flat: bool = False) -> bytes:
+            alpha: np.ndarray | None = None, *, flat: bool = False,
+            drop: list[dict] | None = None, keep: list[dict] | None = None) -> bytes:
     """원본 → 물건만 오려 CANVAS 정사각 배경 가운데에 놓고 바닥 그림자를 깐 JPEG.
-    물건 픽셀은 크기 조정(리샘플링) 외에는 손대지 않는다."""
+    물건 픽셀은 크기 조정(리샘플링) 외에는 손대지 않는다. drop = 팔지 않는다고 고른 물건 박스 (지운다)."""
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     if alpha is None:
         alpha = original_alpha(image_bytes, img)
+    alpha = drop_boxes(alpha, drop, keep)
     item, mask = _item_and_mask(img, alpha, item_box, flat=flat)
 
     room = CANVAS * (1 - 2 * MARGIN)
@@ -460,3 +484,105 @@ def compose(image_bytes: bytes, bg_color: tuple, item_box: dict | None = None,
     buf = io.BytesIO()
     canvas.save(buf, format="JPEG", quality=95)
     return buf.getvalue()
+
+
+# ── 여러 물건 배치 (10-04) — 물건마다 원본에서 오려 한 캔버스에 코드로 놓는다 (새 픽셀 0).
+# 생성 모델에게 "둘을 나란히"를 시키면 개수 · 포장을 바꾼다 (study 10-03 §11-3) — 그래서 배치는 생성하지 않는다.
+LAYOUTS = {"row": "나란히", "grid": "격자", "overlap": "살짝 겹쳐서"}
+ARRANGE_GAP = 0.04          # 물건 사이 간격 (캔버스 비율)
+
+
+def _largest_blob(alpha: np.ndarray) -> np.ndarray:
+    """가장 큰 덩어리 하나만 — 물건 하나(한 켤레가 아닌)의 사진에 다른 물건이 같이 찍혀도 두 번 나오지 않게."""
+    import cv2
+    n, labels, stats, _ = cv2.connectedComponentsWithStats((alpha >= 128).astype(np.uint8), connectivity=8)
+    if n <= 2:
+        return alpha
+    big = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    near = cv2.dilate((labels == big).astype(np.uint8), np.ones((7, 7), np.uint8)) > 0
+    return (alpha * near).astype(np.uint8)
+
+
+def _cells(n: int, layout: str) -> list[tuple[float, float, float, float]]:
+    """물건마다 놓을 칸 (x, y, w, h — 여백 안쪽 0~1 비율). overlap 은 칸이 30% 겹친다.
+    grid 는 2개면 위아래 (나란히와 다르게)."""
+    if layout == "grid" and n == 2:
+        return [(0.0, 0.0, 1.0, 0.5), (0.0, 0.5, 1.0, 0.5)]
+    if layout == "grid" and n > 2:
+        cols = int(np.ceil(np.sqrt(n)))
+        rows = int(np.ceil(n / cols))
+        out = []
+        for i in range(n):
+            r, c = divmod(i, cols)
+            in_row = min(cols, n - r * cols)             # 마지막 줄은 가운데로
+            off = (cols - in_row) / cols / 2
+            out.append((off + c / cols, r / rows, 1 / cols, 1 / rows))
+        return out
+    if layout == "overlap" and n > 1:
+        w = 1 / (1 + 0.7 * (n - 1))                      # 다음 칸이 앞 칸의 70% 지점에서 시작
+        return [(i * 0.7 * w, 0.0, w, 1.0) for i in range(n)]
+    return [(i / n, 0.0, 1 / n, 1.0) for i in range(n)]  # row (grid 인데 2개 이하도 나란히)
+
+
+def arrange(parts: list, bg_color: tuple, layout: str = "row") -> bytes:
+    """물건마다 오려 칸에 맞춰 놓은 CANVAS 정사각 JPEG. 물건 픽셀은 크기 조정만.
+    parts: (원본, 물건 박스) 또는 {"image", "box", "drop", "keep", "single"} —
+      drop · keep 은 그 사진 분석의 안 파는 · 파는 물건 박스 (compose 와 같이 지운다),
+      single 이면 가장 큰 덩어리 하나만 (물건 하나인데 다른 물건이 같이 찍힌 사진).
+    칸이 다 같은 크기라 물건끼리 실제 크기 비율은 지키지 않는다 (사진만으로 실제 크기를 모른다) — 바닥 선은 맞춘다.
+    오린 조각은 바로 칸 크기 근처로 줄여 들고 있는다 (큰 원본 여러 장의 메모리)."""
+    if not parts:
+        raise ValueError("배치할 물건이 없다")
+    if layout not in LAYOUTS:
+        raise ValueError(f"모르는 배치: {layout}")
+    room = CANVAS * (1 - 2 * MARGIN)
+    cut = []
+    for part in parts:
+        part = part if isinstance(part, dict) else {"image": part[0], "box": part[1]}
+        img = Image.open(io.BytesIO(part["image"])).convert("RGB")
+        alpha = drop_boxes(original_alpha(part["image"], img), part.get("drop"), part.get("keep"))
+        item, mask = _item_and_mask(img, alpha, part.get("box"))
+        if part.get("single"):
+            mask = Image.fromarray(_largest_blob(np.array(mask)))
+            ys, xs = np.nonzero(np.array(mask) >= 128)
+            if len(xs):
+                b = (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
+                item, mask = item.crop(b), mask.crop(b)
+        del img, alpha
+        k = min(1.0, room * MAX_UPSCALE / max(item.width, item.height))   # 칸보다 훨씬 크면 미리 줄인다
+        if k < 1:
+            size = (max(1, round(item.width * k)), max(1, round(item.height * k)))
+            item, mask = item.resize(size, Image.LANCZOS), mask.resize(size, Image.LANCZOS)
+        cut.append((item, mask))
+    gap = CANVAS * ARRANGE_GAP if layout != "overlap" else 0
+    canvas = Image.new("RGB", (CANVAS, CANVAS), tuple(bg_color))
+    placed = []
+    for (item, mask), (cx, cy, cw, ch) in zip(cut, _cells(len(cut), layout)):
+        bw, bh = max(1.0, cw * room - gap), max(1.0, ch * room - gap)
+        scale = min(bw / item.width, bh / item.height, MAX_UPSCALE)
+        size = (max(1, round(item.width * scale)), max(1, round(item.height * scale)))
+        x = round(CANVAS * MARGIN + cx * room + (cw * room - size[0]) / 2)
+        y = round(CANVAS * MARGIN + cy * room + ch * room - size[1] - (ch * room - bh) / 2)   # 칸 바닥에 맞춘다
+        placed.append((item.resize(size, Image.LANCZOS), mask.resize(size, Image.LANCZOS), x, y))
+    # 물건 무리 전체를 캔버스 가운데로 (칸 바닥에 맞추면 무리가 아래로 쏠린다)
+    x0, y0 = min(x for _, _, x, _ in placed), min(y for _, _, _, y in placed)
+    x1 = max(x + it.width for it, _, x, _ in placed)
+    y1 = max(y + it.height for it, _, _, y in placed)
+    dx, dy = (CANVAS - (x1 - x0)) // 2 - x0, (CANVAS - (y1 - y0)) // 2 - y0
+    placed = [(it, m, x + dx, y + dy) for it, m, x, y in placed]
+    from PIL import ImageDraw
+    shadow = Image.new("L", (CANVAS, CANVAS), 0)
+    draw = ImageDraw.Draw(shadow)
+    for item, _, x, y in placed:                         # 바닥 그림자 — 물건마다
+        sw, sh = int(item.width * 0.8), max(8, int(item.height * 0.06))
+        sx, sy = x + (item.width - sw) // 2, y + item.height - sh // 2
+        draw.ellipse((sx, sy, sx + sw, sy + sh), fill=90)
+    shadow = shadow.filter(ImageFilter.GaussianBlur(10))
+    dark = Image.new("RGB", (CANVAS, CANVAS), tuple(int(c * 0.55) for c in bg_color))
+    canvas = Image.composite(dark, canvas, shadow)
+    for item, mask, x, y in reversed(placed):            # 겹칠 때 첫 물건(보통 대표)이 맨 위 — 가장 덜 가려지게
+        canvas.paste(item, (x, y), mask)
+    buf = io.BytesIO()
+    canvas.save(buf, format="JPEG", quality=95)
+    return buf.getvalue()
+

@@ -841,7 +841,7 @@ def test_analyze_parses_full_response(monkeypatch):
         "item_box": {"x1": 200, "y1": 100, "x2": 800, "y2": 700},
         "photo_type": "product", "wear_level": "none", "watermark": "background",
         "text_level": "simple",
-        "item_count": 1,
+        "item_count": 1, "item_cut_off": False, "objects": [],
     }
 
 
@@ -896,7 +896,7 @@ def test_analyze_missing_keys_all_defaults(monkeypatch):
         "item": "object", "considered": [], "anchors": [], "item_box": None,
         "photo_type": "product", "wear_level": "light", "watermark": "none",
         "text_level": "simple",
-        "item_count": 1,
+        "item_count": 1, "item_cut_off": False, "objects": [],
     }
 
 
@@ -1202,6 +1202,30 @@ def test_analyze_item_count_is_positive_int_default_one(monkeypatch, raw, expect
     assert detector.analyze(b"x")["item_count"] == expected
 
 
+# ── 10-03: item_cut_off — 응답이 정확히 true(불리언)일 때만 True ──
+@pytest.mark.parametrize("raw,expected", [
+    (True, True), (False, False), (None, False),
+    ("true", False), ("True", False), (1, False), (1.0, False), ("yes", False), ([True], False), ({}, False),
+])
+def test_analyze_item_cut_off_only_exact_true(monkeypatch, raw, expected):
+    _analyze_with(monkeypatch, {"marks": [], "item_cut_off": raw})
+    out = detector.analyze(b"x")
+    assert out["item_cut_off"] is expected
+
+
+def test_analyze_item_cut_off_missing_is_false(monkeypatch):
+    """옛 프롬프트 응답(키 없음)은 예전 동작 — 잘리지 않은 것으로."""
+    _analyze_with(monkeypatch, {"marks": []})
+    assert detector.analyze(b"x")["item_cut_off"] is False
+
+
+def test_analyze_item_cut_off_does_not_change_other_fields(monkeypatch):
+    _analyze_with(monkeypatch, {**_ANALYZE_FULL, "item_cut_off": True, "item_count": 2})
+    out = detector.analyze(b"img")
+    assert out["item_cut_off"] is True and out["item_count"] == 2
+    assert out["photo_type"] == "product" and out["text_level"] == "simple" and len(out["anchors"]) == 2
+
+
 # ── 10-01: analyze 가 물건 위 글자(texts)까지 — 따로 부르던 글자 읽기를 합침 ──
 def test_analyze_parses_texts_when_simple(monkeypatch):
     _analyze_with(monkeypatch, {**_ANALYZE_FULL, "texts": [
@@ -1224,3 +1248,86 @@ def test_analyze_without_texts_list_leaves_key_out(monkeypatch, texts):
     resp = dict(_ANALYZE_FULL) if texts == "missing" else {**_ANALYZE_FULL, "texts": texts}
     _analyze_with(monkeypatch, resp)
     assert "item_texts" not in detector.analyze(b"img")
+
+
+def test_analyze_parses_objects_for_sell_choice(monkeypatch):
+    """10-03: 사진 속 물건 목록 — 사용자가 팔 물건을 고른다. 이름 · 박스가 이상한 항목은 뺀다."""
+    _analyze_with(monkeypatch, {"marks": [], "objects": [
+        {"what": " CD ", "box_2d": [100, 50, 900, 450], "for_sale": True},
+        {"what": "CD", "box_2d": [100, 550, 900, 950]},                       # for_sale 없음 → True
+        {"what": "keyboard", "box_2d": [0, 0, 80, 1000], "for_sale": False},
+        {"what": "", "box_2d": [0, 0, 10, 10]}, {"what": "bad box", "box_2d": [1, 2]}, "junk",
+        *({"what": f"o{i}", "box_2d": [0, 0, 10, 10]} for i in range(20))]})
+    objs = detector.analyze(b"x")["objects"]
+    assert objs[0] == {"what": "CD", "box": {"x1": 50, "y1": 100, "x2": 450, "y2": 900}, "for_sale": True}
+    assert objs[1]["for_sale"] is True and objs[2] == {"what": "keyboard", "for_sale": False,
+                                                        "box": {"x1": 0, "y1": 0, "x2": 1000, "y2": 80}}
+    assert len(objs) == detector.MAX_OBJECTS and all(o["what"] for o in objs)
+
+
+@pytest.mark.parametrize("raw", [None, "x", 3, {"what": "a"}])
+def test_analyze_objects_missing_or_broken_is_empty(monkeypatch, raw):
+    _analyze_with(monkeypatch, {"marks": [], "objects": raw})
+    assert detector.analyze(b"x")["objects"] == []
+
+
+# ── 10-03: _parse_objects 직접 (위 analyze 경유 테스트와 겹치지 않는 경계) ──
+from app.services.ai.detector import _parse_objects  # noqa: E402
+
+
+@pytest.mark.parametrize("box_2d", [
+    [0, 0, 0, 100],          # 높이 0 (퇴화)
+    [0, 100, 100, 100],      # 너비 0
+    [-1, 0, 100, 100],       # 범위 밖 (음수)
+    [0, 0, 100, 1001],       # 범위 밖 (1000 초과)
+    [0, 0, True, 100],       # bool
+    [0, 0, "5", 100],        # 문자열
+    [0, 0, 100, 100, 5],     # 5개
+    None,
+])
+def test_parse_objects_drops_bad_boxes(box_2d):
+    assert _parse_objects([{"what": "a", "box_2d": box_2d}]) == []
+
+
+def test_parse_objects_swapped_box_is_normalized_and_floats_rounded():
+    out = _parse_objects([{"what": "a", "box_2d": [900.4, 800.6, 100, 200]}])
+    assert out == [{"what": "a", "box": {"x1": 200, "y1": 100, "x2": 801, "y2": 900}, "for_sale": True}]
+
+
+def test_parse_objects_ignores_legacy_x1_keys_without_box_2d():
+    """box_2d 대신 x1.. 키만 준 항목 — _from_box_2d 에 box_2d 만 넘기므로 버려진다."""
+    assert _parse_objects([{"what": "a", "x1": 1, "y1": 1, "x2": 9, "y2": 9}]) == []
+
+
+@pytest.mark.parametrize("what", [None, "", "   ", "\n\t"])
+def test_parse_objects_blank_or_null_name_dropped(what):
+    assert _parse_objects([{"what": what, "box_2d": [0, 0, 10, 10]}]) == []
+
+
+def test_parse_objects_name_sanitized():
+    out = _parse_objects([{"what": 'mug "A"\nnew', "box_2d": [0, 0, 10, 10]}])
+    assert out[0]["what"] == "mug 'A' new"
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (False, False), (True, True), (None, True), ("false", False), ("False", False), (0, False), ("no", True),
+])
+def test_parse_objects_for_sale_false_like_values(raw, expected):
+    """for_sale 은 False · 0 · "false" 면 팔지 않는 물건, 없거나 그 밖이면 팔 물건 (기본 체크)."""
+    out = _parse_objects([{"what": "a", "box_2d": [0, 0, 10, 10], "for_sale": raw}])
+    assert out[0]["for_sale"] is expected
+
+
+def test_parse_objects_keeps_duplicates_and_order():
+    o = {"what": "CD", "box_2d": [0, 0, 10, 10]}
+    assert [x["what"] for x in _parse_objects([o, {**o, "what": "case"}, o])] == ["CD", "case", "CD"]
+
+
+def test_parse_objects_exactly_max_kept():
+    raw = [{"what": f"o{i}", "box_2d": [0, 0, 10, 10]} for i in range(detector.MAX_OBJECTS)]
+    assert len(_parse_objects(raw)) == detector.MAX_OBJECTS
+
+
+@pytest.mark.parametrize("raw", [(), {"a": 1}, "objects", 0, [None, 1, "x", []]])
+def test_parse_objects_non_list_or_non_dict_items_empty(raw):
+    assert _parse_objects(raw) == []

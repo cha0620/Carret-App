@@ -1,6 +1,8 @@
 Output JSON only:
 {"item": str,
  "item_count": int,
+ "item_cut_off": bool,
+ "objects": [{"what": str, "box_2d": [ymin, xmin, ymax, xmax], "for_sale": bool}],
  "considered": [str],
  "item_box_2d": [ymin, xmin, ymax, xmax],
  "photo_type": "document" | "inside_view" | "product",

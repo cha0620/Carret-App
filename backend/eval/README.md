@@ -6,16 +6,28 @@
 설계 근거: `study/2026-09-27-prior-art-and-direction.md` §13
 (Pinterest 평가자 2명 · 996개, Amazon 평가자 3명 · 이미지/상품 단위 통과율 · 자동 지표 상관 0.4)
 
+## 폴더
+
+```text
+eval/
+├─ README.md · 스크립트 (run · report · compare · board · grade · intake · fetch · refs)
+├─ docs/      COLLECT.md (사진 모으기) · REFS.md (구도 예시) · EXPERIMENTS.md (실험 목록)
+├─ data/      dataset.json · splits.jsonl · refs.json · locks/ (실험 잠금 문구)
+│             images/ · refs/ (사진 — git 밖)
+└─ results/   runs/ (지금 보는 실행 — git 밖) · archive/ (이미지를 지운 옛 실행, 기록만 — git 밖)
+              reviews/ (사람 채점 — git)
+```
+
 ## 흐름
 
 ```bash
 cd backend
-python eval/fetch.py                  # 사진 주소(url)가 있는 항목만 → eval/images/ (게시글 주소는 건너뜀)
+python eval/fetch.py                  # 사진 주소(url)가 있는 항목만 → eval/data/images/ (게시글 주소는 건너뜀)
 python eval/run.py --analyze-only     # 분류 정확도만 (싸다)
-python eval/run.py                    # 전체 파이프라인 (생성 포함) → runs/<run_id>/
-#   runs/<run_id>/review.html 을 브라우저로 열고
-#   reviews/<run_id>/TEMPLATE.csv 를 reviews/<run_id>/<이름>.csv 로 복사해 채운다
-python eval/report.py                 # 가장 최근 실행 집계 → runs/<run_id>/report.md
+python eval/run.py                    # 전체 파이프라인 (생성 포함) → results/runs/<run_id>/
+#   results/runs/<run_id>/review.html 을 브라우저로 열고
+#   results/reviews/<run_id>/TEMPLATE.csv 를 results/reviews/<run_id>/<이름>.csv 로 복사해 채운다
+python eval/report.py                 # 가장 최근 실행 집계 → results/runs/<run_id>/report.md
 python eval/report.py --tags          # 모든 실행의 실패 원인 태그 빈도
 ```
 
@@ -23,53 +35,58 @@ python eval/report.py --tags          # 모든 실행의 실패 원인 태그 �
 
 ```bash
 python eval/run.py --only edge_clothes2.webp,wind.webp --repeat 2 \
-  --lock-file eval/locks/surface.txt --run-id 20261002-lock-surface --note "무엇을 바꿨나"
+  --lock-file eval/data/locks/surface.txt --run-id 20261002-lock-surface --note "무엇을 바꿨나"
 ```
 
-`meta.json` 에 잠금 문구 · 해시(`lock`, `lock_sha`) · `lock_file` · 데이터셋 해시(`dataset_sha`)가 남는다. 실험 문구는 `eval/locks/`.
+`meta.json` 에 잠금 문구 · 해시(`lock`, `lock_sha`) · `lock_file` · 데이터셋 해시(`dataset_sha`)가 남는다. 실험 문구는 `eval/data/locks/`.
 
-실험 절차와 기록은 **`EXPERIMENTS.md`** (가설 먼저 → 작게 돌리기 → 채점 → 비교 → 판정):
+실험 절차와 기록은 **`docs/EXPERIMENTS.md`** (가설 먼저 → 작게 돌리기 → 채점 → 비교 → 판정):
 
 ```bash
 python eval/run.py --set failure --repeat 2 ...    # 실패 모음만 (dataset.json set="failure"), --set core 는 나머지
-python eval/compare.py <기준 run> <실험 run>       # → runs/compare-<기준>-vs-<실험>.html + 숫자표
+python eval/compare.py <기준 run> <실험 run>       # → results/runs/compare-<기준>-vs-<실험>.html + 숫자표
 ```
 
 `compare.py` 는 사진 · repeat · `dataset_sha` · 평가자가 다르거나, 옛 실행이라 기록이 없거나, 채점이 덜 됐으면 맨 위에 경고한다.
-`dataset_sha` 는 정답 칸(photo_type · wear_level · text_level · key_texts · item)과 사진 내용만 본다 — note · set 을 고쳐도 안 바뀐다.
+`dataset_sha` 는 정답 칸(photo_type · wear_level · text_level · key_texts · item · item_count)과 사진 내용만 본다 — note · set · edge_tags 를 고쳐도 안 바뀐다.
+item_count 는 10-04 에 넣었다 — 그 전 실행과는 사진 · 라벨이 같아도 해시가 다르다.
 
-- `images/`, `runs/` 는 git 에 올리지 않는다 — 남의 사진이고 번호판·얼굴이 찍혀 있을 수 있다
-- `dataset.json`(정답)과 `reviews/`(사람 채점)는 올린다 — 사진 없이도 숫자를 다시 낼 수 있게
-- 실행은 앱 storage·DB 를 건드리지 않는다 (`runs/<run_id>/storage`, `carret.db` 를 따로 쓴다)
+- `data/images/`, `data/refs/`, `results/runs/`, `results/archive/` 는 git 에 올리지 않는다 — 남의 사진이고 번호판·얼굴이 찍혀 있을 수 있다
+- `data/dataset.json`(정답)과 `results/reviews/`(사람 채점)는 올린다 — 사진 없이도 숫자를 다시 낼 수 있게
+- 실행은 앱 storage·DB 를 건드리지 않는다 (`results/runs/<run_id>/storage`, `carret.db` 를 따로 쓴다)
 
 ## 사진 모으기
 
-규칙 · 층별 목표(test 100 · dev 25) · 검색어 · 저장 방법은 **`COLLECT.md`**, 정리는 `python eval/intake.py` (status · add · export · merge).
+규칙 · 층별 목표(test 100 · dev 25) · 검색어 · 저장 방법은 **`docs/COLLECT.md`**, 정리는 `python eval/intake.py` (status · add · export · merge).
 
 중고나라 게시 사진은 업로드 때 약 750px 로 줄어 있다 — 결과를 쓸 때 "입력: 게시 사진(약 750px)" 으로 밝힌다.
 번호판·얼굴·전화번호가 찍힌 사진은 결과 페이지에 올릴 때 가린다.
 
-## 정답 라벨 (`dataset.json`)
+## 정답 라벨 (`data/dataset.json`)
 
 사진을 실행하기 **전에** 사람이 단다 (분석 결과를 보고 달면 분석 쪽으로 기운다).
 
 | 필드 | 값 | 기준 |
 |---|---|---|
-| `file` | 파일 이름 | `images/` 안의 이름 |
-| `url` | 게시글 주소 | 출처 기록용. 사진 파일은 `images/` 에 직접 (없으면 빈 문자열) |
+| `file` | 파일 이름 | `data/images/` 안의 이름 |
+| `url` | 게시글 주소 | 출처 기록용. 사진 파일은 `data/images/` 에 직접 (없으면 빈 문자열) |
 | `item` | 짧은 영어 명사 | 참고용 |
+| `category` | 물건 종류 | 앱 종류(`coverage.CATEGORIES`) + `watch` · `media` (앱에선 other) |
+| `item_count` | 정수 | 팔 물건 개수 — 2 이상이면 배경 제거만 (앱의 여러 개 경로) |
+| `edge_tags` | 태그 목록 | 사진 성격 (투명 · 손에 듦 · 워터마크 …) — 값과 기준은 `docs/COLLECT.md` §2-1 |
 | `photo_type` | `document` / `inside_view` / `product` | 글자·표지가 곧 물건 / 물건 일부·내부만 / 그 밖 |
 | `wear_level` | `none` / `light` / `heavy` | 새것 같음 / 작은 하자 몇 개 / 하자가 보이는 면의 큰 부분 |
 | `text_level` | `none` / `simple` / `dense` | 글자 없음 / 큰 글자 몇 개 / 잔글씨 많음 — 시계 다이얼처럼 눈금·잔글씨가 물건의 일부면 dense (번호판·목 라벨은 안 셈) |
 | `key_texts` | 문자열 목록 | 결과에서 **반드시 그대로여야 할** 글자 (제목·브랜드·모델명) |
 | `note` | 자유 | 채점 때 볼 점 |
 | `labeled_by` | 이름 | `claude-draft` 는 초안 — 사람이 확인하면 이름으로 바꾼다 |
-| `stratum` | 층 코드 | 모을 때의 의도 (`COLLECT.md`) — 집계는 라벨 기준. 기존 8장은 빈 값(`legacy_stratum` 에 옛 값) |
+| `stratum` | 층 코드 | 모을 때의 의도 (`docs/COLLECT.md`) — 집계는 라벨 기준. 기존 8장은 빈 값(`legacy_stratum` 에 옛 값). 10-04 에 light · heavy → `wear` |
+| `post` · `post_index` · `post_size` | 게시글 이름 · 몇 번째 사진(1부터) · 사진 수 | 10-04 부터 게시글 단위로 모은다. 첫 사진만 층 · 라벨 · 한 장 평가 대상, 나머지는 같은 split 을 따르고 `run.py` 가 빼고 돈다 (라벨이 없어 `--only` 로 이름을 대도 아직 안 돈다 — 여러 장 라벨이 정해지면). `dup_of` 는 앞에 나온 같은 사진, `post_total` 은 10장 넘는 게시글의 원래 장수 이 칸이 없는 옛 항목은 한 장짜리 게시글 |
 | `split` | `dev` / `test` | intake 가 층별로 나눈다. test 는 동결 (결과만 본다) |
 | `collected_at` | 날짜 | 모은 날 |
 | `ambiguous` | true / false | 판단이 애매한 사진 |
 
-## 사람 채점 (`reviews/<run_id>/<이름>.csv`)
+## 사람 채점 (`results/reviews/<run_id>/<이름>.csv`)
 
 `python eval/grade.py <run_id> --name <이름>` → <http://localhost:8765> 에서 체크하면 그 CSV 에 바로 저장된다
 (사진당 카드 한 장 — 원본 옆에 repeat 결과 A · B 를 두고 결과마다 체크. 경로·분석값·자동 지표는 숨기고, 순서는 평가자 이름으로 섞는다. 다시 열면 이어서 채운다).
@@ -102,5 +119,5 @@ python eval/compare.py <기준 run> <실험 run>       # → runs/compare-<기�
 4. 평가자 일치도 — Cohen's kappa
 5. 자동 지표 vs 사람 — 생성본에서 judge · DINO · 게이트의 AUC · 상관 (자동 지표를 믿어도 되는가) · 품질 점수와의 상관
 
-실행 조건은 `runs/<run_id>/meta.json` 에 남는다 — 생성 모델 · 스텝 · VLM · 잠금 문구(+해시) · 커밋 · 커밋 안 된 app 변경 여부(+diff 해시).
+실행 조건은 `results/runs/<run_id>/meta.json` 에 남는다 — 생성 모델 · 스텝 · VLM · 잠금 문구(+해시) · 커밋 · 커밋 안 된 app 변경 여부(+diff 해시).
 코드에 없는 임시 변경(게이트 끔 등)은 `python eval/run.py --note "게이트 후퇴 끔"` 으로 적는다. 보고서 맨 위에 같이 나온다.

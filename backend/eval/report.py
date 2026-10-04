@@ -1,11 +1,11 @@
-"""평가 집계 — runs/<run_id>/results.jsonl + dataset.json(정답) + reviews/<run_id>/*.csv(사람 채점).
+"""평가 집계 — results/runs/<run_id>/results.jsonl + dataset.json(정답) + results/reviews/<run_id>/*.csv(사람 채점).
 
     cd backend
     python eval/report.py                # 가장 최근 실행
     python eval/report.py 20260927-2300-full
     python eval/report.py --tags         # 모든 실행의 실패 원인 태그 빈도 (채점표 failure_tags)
 
-나오는 것 (runs/<run_id>/report.md 에도 저장):
+나오는 것 (results/runs/<run_id>/report.md 에도 저장):
   1. 분석 정확도 — photo_type · wear_level · text_level 이 정답과 맞나 (+ 틀린 사진)
   2. 경로 분포 — 정답 사진 종류별로 생성 / 배경 교체 / 원본 그대로, 사진별로 지나간 경로 한 줄
   3. 사람 판정 — 보존 통과율(물건 변화 없음), 결함 없음 비율, 사진 기준 · 물건 기준(repeat>1), 실패 유형 · 원인 태그,
@@ -113,7 +113,8 @@ def fmt(v, d=2) -> str:
     return "—" if v is None else f"{v:.{d}f}"
 
 
-PRE_REASONS = {"detect_failed", "inside_view", "document", "text_dense", "wear_heavy", "text_heavy"}
+PRE_REASONS = {"detect_failed", "inside_view", "document", "text_dense", "wear_heavy", "text_heavy",
+               "cut_off", "multi_item"}
 
 
 def route_trace(r: dict) -> str:
@@ -150,14 +151,14 @@ def route_trace(r: dict) -> str:
 
 # ── 읽기 ────────────────────────────────────────
 def latest_run() -> str | None:
-    runs = sorted(p.name for p in (HERE / "runs").glob("*") if (p / "results.jsonl").exists())
+    runs = sorted(p.name for p in (HERE / "results" / "runs").glob("*") if (p / "results.jsonl").exists())
     return runs[-1] if runs else None
 
 
 def load_reviews(run_id: str) -> dict[str, dict]:
     """{평가자: {(file, repeat): 판정}} — TEMPLATE.csv 는 뺀다."""
     out = {}
-    for p in sorted((HERE / "reviews" / run_id).glob("*.csv")):
+    for p in sorted((HERE / "results" / "reviews" / run_id).glob("*.csv")):
         if p.stem == "TEMPLATE":
             continue
         with open(p, encoding="utf-8-sig") as f:   # 엑셀로 저장한 BOM 도
@@ -350,17 +351,17 @@ def tag_summary(reviews_by_run: dict[str, dict]) -> str:
 
 def main() -> int:
     if sys.argv[1:2] == ["--tags"]:   # 모든 실행의 실패 원인 태그 빈도
-        runs = sorted(p.name for p in (HERE / "reviews").glob("*") if p.is_dir())
+        runs = sorted(p.name for p in (HERE / "results" / "reviews").glob("*") if p.is_dir())
         print(tag_summary({r: load_reviews(r) for r in runs}))
         return 0
     run_id = sys.argv[1] if len(sys.argv) > 1 else latest_run()
     if not run_id:
         print("runs/ 에 실행 결과가 없다 — python eval/run.py 먼저")
         return 1
-    run_dir = HERE / "runs" / run_id
+    run_dir = HERE / "results" / "runs" / run_id
     meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
     results = [json.loads(line) for line in (run_dir / "results.jsonl").read_text(encoding="utf-8").splitlines() if line]
-    gt = {e["file"]: e for e in json.loads((HERE / "dataset.json").read_text(encoding="utf-8"))}
+    gt = {e["file"]: e for e in json.loads((HERE / "data" / "dataset.json").read_text(encoding="utf-8"))}
     text = build_report(run_id, meta, results, gt, load_reviews(run_id))
     (run_dir / "report.md").write_text(text + "\n", encoding="utf-8")
     print(text)

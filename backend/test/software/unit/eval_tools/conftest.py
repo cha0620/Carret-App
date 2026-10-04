@@ -7,6 +7,13 @@ import pytest
 EVAL_DIR = Path(__file__).resolve().parents[4] / "eval"
 
 
+@pytest.fixture(autouse=True)
+def _eval_layout(tmp_path):
+    """eval/ 구조 (10-03): data/ (정답 · 사진) · results/ (실행 · 채점) — 테스트가 tmp_path 를 HERE 로 쓴다."""
+    (tmp_path / "data").mkdir(exist_ok=True)
+    (tmp_path / "results").mkdir(exist_ok=True)
+
+
 def _load(name: str):
     spec = importlib.util.spec_from_file_location(f"carret_eval_{name}", EVAL_DIR / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
@@ -33,14 +40,14 @@ def fetch_mod():
 def intake_mod(tmp_path, monkeypatch):
     """모듈 경로(DATASET·IMAGES·INBOX·LABELS_CSV)를 tmp_path 로 돌려 둔 intake."""
     mod = _load("intake")
-    images = tmp_path / "images"
+    images = tmp_path / "data" / "images"
     inbox = images / "inbox"
     inbox.mkdir(parents=True)
     monkeypatch.setattr(mod, "IMAGES", images)
     monkeypatch.setattr(mod, "INBOX", inbox)
-    monkeypatch.setattr(mod, "DATASET", tmp_path / "dataset.json")
+    monkeypatch.setattr(mod, "DATASET", tmp_path / "data" / "dataset.json")
     monkeypatch.setattr(mod, "LABELS_CSV", inbox / "labels.csv")
-    monkeypatch.setattr(mod, "SPLIT_LOG", tmp_path / "splits.jsonl")
+    monkeypatch.setattr(mod, "SPLIT_LOG", tmp_path / "data" / "splits.jsonl")
     return mod
 
 
@@ -82,8 +89,8 @@ def board_mod(tmp_path, monkeypatch):
     mod = _load("board")
     monkeypatch.setattr(mod, "HERE", tmp_path)
     monkeypatch.setattr(mod.rp, "HERE", tmp_path)
-    monkeypatch.setattr(mod.intake, "DATASET", tmp_path / "dataset.json")
-    (tmp_path / "runs").mkdir()
+    monkeypatch.setattr(mod.intake, "DATASET", tmp_path / "data" / "dataset.json")
+    (tmp_path / "results" / "runs").mkdir(parents=True)
     yield mod
     for m, was in had.items():
         if not was:

@@ -10,7 +10,7 @@
 
 - 구도마다 **3장 이상** (`MIN_EXAMPLES`). 같은 쇼핑몰 3장보다 다른 쇼핑몰 3장
 - 물건이 아니라 **구도**가 닮은 사진을 고른다 — 같은 모델 · 같은 색일 필요 없다
-- 사진은 `backend/eval/refs/` 에 (git 밖), 이름은 `<구도 키>_<번호>.jpg` (예: `shoes_front34_1.jpg`, `clothing_flatlay_1.jpg`)
+- 사진은 `backend/eval/data/refs/` 에 (git 밖), 이름은 `<구도 키>_<번호>.jpg` (예: `shoes_front34_1.jpg`, `clothing_flatlay_1.jpg`)
 
 ## 2. 라벨 (`refs.json`)
 

@@ -37,6 +37,9 @@ class Settings(BaseSettings):              # ⭐ 대문자 클래스
     max_generate_attempts: int = Field(default=2, ge=1, le=5)
     # 원본 물건 위 글자를 읽어 생성 프롬프트에 넣는다 (VLM 호출 1회 추가)
     text_lock: bool = True
+    # 10-03: 생성본에 원본에 없던 글자 · 로고가 생겼나 (원본 · 생성본 두 장 비교, VLM 1회) — 생기면 게이트 실패.
+    # VLM 이 없는 글자를 있다고 볼 수 있어 끌 수 있게 (ADDED_TEXT_GATE=false)
+    added_text_gate: bool = True
     # 생성 전에 바로 배경 교체 모드로 보내는 기준 (0 = 끔). 생성 모델이 거의 확실히
     # 못 지키는 사진에 FLUX·재생성·verify 비용을 쓰지 않기 위함. 경험값 — eval 로 조정.
     #   글자 줄 수: 잔글씨 많은 물건(책·화장품)은 TEXT_LOCK 이 있어도 뭉개지기 쉽다

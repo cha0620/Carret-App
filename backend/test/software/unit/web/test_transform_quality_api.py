@@ -50,7 +50,8 @@ def _post(client, preset="studio_white"):
 # ── POST /api/transform ──
 def test_transform_requests_deferred_judge(client, fake_pipeline):
     assert _post(client).status_code == 200
-    assert fake_pipeline["run"] == [(FID, "studio_white", {"defer_judge": True, "note": "", "composition": None})]
+    assert fake_pipeline["run"] == [(FID, "studio_white", {"defer_judge": True, "note": "", "composition": None,
+                                                         "sell": None})]
 
 
 def test_transform_passes_composition(client, fake_pipeline):
@@ -284,3 +285,84 @@ def test_transform_response_ignores_leftover_scene(client, fake_pipeline):
     fake_pipeline["out"] = _out(scene="partial_view")
     body = _post(client).json()
     assert "scene" not in body and body["photo_type"] is None
+
+
+# ══ 10-03: 팔 물건 고르기 — /api/transform 의 sell · /api/analyze 의 objects ═══════
+@pytest.mark.parametrize("sell", [[0], [0, 1], [11], [3, 3], list(range(12))])
+def test_transform_passes_sell(client, fake_pipeline, sell):
+    r = client.post("/api/transform", json={"file_id": FID, "preset": "studio_white", "sell": sell})
+    assert r.status_code == 200 and fake_pipeline["run"][0][2]["sell"] == sell
+
+
+def test_transform_sell_null_is_none(client, fake_pipeline):
+    r = client.post("/api/transform", json={"file_id": FID, "preset": "studio_white", "sell": None})
+    assert r.status_code == 200 and fake_pipeline["run"][0][2]["sell"] is None
+
+
+def test_transform_never_passes_answer_count(client, fake_pipeline):
+    """정답 개수는 eval 전용 — 앱 요청으로 넣을 수 없다."""
+    r = client.post("/api/transform", json={"file_id": FID, "preset": "studio_white", "answer_count": 3})
+    assert r.status_code == 200 and "answer_count" not in fake_pipeline["run"][0][2]
+
+
+@pytest.mark.parametrize("sell", [[], [-1], [12], [0, 99], list(range(13)), "0", [None], ["x"], [0.5]])
+def test_transform_bad_sell_is_422(client, fake_pipeline, sell):
+    r = client.post("/api/transform", json={"file_id": FID, "preset": "studio_white", "sell": sell})
+    assert r.status_code == 422 and fake_pipeline["run"] == []
+
+
+def test_transform_sell_lax_coercion_current_behavior(client, fake_pipeline):
+    """현재 동작 기록: pydantic lax 모드라 true → 1, "1" → 1 로 받아들인다 (apply_selection 의 bool 거르기 전에 바뀜)."""
+    r = client.post("/api/transform", json={"file_id": FID, "preset": "studio_white", "sell": [True, "1"]})
+    assert r.status_code == 200 and fake_pipeline["run"][0][2]["sell"] == [1, 1]
+
+
+def _png():
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), (1, 2, 3)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _analysis_saved(**kw):
+    from app.services.persistence import storage
+    storage.save("original", f"{FID}.png", _png())
+    a = {"item": "CD", "photo_type": "product", "wear_level": "light", "text_level": "none",
+         "detect_failed": False, **kw}
+    storage.save("quality", f"{FID}_analysis.json", json.dumps(a).encode())
+
+
+def test_analyze_returns_objects_with_index_and_item_count(client):
+    objs = [{"what": "CD", "box": {"x1": 1, "y1": 2, "x2": 3, "y2": 4}, "for_sale": True},
+            {"what": "keyboard", "box": {"x1": 0, "y1": 0, "x2": 1000, "y2": 80}, "for_sale": False}]
+    _analysis_saved(item_count=2, objects=objs)
+    body = client.post("/api/analyze", json={"file_id": FID}).json()
+    assert body["item_count"] == 2
+    assert body["objects"] == [{"index": 0, **objs[0]}, {"index": 1, **objs[1]}]
+
+
+@pytest.mark.parametrize("extra", [{}, {"objects": None, "item_count": None}, {"objects": [], "item_count": 0}])
+def test_analyze_old_cache_without_objects_defaults(client, extra):
+    _analysis_saved(**extra)
+    r = client.post("/api/analyze", json={"file_id": FID})
+    assert r.status_code == 200
+    assert r.json()["objects"] == [] and r.json()["item_count"] == 1
+
+
+def test_analyze_does_not_call_vlm_when_cached(client, monkeypatch):
+    _analysis_saved(objects=[], item_count=1)
+    monkeypatch.setattr("app.services.pipeline.analyze_original",
+                        lambda *a: (_ for _ in ()).throw(AssertionError("VLM 호출")))
+    assert client.post("/api/analyze", json={"file_id": FID}).status_code == 200
+
+
+def test_analyze_fresh_runs_detector_and_returns_objects(client, monkeypatch):
+    from app.services.ai import detector
+    from app.services.persistence import storage
+    storage.save("original", f"{FID}.png", _png())
+    monkeypatch.setattr(detector, "analyze", lambda img: {
+        "item": "CD", "item_count": 2, "photo_type": "product", "wear_level": "none", "text_level": "none",
+        "objects": [{"what": "CD", "box": {"x1": 1, "y1": 1, "x2": 9, "y2": 9}, "for_sale": True}]})
+    body = client.post("/api/analyze", json={"file_id": FID}).json()
+    assert body["item_count"] == 2 and body["objects"][0]["index"] == 0

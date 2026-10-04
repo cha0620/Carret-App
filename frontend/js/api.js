@@ -23,6 +23,34 @@ async function uploadItem(files, itemId = null) {
   return res.json();
 }
 
+// 사용자가 확인 · 고친 물건 묶음 (10-04) — 물건 목록 전체 + 사진 전부의 물건 · 각도
+async function updateObjects(itemId, body) {
+  const res = await fetch(`/api/items/${itemId}/objects`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}));
+    throw new Error(typeof e.detail === 'string' ? e.detail : `저장 실패 (${res.status})`);
+  }
+  return res.json();
+}
+
+// 파는 물건 여러 개를 한 장에 (10-04) — 원본에서 오려 코드로 놓는다
+async function arrangeObjects(itemId, objects, layout, photos = {}) {
+  const res = await fetch(`/api/items/${itemId}/arrange`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ objects, layout, photos }),
+  });
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}));
+    throw new Error(typeof e.detail === 'string' ? e.detail : `배치 실패 (${res.status})`);
+  }
+  return res.json();
+}
+
 async function uploadUrl(url) {
   const res = await fetch('/api/images/upload-url', {
     method: 'POST',
@@ -33,12 +61,23 @@ async function uploadUrl(url) {
   return res.json();
 }
 
-async function requestTransform(fileId, preset, composition = null) {
+// 사진 미리 분석 — 사진 속 물건 목록(objects)으로 팔 물건을 고른다 (10-03). 결과는 서버가 저장해 변환 때 다시 쓴다
+async function analyzePhoto(fileId) {
+  const resp = await fetch('/api/analyze', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ file_id: fileId }),
+  });
+  if (!resp.ok) throw new Error('분석 실패');
+  return resp.json();
+}
+
+async function requestTransform(fileId, preset, composition = null, sell = null) {
   // 1) fetch → Response 객체 받기
   const resp = await fetch("/api/transform", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({ file_id: fileId, preset: preset, composition }),
+    body: JSON.stringify({ file_id: fileId, preset: preset, composition, sell }),
   });
 
   // 2) 실패면 throw (Response 상태에서)
