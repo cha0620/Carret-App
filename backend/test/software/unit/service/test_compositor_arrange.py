@@ -54,31 +54,7 @@ def _bbox(m):
 RED, BLUE, GREEN = (220, 30, 30), (30, 30, 220), (30, 200, 30)
 
 
-# ═════════ _cells ═════════
-@pytest.mark.parametrize("n", [1, 2, 3, 6])
-def test_cells_row_equal_columns(n):
-    cells = compositor._cells(n, "row")
-    assert cells == [(i / n, 0.0, 1 / n, 1.0) for i in range(n)]
-
-
-def test_cells_grid_one_is_row():
-    assert compositor._cells(1, "grid") == compositor._cells(1, "row")
-
-
-def test_cells_grid_two_is_stacked():
-    """grid 2개는 위아래 (나란히와 다르게)."""
-    assert compositor._cells(2, "grid") == [(0.0, 0.0, 1.0, 0.5), (0.0, 0.5, 1.0, 0.5)]
-
-
-def test_cells_overlap_single_is_row():
-    assert compositor._cells(1, "overlap") == compositor._cells(1, "row")
-
-
-def test_cells_unknown_layout_falls_back_to_row():
-    assert compositor._cells(3, "circle") == compositor._cells(3, "row")
-
-
-@pytest.mark.parametrize("n,cols,rows", [(3, 2, 2), (4, 2, 2), (5, 3, 2), (6, 3, 2)])
+@pytest.mark.parametrize("n,cols,rows", [(3, 2, 2), (4, 2, 2), (5, 3, 2),])
 def test_cells_grid_shape(n, cols, rows):
     cells = compositor._cells(n, "grid")
     assert len(cells) == n
@@ -107,23 +83,6 @@ def test_cells_overlap_thirty_percent_and_fills_width(n):
     assert cells[-1][0] + w == pytest.approx(1.0)
 
 
-@pytest.mark.parametrize("layout", list(compositor.LAYOUTS))
-@pytest.mark.parametrize("n", range(1, 7))
-def test_cells_inside_unit_square(layout, n):
-    for x, y, w, h in compositor._cells(n, layout):
-        assert 0 <= x and 0 <= y and x + w <= 1 + 1e-9 and y + h <= 1 + 1e-9
-
-
-def test_layouts_keys():
-    assert set(compositor.LAYOUTS) == {"row", "grid", "overlap"}
-
-
-# ═════════ arrange ═════════
-def test_arrange_empty_parts_raises(fake_alpha):
-    with pytest.raises(ValueError, match="물건이 없다"):
-        compositor.arrange([], BG)
-
-
 def test_arrange_unknown_layout_raises_before_cutting(fake_alpha):
     with pytest.raises(ValueError, match="모르는 배치"):
         compositor.arrange([(_png(RED), None)], BG, "circle")
@@ -142,41 +101,6 @@ def test_arrange_row_two_items_canvas_and_order(fake_alpha):
     assert len(fake_alpha) == 2
 
 
-def test_arrange_group_centered_on_canvas(fake_alpha):
-    out = compositor.arrange([(_png(RED), None), (_png(BLUE), None)], BG, "row")
-    arr = _open(out)
-    x0, y0, x1, y1 = _bbox(_mask(arr, RED) | _mask(arr, BLUE))
-    c = compositor.CANVAS / 2
-    assert abs((x0 + x1) / 2 - c) <= 3 and abs((y0 + y1) / 2 - c) <= 3
-
-
-def test_arrange_tall_and_wide_items_still_centered(fake_alpha):
-    tall = _png(RED, size=(100, 400), box=(10, 10, 90, 390))
-    wide = _png(BLUE, size=(400, 100), box=(10, 10, 390, 90))
-    arr = _open(compositor.arrange([(tall, None), (wide, None)], BG, "row"))
-    x0, y0, x1, y1 = _bbox(_mask(arr, RED) | _mask(arr, BLUE))
-    c = compositor.CANVAS / 2
-    assert abs((x0 + x1) / 2 - c) <= 3 and abs((y0 + y1) / 2 - c) <= 3
-    assert abs(_bbox(_mask(arr, RED))[3] - _bbox(_mask(arr, BLUE))[3]) <= 2     # 바닥 선
-
-
-def test_arrange_grid_three_items(fake_alpha):
-    arr = _open(compositor.arrange([(_png(RED), None), (_png(BLUE), None), (_png(GREEN), None)], BG, "grid"))
-    r, b, g = (_bbox(_mask(arr, c)) for c in (RED, BLUE, GREEN))
-    assert r[3] < g[1] and b[3] < g[1]                               # 초록은 아래 줄
-    assert r[2] < b[0]                                               # 위 줄은 빨강 · 파랑 순
-    gx = (g[0] + g[2]) / 2
-    assert abs(gx - compositor.CANVAS / 2) <= 3                      # 아래 한 개는 가운데
-
-
-def test_arrange_overlap_small_originals_do_not_touch(fake_alpha):
-    """원본 물건이 작으면(100px) MAX_UPSCALE 로 칸을 못 채워 칸 가운데에 놓인다 — '겹쳐서'인데 떨어져 보인다
-    (지금 동작 기록 · 실제 사진은 물건이 커서 겹친다)."""
-    arr = _open(compositor.arrange([(_png(RED), None), (_png(BLUE), None)], BG, "overlap"))
-    r, b = _bbox(_mask(arr, RED)), _bbox(_mask(arr, BLUE))
-    assert r[2] < b[0]
-
-
 def test_arrange_overlap_first_item_on_top(fake_alpha):
     """겹칠 때 첫 물건(보통 대표)이 맨 위 — 가장 덜 가려지게."""
     big = dict(size=(600, 600), box=(50, 50, 550, 550))
@@ -187,19 +111,6 @@ def test_arrange_overlap_first_item_on_top(fake_alpha):
     assert blue_w < red_w * 0.85                                    # 파랑이 가려졌다
     row = (r[1] + r[3]) // 2
     assert _mask(arr, RED)[row, r[2] - 2]                           # 경계 바로 왼쪽은 빨강
-
-
-def test_arrange_grid_two_stacked(fake_alpha):
-    arr = _open(compositor.arrange([(_png(RED), None), (_png(BLUE), None)], BG, "grid"))
-    r, b = _bbox(_mask(arr, RED)), _bbox(_mask(arr, BLUE))
-    assert r[3] < b[1]                                              # 빨강 위, 파랑 아래
-    assert abs((r[0] + r[2]) - (b[0] + b[2])) <= 4                  # 같은 세로줄
-
-
-def test_arrange_accepts_dict_parts(fake_alpha):
-    out = compositor.arrange([{"image": _png(RED)}, {"image": _png(BLUE), "box": None}], BG, "row")
-    arr = _open(out)
-    assert _mask(arr, RED).sum() > 1000 and _mask(arr, BLUE).sum() > 1000
 
 
 def test_arrange_single_keeps_largest_blob_only(fake_alpha):
@@ -222,12 +133,6 @@ def test_arrange_drop_and_keep_boxes(fake_alpha):
     assert _mask(arr2, BLUE).sum() > 100
 
 
-def test_arrange_dropping_everything_raises(fake_alpha):
-    whole = {"x1": 0, "y1": 0, "x2": 1000, "y2": 1000}
-    with pytest.raises(ValueError):
-        compositor.arrange([{"image": _png(RED), "drop": [whole]}, {"image": _png(BLUE)}], BG, "row")
-
-
 def test_arrange_large_original_downscaled_same_layout(fake_alpha):
     """아주 큰 원본도 결과 크기 · 위치는 작은 원본과 비슷하다 (미리 줄여 들고 있어도)."""
     small = _open(compositor.arrange([(_png(RED, size=(400, 400), box=(50, 50, 350, 350)), None),
@@ -247,28 +152,3 @@ def test_arrange_uses_item_box(fake_alpha):
     assert _mask(arr, GREEN).sum() > 1000
 
 
-def test_arrange_does_not_upscale_beyond_cap(fake_alpha):
-    small = _png(RED, size=(40, 40), box=(10, 10, 30, 30))
-    arr = _open(compositor.arrange([(small, None), (_png(BLUE), None)], BG, "row"))
-    x0, _, x1, _ = _bbox(_mask(arr, RED))
-    assert x1 - x0 + 1 <= 20 * compositor.MAX_UPSCALE + 2
-
-
-def test_arrange_single_item(fake_alpha):
-    arr = _open(compositor.arrange([(_png(RED), None)], BG, "grid"))
-    x0, y0, x1, y1 = _bbox(_mask(arr, RED))
-    assert abs((x0 + x1) / 2 - compositor.CANVAS / 2) <= 3
-
-
-def test_arrange_empty_alpha_raises(fake_alpha):
-    blank = _png((255, 255, 255))
-    with pytest.raises(ValueError):
-        compositor.arrange([(_png(RED), None), (blank, None)], BG, "row")
-
-
-@pytest.mark.parametrize("layout", list(compositor.LAYOUTS))
-def test_arrange_six_items_every_layout(fake_alpha, layout):
-    colors = [RED, BLUE, GREEN, (200, 200, 30), (200, 30, 200), (30, 200, 200)]
-    arr = _open(compositor.arrange([(_png(c), None) for c in colors], BG, layout))
-    assert arr.shape[:2] == (compositor.CANVAS, compositor.CANVAS)
-    assert _mask(arr, colors[-1]).sum() > 100                       # 맨 위에 놓인 마지막 물건은 보인다

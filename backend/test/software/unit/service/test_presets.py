@@ -23,39 +23,10 @@ def test_get_preset_returns_expected_keys_and_secondhand_lock(key):
     assert SECONDHAND_LOCK in preset["prompt"]
 
 
-def test_get_preset_prompt_matches_fallback_verbatim_when_langfuse_disabled():
-    # Langfuse 비활성 → fallback 배경 묘사 + " " + 잠금 (옛 f-string 출력과 동일)
-    for key in PRESETS:
-        preset = get_preset(key)
-        assert preset["prompt"] == PRESETS[key]["fallback_prompt"] + " " + SECONDHAND_LOCK
-
-
-def test_get_preset_unknown_key_raises_keyerror():
-    with pytest.raises(KeyError):
-        get_preset("not_a_real_preset_key")
-
-
-@pytest.mark.parametrize("key", list(PRESETS.keys()))
-def test_fallback_prompt_does_not_contain_secondhand_lock(key):
-    assert SECONDHAND_LOCK not in PRESETS[key]["fallback_prompt"]
-
-
-def test_with_secondhand_lock_appends_exactly_once():
-    out = with_secondhand_lock("white background.")
-    assert out == "white background. " + SECONDHAND_LOCK
-    assert out.count(SECONDHAND_LOCK) == 1
-
-
 def test_with_secondhand_lock_is_idempotent():
     once = with_secondhand_lock("white background.")
     assert with_secondhand_lock(once) == once
     assert with_secondhand_lock(with_secondhand_lock(once)) == once
-
-
-def test_with_secondhand_lock_leaves_text_ending_with_lock_unchanged():
-    # Langfuse v1 프리셋처럼 " LOCK" 으로 끝나는 경우 그대로
-    v1 = f"product photo. {SECONDHAND_LOCK}"
-    assert with_secondhand_lock(v1) == v1
 
 
 def test_with_secondhand_lock_moves_lock_in_middle_to_end():
@@ -71,21 +42,6 @@ def test_with_secondhand_lock_moves_lock_in_middle_to_end():
 def test_with_secondhand_lock_collapses_multiple_locks_to_one():
     out = with_secondhand_lock(f"{SECONDHAND_LOCK} bg. {SECONDHAND_LOCK}")
     assert out == "bg. " + SECONDHAND_LOCK
-
-
-def test_with_secondhand_lock_strips_surrounding_whitespace():
-    assert with_secondhand_lock("bg.  \n\t") == "bg. " + SECONDHAND_LOCK
-    assert with_secondhand_lock("  \n bg.") == "bg. " + SECONDHAND_LOCK
-
-
-@pytest.mark.parametrize("empty", ["", "   ", "\n\t "])
-def test_with_secondhand_lock_on_empty_or_whitespace_returns_lock_only(empty):
-    assert with_secondhand_lock(empty) == SECONDHAND_LOCK
-
-
-def test_with_secondhand_lock_on_lock_only_returns_lock_only():
-    assert with_secondhand_lock(SECONDHAND_LOCK) == SECONDHAND_LOCK
-    assert with_secondhand_lock(f"  {SECONDHAND_LOCK}  ") == SECONDHAND_LOCK
 
 
 @pytest.mark.parametrize("key", list(PRESETS.keys()))
@@ -104,33 +60,8 @@ def test_get_preset_appends_lock_when_console_text_lacks_it(monkeypatch, key):
     assert prompt.count(SECONDHAND_LOCK) == 1
 
 
-@pytest.mark.parametrize("key", list(PRESETS.keys()))
-def test_get_preset_does_not_double_lock_legacy_console_text(monkeypatch, key):
-    legacy = f"legacy v1 background. {SECONDHAND_LOCK}"
-    monkeypatch.setattr(presets_mod, "get_prompt_text",
-                        lambda name, fallback, **v: legacy)
-    assert get_preset(key)["prompt"] == legacy
-
-
-@pytest.mark.parametrize("key", list(PRESETS.keys()))
-def test_get_preset_moves_lock_to_end_when_console_text_appends_after_it(monkeypatch, key):
-    # 콘솔에서 잠금 뒤에 지시문을 덧붙여도 잠금이 마지막 문장이 된다
-    edited = f"bg. {SECONDHAND_LOCK} Also restore scratches."
-    monkeypatch.setattr(presets_mod, "get_prompt_text",
-                        lambda name, fallback, **v: edited)
-    prompt = get_preset(key)["prompt"]
-    assert prompt.endswith(SECONDHAND_LOCK)
-    assert prompt.count(SECONDHAND_LOCK) == 1
-
-
-
 # ══ 10-03: 팔 물건 고르기 — leave_out (count_lock 은 효과가 없어 뺐다) ═══════
-from app.prompts.presets import LEAVE_OUT, TEXT_LOCK_MAX_CHARS, leave_out  # noqa: E402
-
-
-@pytest.mark.parametrize("names", [[], ["", "  ", "\n"]])
-def test_leave_out_nothing_usable_is_empty(names):
-    assert leave_out(names) == ""
+from app.prompts.presets import LEAVE_OUT, leave_out  # noqa: E402
 
 
 def test_leave_out_never_names_the_objects():

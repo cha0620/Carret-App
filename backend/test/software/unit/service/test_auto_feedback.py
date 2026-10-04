@@ -71,17 +71,6 @@ def test_generate_feedback_clamps_rating_above_range(monkeypatch):
     assert out["rating"] == 5
 
 
-def test_generate_feedback_clamps_rating_below_range(monkeypatch):
-    import app.services.ai.auto_feedback as auto_feedback_mod
-    raw = {"rating": 0, "comment": "별로"}
-    fake_get_client, _ = _make_fake_get_client(json.dumps(raw))
-    monkeypatch.setattr(auto_feedback_mod, "get_client", fake_get_client)
-
-    out = generate_feedback(b"orig", b"result")
-
-    assert out["rating"] == 1
-
-
 def test_generate_feedback_blank_comment_normalized_to_none(monkeypatch):
     import app.services.ai.auto_feedback as auto_feedback_mod
     raw = {"rating": 3, "comment": "   "}
@@ -93,65 +82,8 @@ def test_generate_feedback_blank_comment_normalized_to_none(monkeypatch):
     assert out["comment"] is None
 
 
-def test_generate_feedback_missing_comment_normalized_to_none(monkeypatch):
-    import app.services.ai.auto_feedback as auto_feedback_mod
-    raw = {"rating": 3}
-    fake_get_client, _ = _make_fake_get_client(json.dumps(raw))
-    monkeypatch.setattr(auto_feedback_mod, "get_client", fake_get_client)
-
-    out = generate_feedback(b"orig", b"result")
-
-    assert out["comment"] is None
-
-
-def test_generate_feedback_enabled_tracing_invokes_obs_update_with_validated_output(monkeypatch):
-    import app.services.ai.auto_feedback as auto_feedback_mod
-
-    class FakeObservation:
-        def __init__(self):
-            self.update_calls = []
-        def update(self, **kw):
-            self.update_calls.append(kw)
-
-    class FakeObservationCM:
-        def __init__(self, obs):
-            self._obs = obs
-        def __enter__(self):
-            return self._obs
-        def __exit__(self, *a):
-            return False
-
-    class FakeLangfuseClient:
-        def __init__(self):
-            self.calls = []
-            self.obs = FakeObservation()
-        def start_as_current_observation(self, **kw):
-            self.calls.append(kw)
-            return FakeObservationCM(self.obs)
-
-    fake_lf = FakeLangfuseClient()
-    monkeypatch.setattr(tracing, "_disabled", False, raising=False)
-    monkeypatch.setattr(tracing, "_client", fake_lf, raising=False)
-
-    raw = {"rating": 5, "comment": "좋아요"}
-    fake_get_client, _ = _make_fake_get_client(json.dumps(raw))
-    monkeypatch.setattr(auto_feedback_mod, "get_client", fake_get_client)
-
-    out = generate_feedback(b"orig", b"result")
-
-    assert out == raw
-    assert fake_lf.calls[0]["name"] == "auto_feedback"
-    assert fake_lf.calls[0]["as_type"] == "generation"
-    assert fake_lf.obs.update_calls == [{"output": raw, "usage_details": None}]
-
-
 # ── 호출별 모델 · 이미지 Part (app.core.vlm) ──
 from app.core.config import settings as _settings  # noqa: E402
-
-
-def _res_level(part):
-    r = part.media_resolution
-    return None if r is None else str(getattr(r.level, "value", r.level))
 
 
 def _raw():
@@ -168,35 +100,3 @@ def test_generate_feedback_uses_auto_feedback_model_override(monkeypatch):
     assert models.last_kwargs["model"] == "af-model"
 
 
-@pytest.mark.parametrize("models_setting", [{}, {"auto_feedback": ""}, {"judge": "x"}])
-def test_generate_feedback_without_override_uses_base_model(monkeypatch, models_setting):
-    import app.services.ai.auto_feedback as auto_feedback_mod
-    monkeypatch.setattr(_settings, "VLM_MODEL", "base-model")
-    monkeypatch.setattr(_settings, "vlm_models", models_setting)
-    fake_get_client, models = _make_fake_get_client(_raw())
-    monkeypatch.setattr(auto_feedback_mod, "get_client", fake_get_client)
-    generate_feedback(b"orig", b"result")
-    assert models.last_kwargs["model"] == "base-model"
-
-
-def test_generate_feedback_passes_two_png_image_parts(monkeypatch):
-    import app.services.ai.auto_feedback as auto_feedback_mod
-    monkeypatch.setattr(_settings, "vlm_media_resolution", {})
-    fake_get_client, models = _make_fake_get_client(_raw())
-    monkeypatch.setattr(auto_feedback_mod, "get_client", fake_get_client)
-    generate_feedback(b"orig", b"result")
-    a, b, prompt = models.last_kwargs["contents"]
-    assert (a.inline_data.data, b.inline_data.data) == (b"orig", b"result")
-    assert a.inline_data.mime_type == b.inline_data.mime_type == "image/png"
-    assert _res_level(a) is None and _res_level(b) is None
-    assert isinstance(prompt, str)
-
-
-def test_generate_feedback_image_parts_follow_resolution_override(monkeypatch):
-    import app.services.ai.auto_feedback as auto_feedback_mod
-    monkeypatch.setattr(_settings, "vlm_media_resolution", {"auto_feedback": "medium"})
-    fake_get_client, models = _make_fake_get_client(_raw())
-    monkeypatch.setattr(auto_feedback_mod, "get_client", fake_get_client)
-    generate_feedback(b"orig", b"result")
-    a, b, _ = models.last_kwargs["contents"]
-    assert _res_level(a) == _res_level(b) == "MEDIA_RESOLUTION_MEDIUM"

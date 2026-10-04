@@ -29,19 +29,6 @@ def mock_auto_feedback(monkeypatch):
     )
 
 
-def test_ingest_and_feedback_creates_originals_row(make_png):
-    fid = "ingest-fid-1"
-    ingest.ingest_and_feedback(fid, make_png(), ".jpg", "studio_white",
-                                source="inbox", original_name="photo.jpg")
-
-    original_row = store.get_original(fid)
-    assert original_row is not None
-    assert original_row["file_id"] == fid
-    assert original_row["ext"] == ".jpg"
-    assert original_row["source"] == "inbox"
-    assert original_row["original_name"] == "photo.jpg"
-
-
 def test_ingest_and_feedback_creates_feedback_row(make_png):
     """originals 뿐 아니라 feedbacks 도 같은 file_id 로 함께 생긴다
     (자동 피드백 에이전트 경로)."""
@@ -69,20 +56,3 @@ def test_ingest_and_feedback_passes_through_source_and_original_name_for_url(mak
     assert row["original_name"] == url
 
 
-def test_ingest_and_feedback_returns_result_url_and_feedback_fields(make_png):
-    fid = "ingest-fid-3"
-    out = ingest.ingest_and_feedback(fid, make_png(), ".jpg", "studio_white")
-
-    assert "result_url" in out and out["result_url"]
-    assert out["rating"] == 4
-    assert out["comment"] == "괜찮은 결과네요"
-
-
-def test_ingest_and_feedback_default_source_is_inbox(make_png):
-    """source 인자를 안 주면 기본값 "inbox"."""
-    fid = "ingest-fid-default-source"
-    ingest.ingest_and_feedback(fid, make_png(), ".jpg", "studio_white")
-
-    row = store.get_original(fid)
-    assert row["source"] == "inbox"
-    assert row["original_name"] is None

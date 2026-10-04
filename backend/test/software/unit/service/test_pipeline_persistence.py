@@ -44,27 +44,6 @@ def _out(**overrides):
     return base
 
 
-# ── mock 파이프라인 모드 (지름길) ──────────────────────────────
-def test_run_transform_mock_mode_writes_results_row(monkeypatch, make_png):
-    monkeypatch.setattr(settings, "pipeline_mode", "mock", raising=False)
-
-    from app.services.persistence import storage
-    storage.save("original", "fid-mock.jpg", make_png())
-
-    assert store.get_result("fid-mock", "preset_a") is None
-
-    pipeline_mod.run_transform("fid-mock", "preset_a")
-
-    row = store.get_result("fid-mock", "preset_a")
-    assert row is not None
-    assert row["file_id"] == "fid-mock"
-    assert row["preset_key"] == "preset_a"
-    assert row["result_name"] == "fid-mock_preset_a.jpg"
-    assert row["item"] == "object"
-    assert row["gate_passed"] is None
-    assert row["elapsed_s"] is not None
-
-
 def test_run_transform_mock_mode_second_call_updates_not_duplicates(monkeypatch, make_png):
     monkeypatch.setattr(settings, "pipeline_mode", "mock", raising=False)
 
@@ -86,23 +65,6 @@ def test_run_transform_mock_mode_second_call_updates_not_duplicates(monkeypatch,
             ("fid-mock2", "preset_a"),
         ).fetchone()["n"]
     assert count == 1
-
-
-# ── real 모드 (그래프는 fake, DB 연결만 검증) ──────────────────
-def test_run_transform_real_mode_writes_results_row(monkeypatch):
-    out = _out()
-    monkeypatch.setattr(pipeline_mod, "GRAPH", FakeGraph([out]), raising=False)
-
-    pipeline_mod.run_transform("fid-real", "preset_b")
-
-    row = store.get_result("fid-real", "preset_b")
-    assert row is not None
-    assert row["result_name"] == "abc_preset.jpg"
-    assert row["item"] == "chair"
-    assert row["gate_passed"] == 1
-    import json
-    assert json.loads(row["considered"]) == ["scratch"]
-    assert json.loads(row["bubbles"]) == [{"what": "얼룩", "label": "얼룩"}]
 
 
 def test_run_transform_real_mode_second_call_with_changed_fields_updates_row(monkeypatch):

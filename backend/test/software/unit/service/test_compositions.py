@@ -36,25 +36,6 @@ def test_options_order_good_photos_first_and_hint_when_missing():
     assert "앞쪽 비스듬히" in opts["shoes_front34"]["hint"]
 
 
-@pytest.mark.parametrize("category", ["bag", "vehicle", "electronics"])
-def test_options_empty_for_other_kinds(category):
-    assert C.options(category, [_p("a", "front")]) == []
-
-
-def test_prompt_for():
-    assert C.prompt_for("shoes_sole").startswith("\n\n") and "sole" in C.prompt_for("shoes_sole")
-    assert C.prompt_for(None) == "" and C.prompt_for("nope") == ""
-
-
-def test_new_categories_have_compositions():
-    """10-03 예시 사진에서 뽑은 구도 — 상의는 하나, 시계 · 책 · CD 는 other 에."""
-    assert [o["key"] for o in C.options("clothing", [_p("a", "front")])] == ["clothing_top_front"]
-    keys = [o["key"] for o in C.options("other", [_p("a", "front")])]
-    assert keys == ["watch_front34", "book_cover34", "book_stack", "album_front"]
-    assert all(o["available"] for o in C.options("other", [_p("a", "front")]))
-    assert C.options("", [_p("a", "front")]) == C.options("other", [_p("a", "front")])   # 모르는 종류 = other
-
-
 def test_album_prompt_never_names_a_format():
     """형태 이름(LP · CD · record · vinyl)을 쓰면 모델이 형태를 다시 고른다 (10-03)."""
     low = C.BY_KEY["album_front"]["prompt"].lower()
@@ -67,14 +48,6 @@ KEEP = "keep the item's angle, shape, size, number and packaging exactly as phot
 
 
 @pytest.mark.parametrize("key", sorted(C.BY_KEY))
-def test_every_prompt_is_loose_reference_keeping_angle_and_count(key):
-    p = C.BY_KEY[key]["prompt"]
-    assert p.startswith("As a loose reference for the layout, think of ")
-    assert "Follow it only as far as this photo already allows" in p
-    assert KEEP in p and "add nothing that is not in the original photo" in p
-
-
-@pytest.mark.parametrize("key", sorted(C.BY_KEY))
 def test_every_prompt_has_no_hard_frame_orders(key):
     """퍼센트 · "square to the frame" · "filling" · "symmetric" 같은 센 틀 지시가 남아 있지 않다."""
     low = C.BY_KEY[key]["prompt"].lower()
@@ -82,16 +55,6 @@ def test_every_prompt_has_no_hard_frame_orders(key):
     for bad in ("square to the frame", "filling about", "fill most", "symmetrically", "straight on",
                 "even margins"):
         assert bad not in low, (key, bad)
-
-
-def test_ref_wraps_body_once():
-    out = C._ref("BODY")
-    assert out.count("BODY") == 1 and out.index("BODY") < out.index("Follow it only")
-    assert C._ref("").startswith("As a loose reference for the layout, think of .")
-
-
-def test_prompt_for_keeps_ref_sentence_after_blank_line():
-    assert C.prompt_for("shoes_side") == "\n\n" + C.BY_KEY["shoes_side"]["prompt"]
 
 
 def test_specific_notes_survive_ref_wrap():

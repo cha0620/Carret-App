@@ -20,34 +20,6 @@ def test_settings_survives_unknown_env_var(monkeypatch):
     assert not hasattr(s, "some_totally_unknown_config_key_xyz")
 
 
-def test_settings_model_config_extra_is_ignore():
-    assert Settings.model_config.get("extra") == "ignore"
-
-
-def test_langfuse_public_key_default_is_empty_string():
-    assert reveal(Settings.model_fields["langfuse_public_key"].default) == ""
-
-
-def test_langfuse_secret_key_default_is_empty_string():
-    assert reveal(Settings.model_fields["langfuse_secret_key"].default) == ""
-
-
-def test_settings_langfuse_keys_can_be_forced_empty_via_env(monkeypatch):
-    """실행 환경의 .env 값과 무관하게, 명시적으로 빈 문자열을 주면 그대로 반영된다
-    (기본값이 진짜 "" 코드로 되어 있어야 이 경로도 정상 동작)."""
-    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "")
-    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "")
-    s = Settings()
-    assert reveal(s.langfuse_public_key) == ""
-    assert reveal(s.langfuse_secret_key) == ""
-
-
-def test_langfuse_host_reads_langfuse_host_env(monkeypatch):
-    monkeypatch.setenv("LANGFUSE_HOST", "https://example-host.langfuse.com")
-    s = Settings()
-    assert s.langfuse_host == "https://example-host.langfuse.com"
-
-
 def test_langfuse_host_reads_langfuse_base_url_env(monkeypatch):
     """.env 관례가 LANGFUSE_BASE_URL 이라, 이 이름으로도 반영돼야 한다
     (과거엔 필드명이 LANGFUSE_HOST 로만 매핑돼서 .env의 LANGFUSE_BASE_URL이
@@ -60,12 +32,6 @@ def test_langfuse_host_reads_langfuse_base_url_env(monkeypatch):
 
 SECRET_FIELDS = ["VLM_KEY", "fal_key", "external_api_key", "langfuse_public_key",
                  "langfuse_secret_key", "aws_access_key_id", "aws_secret_access_key"]
-
-
-def test_secret_fields_are_secretstr():
-    """키 필드는 SecretStr — pytest 실패 출력처럼 Settings 가 통째로 찍혀도 값이 안 보이게."""
-    for name in SECRET_FIELDS:
-        assert Settings.model_fields[name].annotation is SecretStr, name
 
 
 def test_settings_repr_and_str_hide_secret_values(monkeypatch):

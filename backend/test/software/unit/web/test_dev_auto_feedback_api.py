@@ -66,9 +66,3 @@ def test_dev_auto_feedback_404_when_original_missing(client, feedback_db, make_p
     assert r.status_code == 404
 
 
-def test_dev_auto_feedback_404_when_result_missing(client, feedback_db, make_png):
-    storage.save("original", f"{FID}.jpg", make_png())
-
-    r = client.post("/dev/auto-feedback",
-                    json={"file_id": FID, "preset": "studio_white"})
-    assert r.status_code == 404

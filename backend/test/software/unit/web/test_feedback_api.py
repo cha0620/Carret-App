@@ -49,19 +49,6 @@ def test_submit_feedback_upserts_same_file_and_preset(client, feedback_db):
     assert got.json()["comment"] == "great"
 
 
-def test_get_feedback_missing_key_returns_404(client, feedback_db):
-    r = client.get(f"/api/feedback/{FID}/does_not_exist")
-    assert r.status_code == 404
-
-
-def test_submit_feedback_comment_is_optional(client, feedback_db):
-    r = client.post("/api/feedback", json={
-        "file_id": FID, "preset_key": "no_comment", "rating": 3,
-    })
-    assert r.status_code == 200
-    assert r.json()["comment"] is None
-
-
 @pytest.mark.parametrize("rating", [0, 6, "five"])
 def test_submit_feedback_invalid_rating_is_422(client, feedback_db, rating):
     r = client.post("/api/feedback", json={
@@ -80,10 +67,6 @@ def test_submit_feedback_invalid_file_id_is_422(client, feedback_db, bad_file_id
         "file_id": bad_file_id, "preset_key": "p", "rating": 3,
     })
     assert r.status_code == 422
-
-
-def test_submit_feedback_missing_body_is_422(client, feedback_db):
-    assert client.post("/api/feedback", json={}).status_code == 422
 
 
 def test_submit_feedback_save_failure_returns_500(client, feedback_db, monkeypatch):

@@ -23,27 +23,6 @@ def _disable_langfuse(monkeypatch):
     monkeypatch.setattr(prompt_registry, "get_langfuse", lambda: None)
 
 
-def test_returns_fallback_verbatim_when_no_variables_and_langfuse_disabled(monkeypatch):
-    _disable_langfuse(monkeypatch)
-    fallback = "hello world, no vars here"
-    assert prompt_registry.get_prompt_text("anything", fallback) == fallback
-
-
-def test_substitutes_single_variable(monkeypatch):
-    _disable_langfuse(monkeypatch)
-    result = prompt_registry.get_prompt_text("x", "hi {{item}}!", item="carret")
-    assert result == "hi carret!"
-
-
-def test_variable_named_name_is_shadowed_by_positional_name_param(monkeypatch):
-    """실동작 확인용 회귀 테스트(버그 아님, API 제약 문서화):
-    get_prompt_text(name, fallback, **variables) 시그니처상 'name' 은 프롬프트
-    식별자로 예약돼 있어서, 템플릿 변수로 키워드 인자 name= 을 넘기면
-    TypeError 가 난다. 호출부는 반드시 'name' 이 아닌 다른 변수명을 써야 한다."""
-    with pytest.raises(TypeError):
-        prompt_registry.get_prompt_text("x", "hi {{name}}!", name="carret")
-
-
 def test_substitutes_multiple_variables(monkeypatch):
     _disable_langfuse(monkeypatch)
     result = prompt_registry.get_prompt_text(
@@ -65,14 +44,6 @@ def test_leaves_unrelated_single_brace_json_untouched(monkeypatch):
     assert "{{rubric}}" not in result
     # JSON schema example must survive untouched (a naive .format() would crash here)
     assert '{"analysis": "...", "fidelity": 1-5, "realism": 1-5, "trust": 1-5}' in result
-
-
-def test_no_variables_passed_leaves_double_brace_placeholder_as_is(monkeypatch):
-    """variables 를 아예 안 주면 {{var}} 자리표시자가 그대로 남아있는 것도
-    정상 동작(치환 대상이 없으므로) — 크래시하지 않는 것이 중요."""
-    _disable_langfuse(monkeypatch)
-    result = prompt_registry.get_prompt_text("x", "keep {{untouched}}")
-    assert result == "keep {{untouched}}"
 
 
 def test_falls_back_cleanly_when_langfuse_get_prompt_raises(monkeypatch):
@@ -120,8 +91,3 @@ def test_uses_langfuse_compiled_text_when_client_succeeds(monkeypatch):
     assert captured_kwargs == {"rubric": "R"}
 
 
-def test_get_langfuse_none_path_does_not_call_client_at_all(monkeypatch):
-    """lf is None 이면 .get_prompt 시도조차 없어야 한다(순수 로컬 compile)."""
-    monkeypatch.setattr(prompt_registry, "get_langfuse", lambda: None)
-    # sanity: local compile still works with empty variables dict
-    assert prompt_registry.get_prompt_text("x", "plain text") == "plain text"

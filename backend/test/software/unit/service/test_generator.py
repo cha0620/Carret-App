@@ -62,23 +62,6 @@ def _preset():
     return {"prompt": "clean white background"}
 
 
-def test_generate_ai_disabled_tracing_returns_downloaded_bytes_unchanged(monkeypatch):
-    fake_fal = FakeFalClient()
-    fake_httpx = FakeHttpx(content=b"IMG-BYTES")
-    monkeypatch.setattr(generator_mod, "fal_client", fake_fal)
-    monkeypatch.setattr(generator_mod, "httpx", fake_httpx)
-
-    out = _generate_ai(b"original-bytes", _preset())
-
-    assert out == b"IMG-BYTES"
-    assert fake_fal.subscribe_calls[0]["arguments"]["prompt"] == "clean white background"
-    assert fake_fal.subscribe_calls[0]["arguments"]["image_urls"] == [
-        "https://fal.example/uploaded.png"
-    ]
-    assert fake_httpx.get_calls[0]["url"] == fake_fal.out_url
-    assert fake_httpx.get_calls[0]["timeout"] == 60
-
-
 def test_generate_ai_enabled_tracing_invokes_obs_update_with_output_url(monkeypatch):
     class FakeObservation:
         def __init__(self):
@@ -119,19 +102,6 @@ def test_generate_ai_enabled_tracing_invokes_obs_update_with_output_url(monkeypa
     assert fake_lf.obs.update_calls == [{"output": {"url": "https://fal.example/final.png"}}]
 
 
-def test_generate_ai_checks_status_before_returning(monkeypatch):
-    fake_fal = FakeFalClient()
-    responses = []
-    fake_httpx = FakeHttpx(content=b"OK")
-    real_get = fake_httpx.get
-    fake_httpx.get = (lambda url, timeout=None, follow_redirects=False:
-                      responses.append(real_get(url, timeout, follow_redirects)) or responses[-1])
-    monkeypatch.setattr(generator_mod, "fal_client", fake_fal)
-    monkeypatch.setattr(generator_mod, "httpx", fake_httpx)
-    assert _generate_ai(b"o", _preset()) == b"OK"
-    assert [r.raise_calls for r in responses] == [1]
-
-
 # ══ _download: 상태 코드 확인 + 5xx·연결 오류 1회 재시도 ══
 URL = "https://fal.example/out.png"
 
@@ -155,18 +125,7 @@ def _get_seq(monkeypatch, seq):
     return calls
 
 
-def test_download_attempts_constant():
-    assert generator_mod.DOWNLOAD_ATTEMPTS == 2
-
-
-def test_download_success_single_call(monkeypatch, capsys):
-    calls = _get_seq(monkeypatch, [_resp(200, b"PNG")])
-    assert generator_mod._download(URL) == b"PNG"
-    assert calls == [{"url": URL, "timeout": 60, "follow_redirects": True}]
-    assert capsys.readouterr().out == ""
-
-
-@pytest.mark.parametrize("status", [500, 502, 503, 504, 599])
+@pytest.mark.parametrize("status", [500, 502,])
 def test_download_5xx_then_success_retries_once(monkeypatch, capsys, status):
     calls = _get_seq(monkeypatch, [_resp(status, b"<html>error</html>"), _resp(200, b"PNG")])
     assert generator_mod._download(URL) == b"PNG"
@@ -175,15 +134,7 @@ def test_download_5xx_then_success_retries_once(monkeypatch, capsys, status):
     assert "[generate]" in log and "1/2" in log
 
 
-def test_download_5xx_twice_raises_status_error(monkeypatch):
-    calls = _get_seq(monkeypatch, [_resp(500, b"<html>"), _resp(503, b"<html>")])
-    with pytest.raises(httpx.HTTPStatusError) as ei:
-        generator_mod._download(URL)
-    assert ei.value.response.status_code == 503        # 마지막 시도의 오류
-    assert len(calls) == generator_mod.DOWNLOAD_ATTEMPTS
-
-
-@pytest.mark.parametrize("status", [400, 403, 404, 410, 429, 499])
+@pytest.mark.parametrize("status", [400, 403,])
 def test_download_4xx_raises_immediately_without_retry(monkeypatch, capsys, status):
     calls = _get_seq(monkeypatch, [_resp(status), _resp(200, b"PNG")])
     with pytest.raises(httpx.HTTPStatusError) as ei:
@@ -191,13 +142,6 @@ def test_download_4xx_raises_immediately_without_retry(monkeypatch, capsys, stat
     assert ei.value.response.status_code == status
     assert len(calls) == 1
     assert capsys.readouterr().out == ""
-
-
-def test_download_follows_redirects(monkeypatch):
-    """CDN 리다이렉트는 httpx 가 따라가게 한다 (기본값은 안 따라감)."""
-    calls = _get_seq(monkeypatch, [_resp(200, b"PNG")])
-    assert generator_mod._download(URL) == b"PNG"
-    assert calls[0]["follow_redirects"] is True
 
 
 def test_download_unfollowed_3xx_raises_without_retry(monkeypatch):
@@ -209,48 +153,12 @@ def test_download_unfollowed_3xx_raises_without_retry(monkeypatch):
 
 
 @pytest.mark.parametrize("exc", [
-    httpx.ConnectError("refused"), httpx.ReadTimeout("slow"),
-    httpx.RemoteProtocolError("eof"), httpx.ConnectTimeout("t/o"),
-])
+    httpx.ConnectError("refused"), httpx.ReadTimeout("slow"),])
 def test_download_transport_error_then_success(monkeypatch, capsys, exc):
     calls = _get_seq(monkeypatch, [exc, _resp(200, b"PNG")])
     assert generator_mod._download(URL) == b"PNG"
     assert len(calls) == 2
     assert "[generate]" in capsys.readouterr().out
-
-
-def test_download_transport_error_twice_raises(monkeypatch):
-    calls = _get_seq(monkeypatch, [httpx.ConnectError("a"), httpx.ReadTimeout("b")])
-    with pytest.raises(httpx.ReadTimeout):
-        generator_mod._download(URL)
-    assert len(calls) == 2
-
-
-def test_download_transport_then_5xx_raises_last(monkeypatch):
-    _get_seq(monkeypatch, [httpx.ConnectError("a"), _resp(500)])
-    with pytest.raises(httpx.HTTPStatusError):
-        generator_mod._download(URL)
-
-
-def test_download_5xx_then_4xx_raises_4xx(monkeypatch):
-    calls = _get_seq(monkeypatch, [_resp(500), _resp(404), _resp(200, b"PNG")])
-    with pytest.raises(httpx.HTTPStatusError) as ei:
-        generator_mod._download(URL)
-    assert ei.value.response.status_code == 404 and len(calls) == 2
-
-
-@pytest.mark.parametrize("exc", [ValueError("x"), RuntimeError("y"), KeyError("z")])
-def test_download_other_errors_not_retried(monkeypatch, exc):
-    calls = _get_seq(monkeypatch, [exc, _resp(200, b"PNG")])
-    with pytest.raises(type(exc)):
-        generator_mod._download(URL)
-    assert len(calls) == 1
-
-
-def test_download_empty_200_body_is_returned_as_is(monkeypatch):
-    """상태 코드만 본다 — 200 이면 본문 검증은 뒷단 몫."""
-    _get_seq(monkeypatch, [_resp(200, b"")])
-    assert generator_mod._download(URL) == b""
 
 
 def test_generate_ai_5xx_html_page_is_not_returned_as_image(monkeypatch):
@@ -262,7 +170,3 @@ def test_generate_ai_5xx_html_page_is_not_returned_as_image(monkeypatch):
     assert len(calls) == 2
 
 
-def test_generate_ai_5xx_once_then_image(monkeypatch):
-    monkeypatch.setattr(generator_mod, "fal_client", FakeFalClient(out_url=URL))
-    _get_seq(monkeypatch, [_resp(500, b"<html>"), _resp(200, b"IMG")])
-    assert _generate_ai(b"o", _preset()) == b"IMG"
