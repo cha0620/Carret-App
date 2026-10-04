@@ -2,7 +2,7 @@ import logging
 import uuid
 from pathlib import Path
 from fastapi import HTTPException
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, UploadFile
 from pydantic import BaseModel
 from app.core.config import settings
 from app.services.persistence import storage, store

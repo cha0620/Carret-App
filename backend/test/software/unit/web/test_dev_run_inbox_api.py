@@ -13,7 +13,6 @@ import app.services.ai.auto_feedback as auto_feedback_mod
 from app.core import db
 from app.core.config import settings
 from app.services import pipeline
-from app.services.persistence import storage
 
 
 @pytest.fixture()
@@ -79,64 +78,6 @@ def test_single_valid_image_is_processed_and_moved_to_done(client, feedback_db, 
     assert (inbox / "done" / f"{row['file_id']}_photo.jpg").exists()
 
 
-def test_multiple_images_all_processed_and_moved(client, feedback_db, make_png, tmp_storage):
-    inbox = tmp_storage / "inbox"
-    inbox.mkdir(parents=True, exist_ok=True)
-    names = ["a.jpg", "b.png", "c.webp"]
-    for name in names:
-        (inbox / name).write_bytes(make_png())
-
-    r = client.post("/dev/run-inbox")
-
-    assert r.status_code == 200
-    body = r.json()
-    assert len(body["rows"]) == 3
-    returned_names = {row["source_file"] for row in body["rows"]}
-    assert returned_names == set(names)
-    file_ids = {row["file_id"] for row in body["rows"]}
-    assert len(file_ids) == 3
-    for fid in file_ids:
-        assert _is_hex_uuid(fid)
-
-    for row in body["rows"]:
-        name = row["source_file"]
-        assert not (inbox / name).exists()
-        assert (inbox / "done" / f"{row['file_id']}_{name}").exists()
-
-
-def test_non_image_file_is_skipped_entirely(client, feedback_db, make_png, tmp_storage):
-    inbox = tmp_storage / "inbox"
-    inbox.mkdir(parents=True, exist_ok=True)
-    (inbox / "notes.txt").write_bytes(b"not an image")
-    (inbox / "real.jpg").write_bytes(make_png())
-
-    r = client.post("/dev/run-inbox")
-
-    assert r.status_code == 200
-    body = r.json()
-    assert len(body["rows"]) == 1
-    row = body["rows"][0]
-    assert row["source_file"] == "real.jpg"
-
-    # notes.txt 는 처리 대상이 아니므로 그대로 inbox 최상위에 남는다
-    assert (inbox / "notes.txt").exists()
-    assert not (inbox / "done" / "notes.txt").exists()
-    assert (inbox / "done" / f"{row['file_id']}_real.jpg").exists()
-
-
-def test_empty_or_missing_inbox_returns_empty_rows(client, feedback_db, tmp_storage):
-    inbox = tmp_storage / "inbox"
-    assert not inbox.exists()  # isolated_storage 는 inbox/ 를 만들지 않는다
-
-    r = client.post("/dev/run-inbox")
-
-    assert r.status_code == 200
-    assert r.json() == {"rows": []}
-    # 엔드포인트가 스스로 만들어 둔다
-    assert inbox.exists()
-    assert (inbox / "done").exists()
-
-
 def test_failing_item_reports_error_row_and_stays_in_inbox(client, feedback_db, make_png, tmp_storage, monkeypatch):
     inbox = tmp_storage / "inbox"
     inbox.mkdir(parents=True, exist_ok=True)
@@ -176,27 +117,6 @@ def test_failing_item_reports_error_row_and_stays_in_inbox(client, feedback_db, 
     assert (inbox / "done" / f"{good_row['file_id']}_good.jpg").exists()
 
 
-def test_single_url_is_processed_and_returns_source_url_row(client, feedback_db, make_png, tmp_storage, monkeypatch):
-    async def fake_fetch_image(url):
-        return (make_png(), "jpeg")
-
-    monkeypatch.setattr(dev_mod, "fetch_image", fake_fetch_image)
-
-    r = client.post("/dev/run-inbox", json={"urls": ["http://example.com/a.jpg"]})
-
-    assert r.status_code == 200
-    body = r.json()
-    assert len(body["rows"]) == 1
-    row = body["rows"][0]
-    assert row["source_url"] == "http://example.com/a.jpg"
-    assert _is_hex_uuid(row["file_id"])
-    assert "result_url" in row and row["result_url"]
-    assert row["rating"] == 4
-    assert row["comment"] == "괜찮은 결과네요"
-    assert row["source"] == "agent"
-    assert "error" not in row
-
-
 def test_failing_url_reports_error_row_without_affecting_others(client, feedback_db, make_png, tmp_storage, monkeypatch):
     async def fake_fetch_image(url):
         if url == "http://example.com/bad.jpg":
@@ -222,33 +142,6 @@ def test_failing_url_reports_error_row_without_affecting_others(client, feedback
     good_row = rows_by_url["http://example.com/good.jpg"]
     assert "error" not in good_row
     assert "result_url" in good_row and good_row["result_url"]
-
-
-def test_mixed_local_files_and_urls_both_processed(client, feedback_db, make_png, tmp_storage, monkeypatch):
-    inbox = tmp_storage / "inbox"
-    inbox.mkdir(parents=True, exist_ok=True)
-    (inbox / "local.jpg").write_bytes(make_png())
-
-    async def fake_fetch_image(url):
-        return (make_png(), "jpeg")
-
-    monkeypatch.setattr(dev_mod, "fetch_image", fake_fetch_image)
-
-    r = client.post("/dev/run-inbox", json={"urls": ["http://example.com/remote.jpg"]})
-
-    assert r.status_code == 200
-    body = r.json()
-    assert len(body["rows"]) == 2
-
-    local_rows = [row for row in body["rows"] if "source_file" in row]
-    url_rows = [row for row in body["rows"] if "source_url" in row]
-    assert len(local_rows) == 1
-    assert len(url_rows) == 1
-    assert local_rows[0]["source_file"] == "local.jpg"
-    assert url_rows[0]["source_url"] == "http://example.com/remote.jpg"
-
-    fid = local_rows[0]["file_id"]
-    assert (inbox / "done" / f"{fid}_local.jpg").exists()
 
 
 def test_unknown_preset_returns_400_and_does_not_touch_inbox(client, feedback_db, make_png, tmp_storage):

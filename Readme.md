@@ -197,7 +197,7 @@ backend/
     │   └── prompt_registry.py  # Langfuse prompts, falls back to local fragments on failure
     └── schemas/                # pydantic request/response (file_id regex = path-traversal guard)
 
-scripts/    run_text_check.py (text/logo damage check), seed_langfuse_prompts.py …
+scripts/    seed_langfuse_prompts.py (seeds local prompts into Langfuse)
 frontend/   index.html (main app) · test.html (dev lab) · js/{api,render,main,dev}.js
 study/      dated dev logs: bug root causes, design calls, reversed decisions
 ```
@@ -246,12 +246,12 @@ that knows the disk layout.
 - 🧪 **All results at a glance**: the dev lab (`test.html`) shows every result
   next to its original, with gate, guards, judge scores, DINO, rating and the
   defect checklist on one screen (with filters, sorting and a summary)
-- 🔤 **Text/logo damage check (text_check)**: reads only the text **on the item**
-  (ignoring background, sleeves and props, with no spelling correction) and
-  compares original and result line by line
+- 🔤 **Text/logo damage check**: analyze reads only the text **on the item**
+  (ignoring background, sleeves and props, with no spelling correction), locks it
+  into the generation prompt, and verify gates on whether it survived
 - 💸 **VLM cost control**: each call has its own thinking level. verify gets a
-  2048-token thinking cap so it can't run away, and simple calls (classify,
-  auto_feedback) run without thinking
+  2048-token thinking cap so it can't run away, and simple calls
+  (auto_feedback) use low thinking
 
 ---
 

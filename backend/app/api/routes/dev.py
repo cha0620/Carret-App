@@ -1,7 +1,7 @@
 """개발 도구 — 스테이지 단위 테스트 API (dev 전용).
 
 원칙: 이 모듈은 로직을 "소유하지 않는다".
-모든 계산은 프로덕션 단일 진실원(detector/evaluator) 에 위임,
+모든 계산은 프로덕션 단일 진실원(detector/pipeline) 에 위임,
 여기서는 "어떤 입력을 줄지" 만 선택한다.
 = 테스트는 프로덕션을 호출하지, 복사하지 않는다.
 """
@@ -12,7 +12,6 @@ import threading
 import uuid
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -20,7 +19,6 @@ from app.prompts.presets import get_preset
 from app.services import ingest, pipeline
 from app.services.ai import auto_feedback, detector
 from app.services.persistence import storage, store
-from app.util import evaluator
 from app.util.img_fetch import fetch_image
 
 router = APIRouter()
@@ -30,17 +28,9 @@ _inbox_lock = threading.Lock()   # 동시 호출 방지 — fal.ai/VLM 실호출
 
 
 # ---- 요청 스키마 (이 라우터의 계약) ----
-class DevDetectReq(BaseModel):
-    file_id: str
-
-
 class DevPairReq(BaseModel):
     file_id: str
     preset: str
-
-
-class DevNameReq(BaseModel):
-    name: str
 
 
 class DevRunInboxReq(BaseModel):
@@ -72,24 +62,23 @@ def dev_originals():
         p.stem for p in (storage.BASE / "original").glob("*.jpg"))}
 
 
-@router.post("/detect")
-def dev_detect(req: DevDetectReq):
-    """옛 하자 앵커 검출 (eval·비교용). 파이프라인 첫 단계는 09-27 부터 detector.analyze 다."""
-    return {"anchors": detector.detect_defects(_original_bytes(req.file_id))}
-
-
 @router.post("/verify")
 def dev_verify(req: DevPairReq):
     """스테이지 3만 — 체크포인트 리플레이 (생성 비용 0)."""
     inspect = storage.load("quality", f"{req.file_id}_{req.preset}_inspect.json")
     if inspect is None:
         raise HTTPException(404, "체크포인트 없음 (변환 1회 먼저)")
-    anchors = json.loads(inspect.decode("utf-8"))["anchors"]
-    checks = detector.verify_and_locate(
-        _result_bytes(req.file_id, req.preset), anchors)   # ⭐ 저장본 계약
-    return {"anchors": anchors, "checks": checks,
+    ins = json.loads(inspect.decode("utf-8"))
+    # 파이프라인 게이트와 같은 대상(마크 + 읽은 글자) · 같은 물건 이름 · 깨진 응답은 실패로 (없던 글자 검사는 빠진다)
+    targets = pipeline._verify_targets(ins)
+    try:
+        checks = detector.verify_and_locate(
+            _result_bytes(req.file_id, req.preset), targets, ins.get("item", "object"), strict=True)   # ⭐ 저장본 계약
+    except ValueError as e:
+        raise HTTPException(502, f"verify 응답이 깨짐: {e}")
+    return {"anchors": targets, "checks": checks,
             "bubbles": detector.bubbles(checks),
-            "gate_passed": detector.all_preserved(checks, expected=len(anchors))}
+            "gate_passed": detector.all_preserved(checks, expected=len(targets))}
 
 
 @router.post("/transform-with-result")
@@ -117,15 +106,6 @@ def dev_auto_feedback(req: DevPairReq):
     store.save_feedback(req.file_id, req.preset, out["rating"], out["comment"],
                          source="agent")
     return store.get_feedbacks(req.file_id, req.preset)["agent"]
-
-
-@router.post("/eval-pair")
-def dev_eval_pair(req: DevPairReq):
-    """업로드 세션 1쌍 — evaluator 에 완전 위임."""
-    return evaluator.eval_bytes(
-        _original_bytes(req.file_id),
-        _result_bytes(req.file_id, req.preset),
-        name=req.file_id)
 
 
 # ---- 인박스 기반 (사용자가 storage/inbox/ 에 던져둔 새 원본 + 이미지 URL) ----
@@ -193,39 +173,12 @@ async def dev_run_inbox(req: DevRunInboxReq = DevRunInboxReq()):
         _inbox_lock.release()
 
 
-# ---- 데이터셋 기반 (평가셋 페어) ----
-@router.get("/pairs")
-def dev_pairs():
-    return {"pairs": evaluator.find_pairs()}
-
-
-@router.post("/eval-anchor")
-def dev_eval_anchor(req: DevNameReq):
-    row = evaluator.eval_pair(req.name)
-    if row is None:
-        raise HTTPException(404, "페어 없음")
-    return row
-
-
-@router.get("/eval-all")
-def dev_eval_all():
-    return {"rows": evaluator.eval_all()}
-
-
 @router.get("/gallery")
 def dev_gallery():
-    """storage 을 브라우저 갤러리로 (URL 조립만, 서빙은 마운트가)."""
-    pairs = []
-    for name in evaluator.find_pairs():
-        img, after = evaluator.pair_of(name)
-        pairs.append({
-            "name": name,
-            "orig": f"/storage/{img.relative_to(storage.BASE).as_posix()}",
-            "after": f"/storage/{after.relative_to(storage.BASE).as_posix()}",
-        })
+    """저장된 원본 갤러리 (URL 조립만, 서빙은 마운트가)."""
     originals = [{"name": p.stem, "url": f"/storage/original/{p.name}"}
                  for p in sorted((storage.BASE / "original").glob("*.jpg"))]
-    return {"pairs": pairs, "originals": originals}
+    return {"originals": originals}
 
 
 FILE_ID_RE = re.compile(r"[0-9a-f]{32}")
@@ -299,47 +252,3 @@ def dev_results():
             "feedback": _safe(store.get_feedbacks, file_id, preset) or {"user": None, "agent": None},
         })
     return {"items": items}
-
-
-# ---- 텍스트/로고 깨짐 확인 (storage/text_check, 항상 로컬) ----
-# dataset 과 같은 "실험 자산" 이라 STORAGE_BACKEND(local/s3) 와 무관하게 로컬에서 읽는다.
-TEXT_CHECK_DIRS = {"input", "output"}
-
-
-def _text_check_root():
-    return storage.BASE / "text_check"
-
-
-@router.get("/text-check")
-def dev_text_check():
-    """input/ 원본마다 output/ 결과 + report.json 행을 묶어서 돌려준다."""
-    root = _text_check_root()
-    report_path = root / "output" / "report.json"
-    rows = {}
-    if report_path.exists():
-        rows = {r["file"]: r for r in json.loads(report_path.read_text())}
-    items = []
-    for src in sorted((root / "input").glob("*")):
-        if src.suffix.lower() not in INBOX_EXTS:
-            continue
-        results = sorted((root / "output").glob(f"{src.stem}_*.jpg"))
-        items.append({
-            "name": src.name,
-            "orig": f"/dev/text-check/img/input/{src.name}",
-            "results": [{"preset": r.stem[len(src.stem) + 1:],
-                         "url": f"/dev/text-check/img/output/{r.name}"}
-                        for r in results],
-            "report": rows.get(src.name),
-        })
-    return {"items": items}
-
-
-@router.get("/text-check/img/{folder}/{name}")
-def dev_text_check_img(folder: str, name: str):
-    if folder not in TEXT_CHECK_DIRS:
-        raise HTTPException(404, "폴더 없음")
-    base = (_text_check_root() / folder).resolve()
-    path = (base / name).resolve()
-    if not path.is_relative_to(base) or not path.is_file():
-        raise HTTPException(404, "파일 없음")
-    return FileResponse(path)

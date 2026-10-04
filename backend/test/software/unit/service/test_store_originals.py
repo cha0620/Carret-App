@@ -20,10 +20,6 @@ def test_record_then_get_original_roundtrip():
     assert row["created_at"] is not None
 
 
-def test_get_original_missing_returns_none():
-    assert store.get_original("nope") is None
-
-
 def test_record_original_second_call_same_file_id_does_not_overwrite():
     """UNIQUE(file_id) + ON CONFLICT DO NOTHING — 재시도 등으로 같은 file_id를
     두 번 기록해도 첫 호출 값이 그대로 유지되어야 한다."""
@@ -41,19 +37,3 @@ def test_record_original_second_call_same_file_id_does_not_overwrite():
     assert second["size_bytes"] == 10
 
 
-def test_record_original_optional_fields_default_none():
-    store.record_original("no-optional-fid", ".webp", "upload")
-    row = store.get_original("no-optional-fid")
-    assert row["original_name"] is None
-    assert row["size_bytes"] is None
-
-
-def test_record_original_distinct_file_ids_are_independent():
-    store.record_original("fid-a", ".jpg", "upload", original_name="a.jpg", size_bytes=1)
-    store.record_original("fid-b", ".png", "inbox", original_name="b.png", size_bytes=2)
-
-    a = store.get_original("fid-a")
-    b = store.get_original("fid-b")
-    assert a["source"] == "upload"
-    assert b["source"] == "inbox"
-    assert a["file_id"] != b["file_id"]

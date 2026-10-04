@@ -25,17 +25,14 @@ LEVELS = {"minimal", "low", "medium", "high"}
 #   detect, judge, check_photo : 끄면 앵커가 빠지거나 점수가 2점씩 흔들림, 원래 싸다 → 기본값 유지
 #   item_text : 2026-09-26 Langfuse 에서 1회 생각 62,912 토큰($0.57, 최근 500건 비용의 25%) — 정상
 #               호출은 276~1,044 토큰이라 verify 와 같은 상한으로 폭주만 막는다
-#   detect, judge, check_photo, match : 기본값(생각 켬)은 유지하되 폭주만 막는 넉넉한 상한 — 최근
+#   analyze, judge, check_photo : 기본값(생각 켬)은 유지하되 폭주만 막는 넉넉한 상한 — 최근
 #               500건 중 1,000 토큰을 넘은 적이 거의 없어 판정엔 영향이 없고, 최악만 막는다
 DEFAULT_THINKING: dict[str, str | int] = {
     "verify": 2048,
     "item_text": 2048,
-    "detect": 4096,
     "analyze": 4096,              # detect 와 같은 눈(글자 판독·사용감) — 기본 모델·기본 해상도, 폭주 상한만
     "judge": 4096,
     "check_photo": 4096,
-    "match": 4096,
-    "classify": "minimal",        # lite 모델에서 돈다 (3.8-flash 는 minimal 을 거부)
     "auto_feedback": "low",       # 기본 모델(3.8-flash)이 minimal 을 400 으로 거부 — low 는 둘 다 받는다
     "views": 4096,                # 여러 장의 각도 — 사진이 많으면 생각이 길어질 수 있어 상한만
     "objects": 4096,              # 여러 장을 물건별로 묶기 + 각도 (10-04, views 를 대신)
@@ -54,7 +51,6 @@ DEFAULT_THINKING: dict[str, str | int] = {
 #   judge 도 3.8 로 바뀌어 성적표 점수의 기준선이 이날부터 달라진다 (이전 점수와 직접 비교 금지).
 # 주의: 3.8-flash 는 thinking_level "minimal" 을 400 으로 거부한다 — 모델을 바꿀 땐 DEFAULT_THINKING 도 확인.
 DEFAULT_MODELS: dict[str, str] = {
-    "classify": "gemini-3.5-flash-lite",
     "check_photo": "gemini-3.5-flash-lite",
 }
 
@@ -86,7 +82,6 @@ def thinking(name: str) -> types.ThinkingConfig | None:
 # 물건 종류·구도·자막만 보는 호출은 low — 둘 다 비용의 75~79% 가 입력(이미지)이었다.
 MEDIA_LEVELS = {"low", "medium", "high"}
 DEFAULT_MEDIA_RESOLUTION: dict[str, str] = {
-    "classify": "low",
     "check_photo": "low",
     "views": "low",               # 각도 · 가림만 본다 (10-01, 여러 장 업로드 — 장당 268 토큰)
     "objects": "low",             # 물건 묶기 · 각도 (10-04) — views 와 같은 눈

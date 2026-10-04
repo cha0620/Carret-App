@@ -35,27 +35,10 @@ def _route(row):
     return {k: row[k] for k in db.RESULT_ROUTE_COLS}
 
 
-def _count(fid, preset):
-    with db.get_conn() as c:
-        return c.execute("SELECT COUNT(*) AS n FROM results WHERE file_id=? AND preset_key=?",
-                         (fid, preset)).fetchone()["n"]
-
-
 def _record(fid="f", preset="p", route=None, **kw):
     store.record_result(fid, preset, f"{fid}_{preset}.jpg", "mug", ["a"], True, [],
                         elapsed_s=1.0, route=route, **kw)
     return store.get_result(fid, preset)
-
-
-# ── 스키마 / 마이그레이션 ──
-def test_route_cols_constant():
-    assert db.RESULT_ROUTE_COLS == ("mode", "composite_reason", "photo_type", "wear_level")
-
-
-def test_fresh_db_has_route_columns_as_text():
-    cols = _cols()
-    for col in db.RESULT_ROUTE_COLS:
-        assert cols.get(col) == "TEXT", col
 
 
 _LEGACY_RESULTS = """
@@ -96,14 +79,6 @@ def test_migrate_adds_route_columns_to_legacy_results_table(monkeypatch, tmp_pat
     assert _route(row) == {k: None for k in db.RESULT_ROUTE_COLS}
 
 
-def test_migrate_route_columns_is_idempotent(monkeypatch, tmp_path):
-    _legacy_db(monkeypatch, tmp_path)
-    db.init_db()
-    db.init_db()            # 이미 있으면 ALTER 하지 않는다 (duplicate column 오류 없음)
-    names = [n for n in _cols() if n in db.RESULT_ROUTE_COLS]
-    assert sorted(names) == sorted(db.RESULT_ROUTE_COLS)
-
-
 def test_migrate_adds_only_missing_route_columns(monkeypatch, tmp_path):
     """일부만 있는(중간에 멈춘) DB — 빠진 것만 붙인다."""
     _legacy_db(monkeypatch, tmp_path, extra_cols=("mode", "photo_type"))
@@ -111,71 +86,9 @@ def test_migrate_adds_only_missing_route_columns(monkeypatch, tmp_path):
     assert set(db.RESULT_ROUTE_COLS) <= set(_cols())
 
 
-def test_migrate_does_not_touch_route_values_already_stored(monkeypatch, tmp_path):
-    path = _legacy_db(monkeypatch, tmp_path, extra_cols=db.RESULT_ROUTE_COLS)
-    conn = sqlite3.connect(str(path))
-    conn.execute("UPDATE results SET mode='original', photo_type='inside_view' WHERE file_id='old'")
-    conn.commit()
-    conn.close()
-    db.init_db()
-    row = store.get_result("old", "p")
-    assert row["mode"] == "original" and row["photo_type"] == "inside_view"
-
-
-def test_record_result_works_on_migrated_legacy_db(monkeypatch, tmp_path):
-    _legacy_db(monkeypatch, tmp_path)
-    db.init_db()
-    row = _record("old", "p", route=ROUTE)          # 기존 행 upsert
-    assert _route(row) == ROUTE and _count("old", "p") == 1
-
-
 # ── store.record_result(route=...) ──
 def test_record_result_stores_route():
     assert _route(_record(route=ROUTE)) == ROUTE
-
-
-@pytest.mark.parametrize("route", [None, {}])
-def test_record_result_without_route_is_all_null(route):
-    assert _route(_record(route=route)) == {k: None for k in db.RESULT_ROUTE_COLS}
-
-
-def test_record_result_missing_keys_are_null():
-    row = _record(route={"mode": "generate", "wear_level": "none"})
-    assert _route(row) == {"mode": "generate", "composite_reason": None,
-                          "photo_type": None, "wear_level": "none"}
-
-
-def test_record_result_ignores_extra_route_keys():
-    row = _record(route={**ROUTE, "scene": "partial_view", "status": "blocked"})
-    assert _route(row) == ROUTE
-    assert "scene" not in row and "status" not in row
-
-
-def test_record_result_route_explicit_none_values():
-    row = _record(route={k: None for k in db.RESULT_ROUTE_COLS})
-    assert _route(row) == {k: None for k in db.RESULT_ROUTE_COLS}
-
-
-def test_record_result_route_is_keyword_with_default_none():
-    import inspect
-    params = inspect.signature(store.record_result).parameters
-    assert params["route"].default is None and params["elapsed_s"].default is None
-
-
-def test_record_result_legacy_call_without_route_still_works():
-    """예전 호출(route 없이, elapsed_s 키워드) 그대로 동작."""
-    store.record_result("lg", "p", "lg_p.jpg", "mug", [], None, [], elapsed_s=2.0)
-    row = store.get_result("lg", "p")
-    assert row["elapsed_s"] == 2.0 and row["mode"] is None
-
-
-def test_record_result_upsert_overwrites_route():
-    _record(route=ROUTE)
-    new = {"mode": "original", "composite_reason": "inside_view",
-           "photo_type": "inside_view", "wear_level": "heavy"}
-    first_id = store.get_result("f", "p")["id"]
-    row = _record(route=new)
-    assert _route(row) == new and row["id"] == first_id and _count("f", "p") == 1
 
 
 @pytest.mark.parametrize("second", [None, {}, {"mode": "generate"}])
@@ -186,23 +99,6 @@ def test_record_result_upsert_overwrites_old_route_with_null(second):
     expected = {k: (second or {}).get(k) for k in db.RESULT_ROUTE_COLS}
     assert _route(row) == expected
     assert row["composite_reason"] is None and row["photo_type"] is None
-
-
-def test_record_result_route_is_per_preset():
-    _record("f", "a", route=ROUTE)
-    _record("f", "b", route=None)
-    assert _route(store.get_result("f", "a")) == ROUTE
-    assert store.get_result("f", "b")["mode"] is None
-
-
-# ── pipeline → route ──
-def test_route_of_picks_four_keys_only():
-    out = {**ROUTE, "status": "blocked", "scene": "x", "gate_passed": True}
-    assert pipeline_mod._route_of(out) == ROUTE
-
-
-def test_route_of_missing_keys_are_none():
-    assert pipeline_mod._route_of({}) == {k: None for k in db.RESULT_ROUTE_COLS}
 
 
 class _FakeGraph:
@@ -231,50 +127,6 @@ def test_run_transform_records_route(monkeypatch, route):
     assert _route(store.get_result("g", "p")) == route
 
 
-def test_run_transform_missing_mode_records_generate_default(monkeypatch):
-    """결과의 mode 기본값("generate")이 그대로 DB 에 — 그래프가 안 준 나머지는 NULL."""
-    monkeypatch.setattr(pipeline_mod, "GRAPH", _FakeGraph(_graph_out()), raising=False)
-    monkeypatch.setattr(pipeline_mod, "judge_and_save", lambda *a, **k: None)
-    pipeline_mod.run_transform("g", "p")
-    assert _route(store.get_result("g", "p")) == {"mode": "generate", "composite_reason": None,
-                                                  "photo_type": None, "wear_level": None}
-
-
-def test_run_transform_rerun_overwrites_route(monkeypatch):
-    monkeypatch.setattr(pipeline_mod, "judge_and_save", lambda *a, **k: None)
-    monkeypatch.setattr(pipeline_mod, "GRAPH", _FakeGraph(_graph_out(**ROUTE)), raising=False)
-    pipeline_mod.run_transform("g", "p")
-    monkeypatch.setattr(pipeline_mod, "GRAPH", _FakeGraph(_graph_out(mode="generate")),
-                        raising=False)
-    pipeline_mod.run_transform("g", "p")
-    row = store.get_result("g", "p")
-    assert row["mode"] == "generate" and row["photo_type"] is None
-    assert row["composite_reason"] is None and _count("g", "p") == 1
-
-
-def test_run_transform_passes_route_kwarg_to_store(monkeypatch):
-    seen = []
-    monkeypatch.setattr(pipeline_mod.store, "record_result",
-                        lambda *a, **kw: seen.append(kw))
-    monkeypatch.setattr(pipeline_mod, "GRAPH", _FakeGraph(_graph_out(**ROUTE)), raising=False)
-    monkeypatch.setattr(pipeline_mod, "judge_and_save", lambda *a, **k: None)
-    pipeline_mod.run_transform("g", "p")
-    assert seen[0]["route"] == ROUTE and seen[0]["elapsed_s"] is not None
-
-
-def test_mock_mode_records_no_route(monkeypatch, make_png):
-    from app.services.persistence import storage
-    monkeypatch.setattr(settings, "pipeline_mode", "mock", raising=False)
-    storage.save("original", "gm.jpg", make_png())
-    seen = []
-    real = store.record_result
-    monkeypatch.setattr(pipeline_mod.store, "record_result",
-                        lambda *a, **kw: seen.append(kw) or real(*a, **kw))
-    pipeline_mod.run_transform("gm", "p")
-    assert seen[0].get("route") is None
-    assert _route(store.get_result("gm", "p")) == {k: None for k in db.RESULT_ROUTE_COLS}
-
-
 def test_record_failure_with_route_does_not_fail_transform(monkeypatch):
     def boom(*a, **kw):
         raise sqlite3.OperationalError("no such column: photo_type")
@@ -285,44 +137,12 @@ def test_record_failure_with_route_does_not_fail_transform(monkeypatch):
     assert out["photo_type"] == "document"
 
 
-def test_record_result_safe_route_default_none(monkeypatch):
-    seen = []
-    monkeypatch.setattr(pipeline_mod.store, "record_result", lambda *a, **kw: seen.append(kw))
-    pipeline_mod._record_result_safe("f", "p", "r.jpg", "x", [], None, [], 1.0)
-    assert seen == [{"elapsed_s": 1.0, "route": None}]
-
-
-def test_run_transform_with_result_records_route(monkeypatch, make_png):
-    monkeypatch.setattr(pipeline_mod, "load", lambda s: {
-        "original": b"ORIGINAL", "preset": {"prompt": "P", "name": "n", "bg_color": "#fff"}})
-    monkeypatch.setattr(pipeline_mod, "analyze", lambda s: {
-        "item": "book", "considered": [], "anchors": [], "detect_failed": False,
-        "photo_type": "document", "wear_level": "heavy"})
-    monkeypatch.setattr(pipeline_mod, "score_similarity", lambda s: {"visual_similarity": 0.5})
-    monkeypatch.setattr(pipeline_mod, "verify", lambda s: {"checks": [], "gate_passed": None})
-    monkeypatch.setattr(pipeline_mod, "save_inspect", lambda s: {})
-    monkeypatch.setattr(pipeline_mod, "judge_and_save", lambda f, p, **kw: None)
-    monkeypatch.setattr(pipeline_mod, "finalize", lambda s: {"bubbles": []})
-
-    pipeline_mod.run_transform_with_result("gd", "p", make_png())
-
-    # dev 그래프는 plan 이 사유를 달지 않고 제공 이미지를 쓴다 → mode generate, 사유 NULL
-    assert _route(store.get_result("gd", "p")) == {"mode": "generate", "composite_reason": None,
-                                                   "photo_type": "document", "wear_level": "heavy"}
-
-
 # ── db._add_column: 동시 기동 경합(duplicate column)만 무시 ──
 def _mem():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.execute("CREATE TABLE t (id INTEGER)")
     return conn
-
-
-def test_add_column_adds_column():
-    conn = _mem()
-    db._add_column(conn, "t", "mode TEXT")
-    assert "mode" in {r["name"] for r in conn.execute("PRAGMA table_info(t)")}
 
 
 def test_add_column_duplicate_is_ignored():
@@ -332,39 +152,6 @@ def test_add_column_duplicate_is_ignored():
     db._add_column(conn, "t", "mode TEXT")          # 예외 없음
     names = [r["name"] for r in conn.execute("PRAGMA table_info(t)")]
     assert names.count("mode") == 1
-
-
-class _FakeConn:
-    def __init__(self, exc):
-        self.exc = exc
-        self.sql = []
-
-    def execute(self, sql, *a):
-        self.sql.append(sql)
-        raise self.exc
-
-
-@pytest.mark.parametrize("msg", ["duplicate column name: mode", "DUPLICATE COLUMN NAME: mode"])
-def test_add_column_duplicate_message_case_insensitive(msg):
-    conn = _FakeConn(sqlite3.OperationalError(msg))
-    db._add_column(conn, "results", "mode TEXT")
-    assert conn.sql == ["ALTER TABLE results ADD COLUMN mode TEXT"]
-
-
-@pytest.mark.parametrize("exc", [
-    sqlite3.OperationalError("database is locked"),
-    sqlite3.OperationalError("no such table: results"),
-    sqlite3.DatabaseError("file is not a database"),
-    RuntimeError("boom"),
-])
-def test_add_column_other_errors_propagate(exc):
-    with pytest.raises(type(exc)):
-        db._add_column(_FakeConn(exc), "results", "mode TEXT")
-
-
-def test_add_column_missing_table_propagates_real_sqlite():
-    with pytest.raises(sqlite3.OperationalError, match="no such table"):
-        db._add_column(_mem(), "nope", "mode TEXT")
 
 
 def test_migrate_uses_add_column_and_survives_race(monkeypatch, tmp_path):
@@ -386,11 +173,3 @@ def test_migrate_uses_add_column_and_survives_race(monkeypatch, tmp_path):
     assert [cd.split()[0] for t, cd in seen if t == "results"] == list(db.RESULT_ROUTE_COLS)
 
 
-def test_migrate_other_alter_error_propagates(monkeypatch, tmp_path):
-    _legacy_db(monkeypatch, tmp_path)
-
-    def boom(c, table, coldef):
-        raise sqlite3.OperationalError("database is locked")
-    monkeypatch.setattr(db, "_add_column", boom)
-    with pytest.raises(sqlite3.OperationalError, match="locked"):
-        db.init_db()

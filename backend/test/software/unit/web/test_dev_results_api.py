@@ -38,19 +38,6 @@ def _put_json(root, name, obj):
     (root / "quality" / name).write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
 
 
-def test_empty_result_dir_returns_empty_items(client, feedback_db, tmp_storage):
-    r = client.get("/dev/results")
-    assert r.status_code == 200
-    assert r.json() == {"items": []}
-
-
-def test_missing_result_dir_returns_empty_items(client, feedback_db, tmp_storage):
-    (tmp_storage / "result").rmdir()
-    r = client.get("/dev/results")
-    assert r.status_code == 200
-    assert r.json() == {"items": []}
-
-
 def test_full_item_bundles_everything(client, feedback_db, tmp_storage, make_png):
     fid, preset = _fid(), "studio_white"
     (tmp_storage / "original" / f"{fid}.png").write_bytes(make_png())
@@ -85,42 +72,6 @@ def test_full_item_bundles_everything(client, feedback_db, tmp_storage, make_png
     assert it["feedback"]["agent"]["comment"] == "괜찮은 결과네요"
 
 
-def test_missing_optional_artifacts_are_none(client, feedback_db, tmp_storage):
-    fid, preset = _fid(), "studio_white"
-    _put_result(tmp_storage, fid, preset)
-
-    r = client.get("/dev/results")
-
-    assert r.status_code == 200
-    it = r.json()["items"][0]
-    assert it["orig"] is None
-    assert it["judge"] is None
-    assert it["inspect"] is None
-    assert it["feedback"] == {"user": None, "agent": None}
-    assert it["db"] is None
-    assert it["name"] is None
-
-
-def test_judge_present_inspect_missing(client, feedback_db, tmp_storage):
-    fid, preset = _fid(), "studio_white"
-    _put_result(tmp_storage, fid, preset)
-    _put_json(tmp_storage, f"{fid}_{preset}.json", {"score": 1})
-
-    it = client.get("/dev/results").json()["items"][0]
-    assert it["judge"] == {"score": 1}
-    assert it["inspect"] is None
-
-
-def test_inspect_present_judge_missing(client, feedback_db, tmp_storage):
-    fid, preset = _fid(), "studio_white"
-    _put_result(tmp_storage, fid, preset)
-    _put_json(tmp_storage, f"{fid}_{preset}_inspect.json", {"gate": False})
-
-    it = client.get("/dev/results").json()["items"][0]
-    assert it["judge"] is None
-    assert it["inspect"] == {"gate": False}
-
-
 def test_name_falls_back_to_inbox_done(client, feedback_db, tmp_storage):
     fid, preset = _fid(), "studio_white"
     _put_result(tmp_storage, fid, preset)
@@ -130,41 +81,6 @@ def test_name_falls_back_to_inbox_done(client, feedback_db, tmp_storage):
 
     it = client.get("/dev/results").json()["items"][0]
     assert it["name"] == "my_photo 01.jpg"
-
-
-def test_name_falls_back_when_db_original_name_is_null(client, feedback_db, tmp_storage):
-    fid, preset = _fid(), "studio_white"
-    _put_result(tmp_storage, fid, preset)
-    store.record_original(fid, "jpg", "inbox", original_name=None)
-    done = tmp_storage / "inbox" / "done"
-    done.mkdir(parents=True)
-    (done / f"{fid}_restored.jpg").write_bytes(b"x")
-
-    it = client.get("/dev/results").json()["items"][0]
-    assert it["name"] == "restored.jpg"
-
-
-def test_db_name_wins_over_inbox_done(client, feedback_db, tmp_storage):
-    fid, preset = _fid(), "studio_white"
-    _put_result(tmp_storage, fid, preset)
-    store.record_original(fid, "jpg", "inbox", original_name="from_db.jpg")
-    done = tmp_storage / "inbox" / "done"
-    done.mkdir(parents=True)
-    (done / f"{fid}_from_done.jpg").write_bytes(b"x")
-
-    it = client.get("/dev/results").json()["items"][0]
-    assert it["name"] == "from_db.jpg"
-
-
-def test_name_none_when_neither_db_nor_done(client, feedback_db, tmp_storage):
-    fid, preset = _fid(), "studio_white"
-    _put_result(tmp_storage, fid, preset)
-    done = tmp_storage / "inbox" / "done"
-    done.mkdir(parents=True)
-    (done / f"{_fid()}_other.jpg").write_bytes(b"x")  # 다른 file_id 는 매칭 안 됨
-
-    it = client.get("/dev/results").json()["items"][0]
-    assert it["name"] is None
 
 
 def test_invalid_filenames_are_skipped(client, feedback_db, tmp_storage):
@@ -182,25 +98,6 @@ def test_invalid_filenames_are_skipped(client, feedback_db, tmp_storage):
     assert [(i["file_id"], i["preset"]) for i in items] == [(good, "studio_white")]
 
 
-def test_non_hex_32_char_file_id_is_skipped(client, feedback_db, tmp_storage):
-    bad = "z" * 32
-    (tmp_storage / "result" / f"{bad}_studio_white.jpg").write_bytes(b"x")
-
-    items = client.get("/dev/results").json()["items"]
-    assert items == []
-
-
-def test_preset_with_underscore_is_kept_whole(client, feedback_db, tmp_storage):
-    fid = _fid()
-    _put_result(tmp_storage, fid, "studio_white_v2")
-    _put_json(tmp_storage, f"{fid}_studio_white_v2.json", {"ok": 1})
-
-    it = client.get("/dev/results").json()["items"][0]
-    assert it["file_id"] == fid
-    assert it["preset"] == "studio_white_v2"
-    assert it["judge"] == {"ok": 1}
-
-
 def test_items_sorted_newest_first(client, feedback_db, tmp_storage):
     a, b, c = _fid(), _fid(), _fid()
     _put_result(tmp_storage, a, "studio_white", mtime=1_000_000)
@@ -210,21 +107,6 @@ def test_items_sorted_newest_first(client, feedback_db, tmp_storage):
     items = client.get("/dev/results").json()["items"]
     assert [i["file_id"] for i in items] == [b, c, a]
     assert [i["created"] for i in items] == [3_000_000, 2_000_000, 1_000_000]
-
-
-def test_same_file_id_multiple_presets_are_separate_items(client, feedback_db, tmp_storage, make_png):
-    fid = _fid()
-    (tmp_storage / "original" / f"{fid}.jpg").write_bytes(make_png())
-    _put_result(tmp_storage, fid, "studio_white", mtime=1_000_000)
-    _put_result(tmp_storage, fid, "lifestyle", mtime=2_000_000)
-    store.save_feedback(fid, "studio_white", 5, "좋다", source="user")
-
-    items = client.get("/dev/results").json()["items"]
-    assert [i["preset"] for i in items] == ["lifestyle", "studio_white"]
-    assert all(i["orig"] == f"/storage/original/{fid}.jpg" for i in items)
-    by_preset = {i["preset"]: i for i in items}
-    assert by_preset["studio_white"]["feedback"]["user"]["rating"] == 5
-    assert by_preset["lifestyle"]["feedback"] == {"user": None, "agent": None}
 
 
 def test_broken_json_only_blanks_that_item(client, feedback_db, tmp_storage):

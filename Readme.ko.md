@@ -185,7 +185,7 @@ backend/
     │   └── prompt_registry.py  # Langfuse 프롬프트, 실패하면 로컬 fragment로 fallback
     └── schemas/                # pydantic 요청/응답 (file_id 정규식 = 경로 순회 방어)
 
-scripts/    run_text_check.py (글자·로고 깨짐 확인), seed_langfuse_prompts.py …
+scripts/    seed_langfuse_prompts.py (로컬 프롬프트를 Langfuse 에 등록)
 frontend/   index.html (메인 앱) · test.html (dev 랩) · js/{api,render,main,dev}.js
 study/      날짜별 개발 로그: 버그 원인, 설계 판단, 뒤집은 결정
 ```
@@ -233,10 +233,10 @@ study/      날짜별 개발 로그: 버그 원인, 설계 판단, 뒤집은 결
 - 🧪 **테스트 랩 결과 한눈에 보기**: `test.html`에서 지금까지 돌린 결과 전부를
   원본과 나란히 보고, 게이트·가드·judge 점수·DINO·별점·하자 체크리스트를
   한 화면에서 비교한다 (필터·정렬·요약 포함)
-- 🔤 **글자·로고 깨짐 확인 (text_check)**: 물건 **위의** 글자만 읽고(배경·소매·소품
-  글자 제외, 철자 자동 교정 금지) 원본과 결과를 줄 단위로 비교한다
+- 🔤 **글자·로고 깨짐 확인**: analyze 가 물건 **위의** 글자만 읽고(배경·소매·소품 글자 제외,
+  철자 자동 교정 금지) 생성 프롬프트에 잠근 뒤, verify 가 생성본에서 지켜졌는지 게이트로 건다
 - 💸 **VLM 비용 제어**: 호출마다 생각(thinking) 수준을 따로 정한다. verify는 생각
-  토큰 상한 2048로 폭주를 막고, 단순 판단(classify, auto_feedback)은 생각을 끈다
+  토큰 상한 2048로 폭주를 막고, 단순 판단(auto_feedback)은 생각을 낮춘다
 
 ---
 

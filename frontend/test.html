@@ -123,14 +123,9 @@
   .chip { font-size:11px; font-weight:700; padding:2px 9px; border-radius:999px; background:#eef0f3; color:var(--ink); }
   .chip.ok { background:#e5f6ea; color:#1f7a3d; }
   .chip.bad { background:#fdeaea; color:#b42318; }
-  .tc-panes { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:10px; }
-  .tc-panes .pane img { cursor:zoom-in; max-height:420px; object-fit:contain; background:#fff; }
   .tc-texts { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:10px; font-size:12px; }
   @media (max-width:560px) { .tc-texts { grid-template-columns:1fr; } }
   .tc-texts h4 { margin:0 0 4px; font-size:11px; color:var(--muted); }
-  .tok { display:inline-block; margin:2px 3px 2px 0; padding:1px 6px; border-radius:4px; background:#f1efec; }
-  .tok.missing { background:#fdeaea; color:#b42318; text-decoration:line-through; }
-  .tok.added { background:#fff1e0; color:#b54708; }
   .tc-summary { margin-top:8px; font-size:12px; color:var(--muted); }
   .tc-empty { font-size:12px; color:var(--muted); }
 
@@ -177,32 +172,12 @@
 <div class="lab">
   <header class="lab-header">
     <h1>🧪 Carret 테스트 랩</h1>
-    <p class="sub">데이터셋 페어를 눈으로 선택하고, 정직성을 눈으로 검증합니다</p>
+    <p class="sub">결과 이미지로 검증을 돌리고, 파이프라인 결과를 눈으로 봅니다</p>
   </header>
-
-  <section class="section">
-    <div class="section-title">데이터셋 페어</div>
-    <div id="gallery" class="gallery"></div>
-
-    <p class="hint" style="margin-top:14px;">페어를 클릭하면 아래에 원본 | 결과가 나란히 표시됩니다</p>
-    <div class="viewer" id="pair-viewer">
-      <div class="pane"><span class="label">원본</span><img id="v-orig" alt="원본"></div>
-      <div class="pane"><span class="label">결과</span><img id="v-after" alt="결과"><div id="o-after"></div></div>
-    </div>
-
-    <div id="metrics" class="metrics"></div>
-    <div class="btn-row">
-      <button id="btn-anchor" class="btn btn-primary">anchor 테스트</button>
-      <button id="btn-all" class="btn btn-ghost">전체 페어</button>
-    </div>
-  </section>
 
   <section class="section">
     <div class="section-title">업로드 원본</div>
     <div id="origs" class="gallery"></div>
-    <div class="btn-row">
-      <button id="btn-detect" class="btn btn-ghost">선택 원본 detect</button>
-    </div>
   </section>
 
   <section class="section">
@@ -248,16 +223,6 @@
     </div>
     <div id="rs-summary" class="tc-head"></div>
     <div id="rs-list"><p class="tc-empty">불러오는 중...</p></div>
-  </section>
-
-  <section class="section">
-    <div class="section-title">텍스트/로고 비교 (storage/text_check)</div>
-    <p class="hint">input/ 원본과 output/ 생성 결과를 한꺼번에 나란히 봅니다. 이미지를 누르면 원본 크기로 열립니다.
-      <span class="tok missing">빨강</span> = 결과에서 사라진 글자, <span class="tok added">주황</span> = 결과에 새로 생긴 글자</p>
-    <div class="btn-row" style="margin-bottom:12px;">
-      <button id="btn-tc-reload" class="btn btn-ghost">새로고침</button>
-    </div>
-    <div id="tc-list"><p class="tc-empty">불러오는 중...</p></div>
   </section>
 
   <section class="section">

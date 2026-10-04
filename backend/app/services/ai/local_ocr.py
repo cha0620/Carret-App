@@ -4,7 +4,7 @@ VLM 으로 결과 글자를 다시 읽던 hard 가드(ocr_match)는 읽기 흔�
 여기는 결정론적 OCR 이라 같은 글자는 같게 읽는다 — 글자 보존을 값으로 모으는 eval 용
 (settings.local_ocr_guard 로 켤 때만).
 
-scripts/run_text_check.py 의 _easyocr_lines 와 같은 읽기 (언어·신뢰도 기준).
+언어 ko+en · 최소 신뢰도 MIN_CONF 로 읽는다.
 """
 import hashlib
 import io

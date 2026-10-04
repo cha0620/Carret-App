@@ -8,11 +8,14 @@ TEXT_LOCK(생성 전 부탁) + verify(주요 글자 "보이나")가 맡는다.
 
 관측용이라 계산 실패는 None 으로 삼킨다 — 이미 비용 든 생성을 신호 하나 때문에 되돌리지 않는다.
 """
+import logging
 from dataclasses import dataclass
 
 from app.core.tracing import score
 from app.services.ai import embedder
 from app.services.quality import metric
+
+logger = logging.getLogger("carret.guards")
 
 OCR_MATCH_THRESHOLD = 0.95   # 로컬 OCR(ocr_local) recall 기준 — 관측용
 DINO_BAND = (0.75, 0.995)
@@ -39,7 +42,7 @@ def dino_band_guard(orig: bytes, result: bytes) -> GuardResult | None:
     try:
         dino = embedder.cosine_similarity(orig, result)
     except Exception as e:
-        print(f"[guards] dino_band 계산 실패(soft, 무시): {e}")
+        logger.warning(f"[guards] dino_band 계산 실패(soft, 무시): {e}")
         return None
     g = GuardResult(name="dino_band", passed=lo <= dino <= hi,
                     value=dino, threshold=lo, severity="soft")
@@ -58,7 +61,7 @@ def item_guard(pair: tuple[bytes, bytes] | None) -> GuardResult | None:
     try:
         sim = embedder.cosine_similarity(*pair, name="item_dino_similarity")
     except Exception as e:
-        print(f"[guards] item_dino 계산 실패(soft, 무시): {e}")
+        logger.warning(f"[guards] item_dino 계산 실패(soft, 무시): {e}")
         return None
     g = GuardResult(name="item_dino", passed=sim >= ITEM_DINO_THRESHOLD,
                     value=sim, threshold=ITEM_DINO_THRESHOLD, severity="soft")
@@ -75,7 +78,7 @@ def item_patch_guard(pair: tuple[bytes, bytes] | None) -> GuardResult | None:
     try:
         sim = embedder.patch_similarity(*pair)
     except Exception as e:
-        print(f"[guards] item_patch 계산 실패(soft, 무시): {e}")
+        logger.warning(f"[guards] item_patch 계산 실패(soft, 무시): {e}")
         return None
     g = GuardResult(name="item_patch", passed=sim >= ITEM_PATCH_THRESHOLD,
                     value=sim, threshold=ITEM_PATCH_THRESHOLD, severity="soft")

@@ -1,0 +1,544 @@
+[
+  {
+    "file": "book.jpg",
+    "item": "book",
+    "gen_seconds": 8.3,
+    "result_size": [
+      1024,
+      1024
+    ],
+    "texts_before": [
+      "백은별 장편소설",
+      "시한부",
+      "“스스로 마지막 날을 정한 삶도 시한부일까?”",
+      "어른들은 모르는 트라우마를 간직한",
+      "아이들의 세상이 펼쳐진다.",
+      "#중2작가 #성장소설 #청소년우울증",
+      "바른북스",
+      "교보문고",
+      "청소년",
+      "부문 베스트셀러",
+      "1위",
+      "책씨앗",
+      "2024~2025",
+      "최고의 책",
+      "선정작"
+    ],
+    "texts_after": [
+      "백은별 장편소설",
+      "시한부",
+      "“스스로 마지막 날을 정한 삶도 시한부일까?”",
+      "어른들은 모르는 트라우마를 간직한",
+      "아이들의 세상이 펼쳐진다.",
+      "교보문고",
+      "청소년",
+      "부문 베스트셀러",
+      "1위",
+      "책읽는",
+      "2024~2025",
+      "최고의 책",
+      "선정작",
+      "바른북스"
+    ],
+    "text_recall": 0.909,
+    "changed": [
+      {
+        "before": "#중2작가 #성장소설 #청소년우울증",
+        "after": "백은별 장편소설",
+        "score": 0.296
+      },
+      {
+        "before": "책씨앗",
+        "after": "책읽는",
+        "score": 0.333
+      }
+    ],
+    "added_tokens": [
+      "책읽는"
+    ],
+    "guard_ocr_match": "FAIL",
+    "guard_no_added_text": "FAIL",
+    "reader": "vlm_item_text",
+    "vlm_compare": {
+      "items": [
+        {
+          "what": "메인 타이틀 '시한부' 및 저자명",
+          "status": "preserved",
+          "detail": "글꼴과 위치가 원본과 동일하게 잘 유지됨."
+        },
+        {
+          "what": "좌측 하단 노란색 배지 텍스트",
+          "status": "altered",
+          "detail": "'교보문고'가 '교달문고' 등으로 왜곡되고 글자가 뭉개짐."
+        },
+        {
+          "what": "좌측 하단 흰색 배지 텍스트",
+          "status": "altered",
+          "detail": "글자가 매우 흐릿하고 왜곡되어 알아보기 힘듦."
+        },
+        {
+          "what": "중앙 홍보 문구 '스스로 마지막 날을 정한 삶도 시한부일까?'",
+          "status": "preserved",
+          "detail": "텍스트가 거의 왜곡 없이 원본과 유사하게 유지됨."
+        },
+        {
+          "what": "하단 서브 문구 '어른들은 모르는 트라우마를 간직한...'",
+          "status": "altered",
+          "detail": "'트라우마를'이 '트라우미를'로 오타가 발생하고 일부 글자가 왜곡됨."
+        },
+        {
+          "what": "하단 해시태그 문구",
+          "status": "altered",
+          "detail": "글자가 심하게 흐려져 가독성이 거의 상실됨."
+        },
+        {
+          "what": "우측 하단 출판사 로고 '바른북스'",
+          "status": "altered",
+          "detail": "로고의 형태는 남아있으나 흐릿하게 페이드아웃 처리됨."
+        }
+      ],
+      "overall": "minor_damage",
+      "summary": "책의 메인 타이틀은 온전히 보존되었으나, 하단의 배지 및 홍보 문구들이 왜곡되거나 흐릿하게 변형되었습니다."
+    },
+    "ocr": {
+      "engine": "easyocr",
+      "before": [
+        "맥은별 장편소설",
+        "시한부"
+      ],
+      "after": [
+        "맥은밀 장현소설",
+        "시한부",
+        "어른들은 모르는 트라우미틀 감직한",
+        "2024~2025",
+        "임고미"
+      ],
+      "recall": 0.875,
+      "changed": [
+        {
+          "before": "맥은별 장편소설",
+          "after": "맥은밀 장현소설",
+          "score": 0.75
+        }
+      ],
+      "added": [
+        "어른들은 모르는 트라우미틀 감직한",
+        "2024~2025",
+        "임고미"
+      ]
+    }
+  },
+  {
+    "file": "graphic.jpg",
+    "item": "t-shirt",
+    "gen_seconds": 7.6,
+    "result_size": [
+      1024,
+      1024
+    ],
+    "texts_before": [
+      "STUDIO 1990's",
+      "BORN TO BE WILD SPIRIT",
+      "Where to place your",
+      "dream is truly important.",
+      "Light up your mind with",
+      "kindness in your soul.....",
+      "1993",
+      "MISS THE",
+      "SINCERITY",
+      "Made in the 90's rather",
+      "now with purpose",
+      "thinking.",
+      "\"The free spirit from the street is the excitement of adventure.\""
+    ],
+    "texts_after": [
+      "STUDI090's",
+      "BORN TO BE WILD SPIRIT",
+      "Whow te place your",
+      "dream is fully hespertere.",
+      "Light up your rabni with",
+      "bankroto to yoer cord...",
+      "1993",
+      "MISS THE",
+      "SINCERITY",
+      "Male in the Hit ordnat",
+      "olde vah HOO",
+      "Guating.",
+      "\"The flow battle from the shantes tunda on the excitement of of routers\"",
+      "and from bottom up"
+    ],
+    "text_recall": 0.763,
+    "changed": [
+      {
+        "before": "studio 1990's",
+        "after": "studi090's",
+        "score": 0.783
+      },
+      {
+        "before": "where to place your",
+        "after": "whow te place your",
+        "score": 0.811
+      },
+      {
+        "before": "dream is truly important.",
+        "after": "dream is fully hespertere.",
+        "score": 0.667
+      },
+      {
+        "before": "light up your mind with",
+        "after": "light up your rabni with",
+        "score": 0.851
+      },
+      {
+        "before": "kindness in your soul.....",
+        "after": "bankroto to yoer cord...",
+        "score": 0.44
+      },
+      {
+        "before": "made in the 90's rather",
+        "after": "male in the hit ordnat",
+        "score": 0.667
+      },
+      {
+        "before": "now with purpose",
+        "after": "whow te place your",
+        "score": 0.471
+      },
+      {
+        "before": "thinking.",
+        "after": "guating.",
+        "score": 0.588
+      },
+      {
+        "before": "\"the free spirit from the street is the excitement of adventure.\"",
+        "after": "\"the flow battle from the shantes tunda on the excitement of of routers\"",
+        "score": 0.642
+      }
+    ],
+    "added_tokens": [
+      "bankroto to yoer cord...",
+      "olde vah hoo",
+      "guating.",
+      "and from bottom up"
+    ],
+    "guard_ocr_match": "FAIL",
+    "guard_no_added_text": "FAIL",
+    "reader": "vlm_item_text",
+    "vlm_compare": {
+      "items": [
+        {
+          "what": "STUDI[10]90's & BORN TO BE WILD SPIRIT",
+          "status": "preserved",
+          "detail": "메인 타이틀 텍스트는 형태와 폰트가 거의 완벽하게 유지됨."
+        },
+        {
+          "what": "우측 설명 문단 (Where to place your dream...)",
+          "status": "altered",
+          "detail": "텍스트가 철자 오류 및 무의미한 알파벳 나열로 왜곡됨."
+        },
+        {
+          "what": "1993 & MISS THE SINCERITY",
+          "status": "preserved",
+          "detail": "중앙의 숫자와 하단 타이틀 텍스트는 원본과 동일하게 유지됨."
+        },
+        {
+          "what": "하단 세부 문구들",
+          "status": "altered",
+          "detail": "일부 단어가 다른 철자로 변형되거나 뭉개짐."
+        }
+      ],
+      "overall": "minor_damage",
+      "summary": "주요 타이틀과 이미지는 잘 보존되었으나, 세부 설명 문단들이 왜곡되거나 오타로 변경되었습니다."
+    },
+    "ocr": {
+      "engine": "easyocr",
+      "before": [],
+      "after": [
+        "STUDDgOs",
+        "BORM TO BE WILD SPIRIT",
+        "hapertonc",
+        "USg?",
+        "NS3 THE",
+        "SINCEIT"
+      ],
+      "recall": 1.0,
+      "changed": [],
+      "added": [
+        "studdgos",
+        "borm to be wild spirit",
+        "hapertonc",
+        "usg?",
+        "ns3 the",
+        "sinceit"
+      ]
+    }
+  },
+  {
+    "file": "polo.jpg",
+    "item": "polo shirt",
+    "gen_seconds": 8.3,
+    "result_size": [
+      1024,
+      1024
+    ],
+    "texts_before": [
+      "POLO",
+      "RALPH LAUREN",
+      "SLIM FIT"
+    ],
+    "texts_after": [
+      "POLO",
+      "RALPH LAUREN",
+      "SLIM FIT"
+    ],
+    "text_recall": 1.0,
+    "changed": [],
+    "added_tokens": [],
+    "guard_ocr_match": "pass",
+    "guard_no_added_text": "pass",
+    "reader": "vlm_item_text",
+    "vlm_compare": {
+      "items": [
+        {
+          "what": "neck label text",
+          "status": "preserved",
+          "detail": "The brand name on the neck label remains clear and unchanged."
+        },
+        {
+          "what": "embroidered chest logo",
+          "status": "preserved",
+          "detail": "The polo player logo on the chest is fully intact."
+        }
+      ],
+      "overall": "intact",
+      "summary": "제품의 목 라벨과 가슴 로고 모두 변형 없이 완벽하게 보존되었습니다."
+    },
+    "ocr": {
+      "engine": "easyocr",
+      "before": [],
+      "after": [
+        "POLO"
+      ],
+      "recall": 1.0,
+      "changed": [],
+      "added": [
+        "polo"
+      ]
+    }
+  },
+  {
+    "file": "rolex.jpg",
+    "item": "watch",
+    "gen_seconds": 7.1,
+    "result_size": [
+      1024,
+      1024
+    ],
+    "texts_before": [
+      "ROLEX",
+      "OYSTER PERPETUAL",
+      "DATEJUST",
+      "29",
+      "SUPERLATIVE CHRONOMETER",
+      "OFFICIALLY CERTIFIED"
+    ],
+    "texts_after": [
+      "ROLEX",
+      "OYSTER PERPETUAL",
+      "DATEJUST",
+      "29",
+      "SUPERLATIVE CHRONOMETER",
+      "OFFICIALLY CERTIFIED",
+      "SWISS MADE"
+    ],
+    "text_recall": 1.0,
+    "changed": [],
+    "added_tokens": [
+      "swiss made"
+    ],
+    "guard_ocr_match": "pass",
+    "guard_no_added_text": "FAIL",
+    "reader": "vlm_item_text",
+    "vlm_compare": {
+      "items": [
+        {
+          "what": "Rolex Crown Logo",
+          "status": "preserved",
+          "detail": "The crown logo at 12 o'clock is maintained with reasonable accuracy."
+        },
+        {
+          "what": "ROLEX text",
+          "status": "preserved",
+          "detail": "The brand name text is clearly legible and correctly spelled."
+        },
+        {
+          "what": "OYSTER PERPETUAL DATEJUST text",
+          "status": "altered",
+          "detail": "The model name text is distorted into illegible AI-generated characters."
+        },
+        {
+          "what": "SUPERLATIVE CHRONOMETER OFFICIALLY CERTIFIED text",
+          "status": "altered",
+          "detail": "The certification text on the lower half of the dial is replaced with gibberish."
+        },
+        {
+          "what": "Date number 29",
+          "status": "preserved",
+          "detail": "The date display in the window is preserved clearly."
+        }
+      ],
+      "overall": "minor_damage",
+      "summary": "AI 편집 과정에서 시계 다이얼 내부의 세부 텍스트가 왜곡되거나 알아볼 수 없는 글자로 변형되었습니다."
+    },
+    "ocr": {
+      "engine": "easyocr",
+      "before": [],
+      "after": [
+        "29",
+        "Jut"
+      ],
+      "recall": 1.0,
+      "changed": [],
+      "added": [
+        "29",
+        "jut"
+      ]
+    }
+  },
+  {
+    "file": "s.jpg",
+    "item": "certificate template",
+    "gen_seconds": 7.8,
+    "result_size": [
+      1024,
+      1024
+    ],
+    "texts_before": [
+      "제 호",
+      "상 장",
+      "초등학교",
+      "입 상",
+      "제 학년 반",
+      "위 어린이는 대회에서 위와 같이",
+      "입상하였기에 상장을 드립니다.",
+      "賞",
+      "20 년 1월 1일",
+      "초등학교장"
+    ],
+    "texts_after": [
+      "제 호",
+      "상 장",
+      "초등학교",
+      "입 상",
+      "제 학년 반",
+      "위 어린이는 대회에서 위와 같이",
+      "입상하였기에 상장을 드립니다.",
+      "賞",
+      "20 년 1월 1일",
+      "초등학교장"
+    ],
+    "text_recall": 1.0,
+    "changed": [],
+    "added_tokens": [],
+    "guard_ocr_match": "pass",
+    "guard_no_added_text": "pass",
+    "reader": "vlm_item_text",
+    "vlm_compare": {
+      "items": [
+        {
+          "what": "상 장 타이틀 텍스트",
+          "status": "preserved",
+          "detail": "중앙 상단의 대형 '상 장' 글자가 왜곡 없이 그대로 유지되었습니다."
+        },
+        {
+          "what": "본문 및 안내 텍스트",
+          "status": "preserved",
+          "detail": "'제 호', '초등학교', '입 상' 등 모든 안내 문구와 본문 텍스트가 동일하게 보존되었습니다."
+        },
+        {
+          "what": "상단 봉황 및 태극 문양",
+          "status": "preserved",
+          "detail": "상단의 황금색 봉황 한 쌍과 태극 문양이 형태 변화 없이 깨끗하게 유지되었습니다."
+        },
+        {
+          "what": "하단 금박 리본 문양",
+          "status": "preserved",
+          "detail": "좌측 하단의 '賞' 자가 새겨진 금박 메달과 빨간색 리본 문양이 원본과 동일합니다."
+        }
+      ],
+      "overall": "intact",
+      "summary": "제품에 인쇄된 모든 텍스트, 로고, 문양이 왜곡이나 손상 없이 완벽하게 보존되었습니다."
+    },
+    "ocr": {
+      "engine": "easyocr",
+      "before": [
+        "상   장",
+        "입   상",
+        "학년",
+        "위 어린이는",
+        "대회대서 위와 같이",
+        "입상하없기대",
+        "상장올  드럽니다.",
+        "20",
+        "년 1 월",
+        "1 일",
+        "초 등 학 교 장"
+      ],
+      "after": [
+        "상   장",
+        "초등학교",
+        "입",
+        "상",
+        "제   확년   반",
+        "'",
+        "위 어린이는",
+        "대회에서 위와 같이",
+        "입상하워기에",
+        "상장올   드립니다.",
+        "20",
+        "년  1월",
+        "1 일",
+        "초 등 학 교 장"
+      ],
+      "recall": 0.834,
+      "changed": [
+        {
+          "before": "입 상",
+          "after": "입",
+          "score": 0.5
+        },
+        {
+          "before": "학년",
+          "after": "초등학교",
+          "score": 0.333
+        },
+        {
+          "before": "대회대서 위와 같이",
+          "after": "대회에서 위와 같이",
+          "score": 0.9
+        },
+        {
+          "before": "입상하없기대",
+          "after": "입상하워기에",
+          "score": 0.667
+        },
+        {
+          "before": "상장올 드럽니다.",
+          "after": "상장올 드립니다.",
+          "score": 0.889
+        },
+        {
+          "before": "년 1 월",
+          "after": "년 1월",
+          "score": 0.889
+        }
+      ],
+      "added": [
+        "입",
+        "상",
+        "제 확년 반",
+        "'"
+      ]
+    }
+  }
+]

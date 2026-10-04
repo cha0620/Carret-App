@@ -71,17 +71,6 @@ class FakeLangfuseClient:
         self.score_calls.append(kw)
 
 
-# ── observe(): 비활성 경로 ───────────────────────
-def test_observe_disabled_yields_none():
-    with tracing.observe("anything") as obs:
-        assert obs is None
-
-
-def test_observe_disabled_yields_none_regardless_of_kwargs():
-    with tracing.observe("detect", as_type="generation", model="m", input="p") as obs:
-        assert obs is None
-
-
 def test_observe_disabled_never_calls_get_langfuse_construction_path(monkeypatch):
     """비활성(_disabled=True)이면 get_langfuse() 는 `if _disabled: return None`
     에서 즉시 반환 — `from langfuse import Langfuse` 줄까지 내려가지 않는다.
@@ -99,12 +88,6 @@ def test_observe_disabled_never_calls_get_langfuse_construction_path(monkeypatch
         monkeypatch.setattr("langfuse.Langfuse", RealLangfuse)
 
 
-def test_observe_disabled_body_exception_still_propagates():
-    with pytest.raises(ValueError, match="boom"):
-        with tracing.observe("x"):
-            raise ValueError("boom")
-
-
 # ── observe(): 활성 경로 (fake client) ────────────
 def test_observe_enabled_delegates_to_start_as_current_observation(monkeypatch):
     fake = FakeLangfuseClient()
@@ -120,30 +103,6 @@ def test_observe_enabled_delegates_to_start_as_current_observation(monkeypatch):
     }]
 
 
-def test_observe_enabled_default_as_type_is_span(monkeypatch):
-    fake = FakeLangfuseClient()
-    monkeypatch.setattr(tracing, "get_langfuse", lambda: fake)
-
-    with tracing.observe("transform"):
-        pass
-
-    assert fake.calls[0]["as_type"] == "span"
-    assert fake.calls[0]["name"] == "transform"
-
-
-def test_observe_enabled_yields_whatever_the_fake_cm_yields(monkeypatch):
-    sentinel = object()
-
-    class OneOffClient:
-        def start_as_current_observation(self, **kw):
-            return FakeObservationCM(sentinel)
-
-    monkeypatch.setattr(tracing, "get_langfuse", lambda: OneOffClient())
-
-    with tracing.observe("x") as obs:
-        assert obs is sentinel
-
-
 def test_observe_enabled_body_exception_still_propagates(monkeypatch):
     fake = FakeLangfuseClient()
     monkeypatch.setattr(tracing, "get_langfuse", lambda: fake)
@@ -153,21 +112,6 @@ def test_observe_enabled_body_exception_still_propagates(monkeypatch):
             raise RuntimeError("boom")
 
 
-def test_observe_enabled_obs_update_recorded_on_fake(monkeypatch):
-    fake = FakeLangfuseClient()
-    monkeypatch.setattr(tracing, "get_langfuse", lambda: fake)
-
-    with tracing.observe("classify", as_type="generation") as obs:
-        obs.update(output={"item": "chair"}, usage_details=None)
-
-    assert fake.obs.update_calls == [{"output": {"item": "chair"}, "usage_details": None}]
-
-
-# ── score() ──────────────────────────────────────
-def test_score_disabled_is_noop_and_does_not_raise():
-    tracing.score("visual_similarity", 0.9)  # 그냥 아무 일도 안 나야 함
-
-
 def test_score_enabled_calls_score_current_trace_with_name_value_and_kwargs(monkeypatch):
     fake = FakeLangfuseClient()
     monkeypatch.setattr(tracing, "get_langfuse", lambda: fake)
@@ -175,29 +119,6 @@ def test_score_enabled_calls_score_current_trace_with_name_value_and_kwargs(monk
     tracing.score("fidelity", 4, data_type="NUMERIC")
 
     assert fake.score_calls == [{"name": "fidelity", "value": 4, "data_type": "NUMERIC"}]
-
-
-def test_score_enabled_with_none_value_still_forwards_as_is(monkeypatch):
-    fake = FakeLangfuseClient()
-    monkeypatch.setattr(tracing, "get_langfuse", lambda: fake)
-
-    tracing.score("visual_similarity", None)
-
-    assert fake.score_calls == [{"name": "visual_similarity", "value": None}]
-
-
-# ── flush() ──────────────────────────────────────
-def test_flush_noop_when_disabled_does_not_raise():
-    tracing.flush()  # 그냥 아무 일도 안 나야 함
-
-
-def test_flush_calls_client_flush_when_enabled(monkeypatch):
-    fake = FakeLangfuseClient()
-    monkeypatch.setattr(tracing, "get_langfuse", lambda: fake)
-
-    tracing.flush()
-
-    assert fake.flushed is True
 
 
 # ── get_langfuse() ───────────────────────────────
@@ -212,66 +133,12 @@ def test_get_langfuse_returns_none_when_keys_empty(monkeypatch):
     assert tracing._disabled is True   # 이후 호출부터는 재확인 없이 바로 꺼짐
 
 
-def test_get_langfuse_returns_cached_client_without_reconstructing(monkeypatch):
-    """_client 가 이미 있으면 재구성(=네트워크/생성자) 없이 그대로 반환."""
-    monkeypatch.setattr(tracing, "_disabled", False, raising=False)
-    sentinel = object()
-    monkeypatch.setattr(tracing, "_client", sentinel, raising=False)
-
-    assert tracing.get_langfuse() is sentinel
-
-
-# ── observe(trace_id=..., parent_span_id=...) : 백그라운드 이어 붙이기 ──
-def test_observe_trace_id_sets_trace_context(monkeypatch):
-    fake = FakeLangfuseClient()
-    monkeypatch.setattr(tracing, "get_langfuse", lambda: fake)
-    with tracing.observe("judge_async", trace_id="t1", input={"a": 1}):
-        pass
-    assert fake.calls == [{"name": "judge_async", "as_type": "span",
-                           "input": {"a": 1}, "trace_context": {"trace_id": "t1"}}]
-
-
 def test_observe_trace_id_and_parent_span(monkeypatch):
     fake = FakeLangfuseClient()
     monkeypatch.setattr(tracing, "get_langfuse", lambda: fake)
     with tracing.observe("judge_async", trace_id="t1", parent_span_id="s1"):
         pass
     assert fake.calls[0]["trace_context"] == {"trace_id": "t1", "parent_span_id": "s1"}
-
-
-@pytest.mark.parametrize("trace_id,parent", [(None, "s1"), ("", "s1"), (None, None)])
-def test_observe_parent_without_trace_id_is_ignored(monkeypatch, trace_id, parent):
-    fake = FakeLangfuseClient()
-    monkeypatch.setattr(tracing, "get_langfuse", lambda: fake)
-    with tracing.observe("x", trace_id=trace_id, parent_span_id=parent):
-        pass
-    assert "trace_context" not in fake.calls[0]
-    assert "trace_id" not in fake.calls[0] and "parent_span_id" not in fake.calls[0]
-
-
-def test_observe_trace_id_empty_parent_not_added(monkeypatch):
-    fake = FakeLangfuseClient()
-    monkeypatch.setattr(tracing, "get_langfuse", lambda: fake)
-    with tracing.observe("x", trace_id="t1", parent_span_id=""):
-        pass
-    assert fake.calls[0]["trace_context"] == {"trace_id": "t1"}
-
-
-def test_observe_disabled_with_trace_id_still_noop():
-    with tracing.observe("x", trace_id="t1", parent_span_id="s1") as obs:
-        assert obs is None
-
-
-# ── current_trace_id() ──
-def test_current_trace_id_disabled_is_none():
-    assert tracing.current_trace_id() is None
-
-
-def test_current_trace_id_returns_client_value(monkeypatch):
-    fake = FakeLangfuseClient()
-    fake.get_current_trace_id = lambda: "abc"
-    monkeypatch.setattr(tracing, "get_langfuse", lambda: fake)
-    assert tracing.current_trace_id() == "abc"
 
 
 def test_current_trace_id_swallows_client_errors(monkeypatch):

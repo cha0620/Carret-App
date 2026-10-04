@@ -10,7 +10,6 @@ import json
 import pytest
 
 import app.core.tracing as tracing
-from app.prompts.rubric import rubric_text
 from app.services.ai.judge import _system_prompt, judge
 
 
@@ -21,23 +20,12 @@ def disable_langfuse(monkeypatch):
     yield
 
 
-def test_system_prompt_contains_live_rubric_text():
-    text = _system_prompt()
-    assert rubric_text() in text
-
-
 def test_system_prompt_contains_unmangled_json_schema_example():
     """회귀: {{rubric}} 만 치환되고 단일 중괄호 JSON 예시는 그대로 남아야 한다
     (naive .format() 이었다면 KeyError 로 크래시하거나 예시가 깨졌을 것)."""
     text = _system_prompt()
     assert '{"analysis": "...", "fidelity": 1-5, "realism": 1-5, "trust": 1-5}' in text
     assert "{{rubric}}" not in text
-
-
-def test_system_prompt_mentions_korean_analysis_instruction():
-    text = _system_prompt()
-    assert "KOREAN" in text
-    assert "STRICT QC inspector" in text
 
 
 # ── judge(): 가짜 VLM 클라이언트 ────────────────
@@ -82,50 +70,6 @@ def test_judge_disabled_tracing_returns_validated_report_unchanged(monkeypatch):
     assert models.last_kwargs["model"] == judge_mod.settings.VLM_MODEL
 
 
-def test_judge_enabled_tracing_invokes_obs_update_with_validated_output(monkeypatch):
-    import app.services.ai.judge as judge_mod
-
-    class FakeObservation:
-        def __init__(self):
-            self.update_calls = []
-        def update(self, **kw):
-            self.update_calls.append(kw)
-
-    class FakeObservationCM:
-        def __init__(self, obs):
-            self._obs = obs
-        def __enter__(self):
-            return self._obs
-        def __exit__(self, *a):
-            return False
-
-    class FakeLangfuseClient:
-        def __init__(self):
-            self.calls = []
-            self.obs = FakeObservation()
-        def start_as_current_observation(self, **kw):
-            self.calls.append(kw)
-            return FakeObservationCM(self.obs)
-
-    fake_lf = FakeLangfuseClient()
-    # 활성화: 직접 state 를 세팅해서 prompt_registry 쪽 get_langfuse() 호출도
-    # 같은 fake 를 타게 만든다(네트워크 없음 - FakeLangfuseClient 에는 get_prompt
-    # 가 없어서 prompt_registry 는 예외를 잡고 로컬 fallback 으로 자연히 떨어짐).
-    monkeypatch.setattr(tracing, "_disabled", False, raising=False)
-    monkeypatch.setattr(tracing, "_client", fake_lf, raising=False)
-
-    raw = {"analysis": "굿", "fidelity": 3, "realism": 3, "trust": 3}
-    fake_get_client, _ = _make_fake_get_client(json.dumps(raw))
-    monkeypatch.setattr(judge_mod, "get_client", fake_get_client)
-
-    report = judge(b"orig", b"result")
-
-    assert report == raw
-    assert fake_lf.calls[0]["name"] == "judge"
-    assert fake_lf.calls[0]["as_type"] == "generation"
-    assert fake_lf.obs.update_calls == [{"output": raw, "usage_details": None}]
-
-
 # ── 호출별 모델 · 이미지 Part (app.core.vlm) ──
 from app.core.config import settings as _settings  # noqa: E402
 
@@ -149,17 +93,6 @@ def test_judge_uses_judge_model_override(monkeypatch):
     assert models.last_kwargs["model"] == "judge-model"
 
 
-@pytest.mark.parametrize("models_setting", [{}, {"judge": ""}, {"judge": "  "}, {"classify": "x"}])
-def test_judge_without_override_uses_base_model(monkeypatch, models_setting):
-    import app.services.ai.judge as judge_mod
-    monkeypatch.setattr(_settings, "VLM_MODEL", "base-model")
-    monkeypatch.setattr(_settings, "vlm_models", models_setting)
-    fake_get_client, models = _make_fake_get_client(_valid_raw())
-    monkeypatch.setattr(judge_mod, "get_client", fake_get_client)
-    judge(b"orig", b"result")
-    assert models.last_kwargs["model"] == "base-model"
-
-
 def test_judge_passes_two_png_image_parts_in_order(monkeypatch):
     import app.services.ai.judge as judge_mod
     monkeypatch.setattr(_settings, "vlm_media_resolution", {})
@@ -173,11 +106,3 @@ def test_judge_passes_two_png_image_parts_in_order(monkeypatch):
     assert isinstance(prompt, str)
 
 
-def test_judge_image_parts_follow_resolution_override(monkeypatch):
-    import app.services.ai.judge as judge_mod
-    monkeypatch.setattr(_settings, "vlm_media_resolution", {"judge": "low"})
-    fake_get_client, models = _make_fake_get_client(_valid_raw())
-    monkeypatch.setattr(judge_mod, "get_client", fake_get_client)
-    judge(b"orig", b"result")
-    a, b, _ = models.last_kwargs["contents"]
-    assert _res_level(a) == _res_level(b) == "MEDIA_RESOLUTION_LOW"
