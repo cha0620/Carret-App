@@ -18,31 +18,6 @@ def disable_langfuse(monkeypatch):
     yield
 
 
-def test_detect_prompt_contains_item_and_joined_hints():
-    text = P.detect_prompt("hoodie", ["stain", "tear", "pilling"])
-    assert "hoodie" in text
-    assert "stain, tear, pilling" in text
-
-
-def test_verify_prompt_contains_item_checklist_and_anchor_lines():
-    anchors = [
-        {"what": "얼룩", "where": "앞면"},
-        {"what": "찢어짐", "where": "소매"},
-    ]
-    text = P.verify_prompt(anchors, "hoodie", ["stain", "tear"])
-    assert "hoodie" in text
-    assert "stain, tear" in text
-    assert "- 얼룩 (앞면)" in text
-    assert "- 찢어짐 (소매)" in text
-
-
-def test_verify_prompt_no_placeholders_leak():
-    text = P.verify_prompt([{"what": "a", "where": "b"}], "item", ["c"])
-    assert "{{item}}" not in text
-    assert "{{checklist}}" not in text
-    assert "{{lines}}" not in text
-
-
 def test_analyze_template_asks_for_every_field_parsed_by_detector():
     t = P.analyze_template()
     for word in ("item", "considered", "item_box_2d", "photo_type", "wear_level", "watermark",
@@ -66,10 +41,9 @@ def test_analyze_template_has_no_unfilled_placeholders():
 
 def test_verify_prompt_marks_compiles_item_and_lines():
     anchors = [{"what": "BRAUN", "where": "front"}, {"what": "Series 9", "where": "side"}]
-    text = P.verify_prompt(anchors, "shaver", ["stain", "tear"], marks=True)
+    text = P.verify_prompt(anchors, "shaver")
     assert "shaver" in text and "- BRAUN (front)" in text and "- Series 9 (side)" in text
     assert "{{" not in text
-    assert "stain" not in text                  # 하자 체크리스트는 넣지 않는다
 
 
 def test_text_lock_skips_unreadable_lines():

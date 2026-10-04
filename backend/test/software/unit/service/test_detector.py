@@ -1,6 +1,6 @@
 """app.services.ai.detector - 순수 함수 + `_call`(VLM 호출 래퍼) 트레이싱 투명성.
 
-`_call`/`match_anchors` 는 공용 클라이언트 `app.core.vlm.get_client()` 를 쓰는데,
+`_call` 은 공용 클라이언트 `app.core.vlm.get_client()` 를 쓰는데,
 detector 모듈이 `from app.core.vlm import get_client` 로 이름을 가져오므로
 `detector.get_client` 자체를 가짜 클라이언트를 돌려주는 함수로 바꿔치기해서
 실제 네트워크 없이 검증한다.
@@ -12,7 +12,7 @@ import pytest
 import app.core.tracing as tracing
 from app.services.ai import detector
 from app.services.ai.detector import (
-    _box, _call, _usage, all_preserved, check_photo, match_anchors,
+    _box, _call, _usage, all_preserved, check_photo,
 )
 
 
@@ -134,7 +134,6 @@ def test_verify_normalizes_string_bool_and_bad_boxes(monkeypatch):
     assert detector.all_preserved(checks, expected=3) is False
 
 
-# ── detect_defects: 빈/깨진 응답 — strict 면 실패, 기본은 [] ──
 MALFORMED = [
     {},                              # JSON 파싱 실패 → _call 이 {} 반환
     {"defects": None},
@@ -147,23 +146,6 @@ MALFORMED = [
 ]
 
 
-@pytest.mark.parametrize("resp", MALFORMED)
-def test_detect_malformed_response_raises_when_strict(monkeypatch, resp):
-    from app.services.ai import detector
-    monkeypatch.setattr(detector, "_call", lambda *a, **k: resp)
-    with pytest.raises(ValueError):
-        detector.detect_defects(b"img", strict=True)
-
-
-@pytest.mark.parametrize("resp", MALFORMED)
-def test_detect_malformed_response_returns_empty_by_default(monkeypatch, resp):
-    """eval/dev 호출부(기본 strict=False)는 예전처럼 [] — 배치가 한 건에 멈추지 않게."""
-    from app.services.ai import detector
-    monkeypatch.setattr(detector, "_call", lambda *a, **k: resp)
-    assert detector.detect_defects(b"img") == []
-    assert detector.detect_defects(b"img", "chair", ["stain"], strict=False) == []
-
-
 # ── read_item_text(strict=...) : 가드용 결과 읽기 ──
 @pytest.mark.parametrize("resp", [{}, {"texts": None},])
 def test_read_item_text_strict_raises_without_texts_list(monkeypatch, resp):
@@ -171,18 +153,6 @@ def test_read_item_text_strict_raises_without_texts_list(monkeypatch, resp):
     monkeypatch.setattr(detector, "_call", lambda *a, **k: resp)
     with pytest.raises(ValueError):
         detector.read_item_text(b"img", "shoe", strict=True)
-
-
-def test_match_anchors_bad_json_treats_all_as_new(monkeypatch):
-    import app.services.ai.detector as detector
-    fake_get_client, _ = _make_fake_get_client("{{nope")
-    monkeypatch.setattr(detector, "get_client", fake_get_client)
-    orig = [{"what": "a", "where": "x"}]
-    result = [{"what": "b", "where": "y"}]
-
-    m = match_anchors(orig, result)
-
-    assert m == {"matched": [], "missed": orig, "new": result}
 
 
 # ── 호출 이름별 이미지 해상도 · 모델 (app.core.vlm) ──
@@ -206,24 +176,6 @@ def test_call_uses_per_call_model_override(monkeypatch, vlm_defaults):
     assert models.last_kwargs["model"] == "lite-model"
     _call(b"i", "p", "detect")
     assert models.last_kwargs["model"] == "base-model"
-
-
-# ══ detect_full: 하자 + text_level + item_box (VLM 1회) ══
-_STAIN = {"category": "surface_damage", "what": "stain", "where": "sleeve"}
-_PRINT = {"category": "print", "what": "logo: NIKE", "where": "chest"}
-
-
-def _full(monkeypatch, resp, **kw):
-    from app.services.ai import detector
-    monkeypatch.setattr(detector, "_call", lambda *a, **k: resp)
-    return detector.detect_full(b"img", **kw)
-
-
-def test_detect_full_none_with_print_anchor_becomes_simple(monkeypatch, capsys):
-    """모순(글자 없음 + print 하자) — 글자 보호를 끄지 않도록 simple."""
-    out = _full(monkeypatch, {"defects": [_STAIN, _PRINT], "text_level": "none"})
-    assert out["text_level"] == "simple"
-    assert [a["category"] for a in out["anchors"]] == ["surface_damage", "print"]
 
 
 # ══ analyze(): 파이프라인 첫 단계 (VLM 1회, 예전 classify + detect) ══
@@ -304,10 +256,10 @@ def test_analyze_null_what_is_dropped_like_empty(monkeypatch):
 @pytest.mark.parametrize("raw", [
     # 예전 scene 값·옛 플래그 이름은 photo_type 으로 인정하지 않는다
     "partial_view", "single_item", "multiple_items",])
-def test_analyze_photo_type_unknown_falls_back_to_product_and_logs(monkeypatch, capsys, raw):
+def test_analyze_photo_type_unknown_falls_back_to_product_and_logs(monkeypatch, caplog, raw):
     _analyze_with(monkeypatch, {"marks": [], "photo_type": raw})
     assert detector.analyze(b"x")["photo_type"] == "product"
-    assert "photo_type 없음/모름" in capsys.readouterr().out
+    assert "photo_type 없음/모름" in caplog.text
 
 
 def test_analyze_item_cut_off_missing_is_false(monkeypatch):
@@ -351,3 +303,16 @@ def test_parse_objects_for_sale_false_like_values(raw, expected):
     assert out[0]["for_sale"] is expected
 
 
+
+
+# ── confidence (10-04) ─────────────────────────
+@pytest.mark.parametrize("conf,expected", [
+    (0.8, 0.8), (1, 1.0), (True, None), ("0.9", None), (1.5, None),
+])
+def test_check_photo_keeps_only_valid_confidence(monkeypatch, conf, expected):
+    monkeypatch.setattr(detector, "_call", lambda *a, **k: {
+        "valid": True, "reason": "", "confidence": conf})
+    out = check_photo(b"img")
+    assert out.get("confidence") == expected
+    if expected is not None:
+        assert type(out["confidence"]) is float

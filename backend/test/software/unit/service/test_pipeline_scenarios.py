@@ -618,3 +618,12 @@ def test_added_text_call_failure_does_not_block(w):
     assert out["mode"] == "generate" and out["gate_passed"] is True and "verify" in w.calls
 
 
+
+
+def test_verify_call_failure_goes_composite_without_waiting_added_text(w):
+    """verify 호출이 실패하면 이미 실패 — 병렬 added_text 결과는 기다리지도 쓰지도 않는다 (10-04)."""
+    w.verifies = [TypeError("bug")] * 4
+    w.added = [ADDED] * 4
+    out = w.run()
+    assert out["mode"] == "composite" and out["composite_reason"] == "verify_failed"
+    assert w.count("generate") == 1 and not out.get("added_text")

@@ -4,24 +4,26 @@
   analyze          : 원본 → 물건·아이덴티티 마크·사진 유형·하자 수준·워터마크·글자 수준 (VLM 1회)
   verify_and_locate: 결과 → 보존 여부 + 결과 좌표 (말풍선용)
 
-측정 경로 (eval/dev 전용 — 파이프라인과 분리, 절대 삭제 금지):
-  classify / detect_full / detect_defects: 옛 앞단 (하자 앵커 recall·precision eval, run_text_check)
-  detect_with_boxes: 좌표付き 검출 (recall/precision 계측)
-  match_anchors    : 원본 vs 결과 의미 매칭 → matched/missed/new
+  added_text       : 원본 · 생성본 비교 → 새로 생긴 글자 · 로고
+  check_photo      : 생성본 구도 잘림 · 자막
+  read_item_text   : 원본 물건 위 글자 (analyze 가 texts 를 주기 전에 저장된 옛 분석만)
+  classify_views / group_objects : 여러 장 업로드 — 각도 · 물건별 묶기
 
 공유: bubbles / all_preserved / _box / _call / 검증 헬퍼
 """
+import logging
 import json
 
 from google.genai import types
 
-from app.core.config import settings
 from app.core.tracing import gemini_usage as _usage
 from app.core.tracing import observe
 from app.core.vlm import get_client, image_part, thinking
 from app.core.vlm import model as vlm_model
 from app import prompts as P
 from app.prompts.presets import prompt_safe
+
+logger = logging.getLogger("carret.detector")
 
 
 # ── 공통 ─────────────────────────────────────────
@@ -45,7 +47,7 @@ def _call(image_bytes: bytes, prompt: str, name: str = "vlm_call") -> dict:
         try:
             data = json.loads(resp.text)
         except json.JSONDecodeError:
-            print(f"[detector] JSON 파싱 실패: {resp.text[:200]}")
+            logger.warning(f"[detector] JSON 파싱 실패: {resp.text[:200]}")
             data = {}
         if obs is not None:
             obs.update(output=data, usage_details=_usage(resp))
@@ -76,23 +78,6 @@ def _box(d: dict) -> dict:
 
 
 # ── 라이브 경로 ──────────────────────────────────
-def classify(image_bytes: bytes) -> dict:
-    """물건 식별 + 루브릭 수립 (실패 시 개방형 폴백)."""
-    try:
-        out = _call(image_bytes, P.classify_prompt(), "classify")
-        # lite 모델은 가끔 객체 하나를 목록으로 감싸 준다 ([{"item": ...}]) — 2026-09-26, 19장 중 1번
-        if isinstance(out, list) and out and isinstance(out[0], dict):
-            out = out[0]
-        return {
-            "item": str(out.get("item", "object")).strip() or "object",
-            "considered": [str(c).strip()
-                           for c in out.get("considered", [])][:8],
-        }
-    except Exception as e:
-        print(f"[classify] 실패(무시): {e}")
-        return {"item": "object", "considered": []}
-
-
 def classify_views(images: list[bytes]) -> dict:
     """여러 장 → 물건 종류 + 사진마다 각도 · 가림 · 흐림 (VLM 1회, 낮은 해상도).
 
@@ -169,7 +154,7 @@ def _level(data: dict, key: str, allowed: tuple, default: str) -> str:
     """분류 값 하나 정규화 — 없거나 모르는 값이면 default (로그로 남겨 관측되게)."""
     v = str(data.get(key) or "").strip().lower()
     if v not in allowed:
-        print(f"[analyze] {key} 없음/모름({data.get(key)!r}) → {default}")
+        logger.warning(f"[analyze] {key} 없음/모름({data.get(key)!r}) → {default}")
         return default
     return v
 
@@ -255,62 +240,11 @@ def _count(v) -> int:
     return n if n >= 1 else 1
 
 
-def detect_full(image_bytes: bytes, item: str = "object",
-                considered: list | None = None, *, strict: bool = False) -> dict:
-    """하자 앵커 + 물건 위 글자 수준 + 물건 위치 (VLM 1회).
-
-    반환: {"anchors": [...], "text_level": "none"|"simple"|"dense", "item_box": {x1..} | None}
-    text_level 이 없거나 모르는 값이면 "simple" — 예전 동작(글자 읽기 후 생성)과 같은 쪽으로.
-    strict 는 detect_defects 와 같다."""
-    data = _call(image_bytes, P.detect_prompt(item, considered or []), "detect")
-    if not isinstance(data, dict) or not isinstance(data.get("defects"), list):
-        if strict:
-            raise ValueError(f"detect: 응답에 defects 목록 없음: {str(data)[:200]}")
-        return {"anchors": [], "text_level": "simple", "item_box": None}
-    anchors = _anchors(data["defects"])
-    level = str(data.get("text_level") or "").strip().lower()
-    if level not in TEXT_LEVELS:
-        # 프롬프트가 옛 버전이거나 응답이 빠뜨림 — 조용히 simple 이 되면 관측이 안 된다
-        print(f"[detect] text_level 없음/모름({data.get('text_level')!r}) → simple")
-        level = "simple"
-    elif level == "none" and any(a["category"] == "print" for a in anchors):
-        # 한 응답 안의 모순 — 글자 앵커가 있으면 글자 보호(TEXT_LOCK·OCR 가드)를 끄지 않는다
-        level = "simple"
-    item_box = _from_box_2d({"box_2d": data.get("item_box_2d")})
-    return {"anchors": anchors, "text_level": level,
-            "item_box": _box(item_box) if _has_box(item_box) else None}
-
-
-def detect_defects(image_bytes: bytes, item: str = "object",
-                    considered: list | None = None, *, strict: bool = False) -> list:
-    """strict=True (파이프라인): 빈/깨진 응답(JSON 파싱 실패 → {})을 "하자 없음"이
-    아니라 실패로 보고 예외 — [] 로 돌려주면 게이트가 검증할 게 없다며 통과시킨다.
-    eval/dev 호출부는 기본값(False)으로 예전처럼 [] 를 받는다 (배치가 한 건에 멈추지 않게)."""
-    return detect_full(image_bytes, item, considered, strict=strict)["anchors"]
-
-
-def _anchors(defects: list) -> list:
-    anchors = []
-    for d in defects:
-        cat = str(d.get("category", "other")).strip()
-        if cat not in P.VALID_CATEGORIES:      # 목록 밖이면 other 로
-            cat = "other"
-        anchors.append({
-            "category": cat,
-            "what":  str(d.get("what", "")).strip(),
-            "where": str(d.get("where", "")).strip(),
-        })
-    return [a for a in anchors if a["what"]]
-
-
-def verify_and_locate(image_bytes, anchors,
-                      item="object", considered=None, *, strict: bool = False,
-                      marks: bool = False) -> list:
+def verify_and_locate(image_bytes, anchors, item="object", *, strict: bool = False) -> list:
     """결과 → 보존 여부 + 결과 좌표.
     strict=True (파이프라인 게이트): 깨진 응답({})을 "전부 사라짐"(→ 재생성)이 아니라
     호출 실패로 올린다 — 호출부가 "검증 불가"로 다루게."""
-    considered = considered or []
-    data = _call(image_bytes, P.verify_prompt(anchors, item, considered, marks=marks), "verify")
+    data = _call(image_bytes, P.verify_prompt(anchors, item), "verify")
     if strict and not (isinstance(data, dict) and isinstance(data.get("checks"), list)):
         raise ValueError(f"verify: 응답에 checks 목록 없음: {str(data)[:200]}")
     raw = data.get("checks", []) if isinstance(data, dict) else []
@@ -328,6 +262,8 @@ def _clean_check(c: dict) -> dict:
     out = {k: v for k, v in c.items() if k not in _BOX_KEYS}
     out["what"] = str(c["what"]).strip()
     out["preserved"] = _as_bool(c.get("preserved", False))
+    out.pop("confidence", None)
+    out.update(_confidence(c))
     if _has_box(c):
         out.update(_box(c))
     return out
@@ -382,10 +318,20 @@ def check_photo(image_bytes: bytes) -> dict:
         return {
             "valid": _as_bool(data.get("valid", True)),
             "reason": str(data.get("reason", "")).strip(),
+            **_confidence(data),
         }
     except Exception as e:
-        print(f"[check_photo] 실패(무시): {e}")
+        logger.warning(f"[check_photo] 실패(무시): {e}")
         return {"valid": True, "reason": ""}
+
+
+def _confidence(d: dict) -> dict:
+    """판단의 확신도 (0~1) — 프롬프트가 confidence 를 달라고 할 때만 온다 (Jev 처럼 확신도로 경로를
+    가르는 실험 준비, 10-04). 지금은 기록만 하고 게이트는 보지 않는다. 숫자가 아니거나 범위 밖이면 뺀다."""
+    v = d.get("confidence")
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 <= v <= 1:
+        return {}
+    return {"confidence": float(v)}
 
 
 def _as_bool(v) -> bool:
@@ -407,54 +353,7 @@ def bubbles(checks: list) -> list:
     return out
 
 
-# ── 측정 경로 (eval/dev 전용) ────────────────────
-def detect_with_boxes(image_bytes: bytes) -> list:
-    """좌표付き 검출 (recall/precision 계측용)."""
-    data = _call(image_bytes, P.detect_box_prompt(), "detect_with_boxes")
-    return [{**d, **_box(d)} for d in data.get("defects", [])
-            if _valid_anchor(d) and _has_box(d)]
-
-
-def match_anchors(orig: list, result: list) -> dict:
-    """원본 vs 결과 의미 매칭 → matched / missed / new."""
-    if not orig or not result:
-        return {"matched": [], "missed": orig, "new": result}
-
-    prompt = P.match_prompt(orig, result)
-    client = get_client()
-    with observe("match", as_type="generation", model=vlm_model("match"),
-                 input=prompt) as obs:
-        resp = client.models.generate_content(
-            model=vlm_model("match"),
-            contents=[prompt],
-            config=types.GenerateContentConfig(
-                temperature=0, response_mime_type="application/json",
-                thinking_config=thinking("match")),
-        )
-        try:
-            matches = json.loads(resp.text).get("matches", [])
-        except json.JSONDecodeError:
-            matches = []
-        if obs is not None:
-            obs.update(output={"matches": matches}, usage_details=_usage(resp))
-
-    matched, new, hit = [], [], set()
-    for j, r in enumerate(result):
-        i = matches[j] if j < len(matches) else -1
-        if isinstance(i, int) and 0 <= i < len(orig):
-            matched.append((orig[i], r))
-            hit.add(i)
-        else:
-            new.append(r)
-    missed = [o for k, o in enumerate(orig) if k not in hit]
-    return {"matched": matched, "missed": missed, "new": new}
-
-
 # ── 검증 헬퍼 ────────────────────────────────────
-def _valid_anchor(d: dict) -> bool:
-    return bool(d.get("what")) and bool(d.get("where"))
-
-
 def _valid_check(c: dict) -> bool:
     """what 만 있으면 게이트 계산에 남긴다. 좌표는 말풍선용이라 bubbles() 가 따로
     거른다 — 보존됐는데 좌표만 빠진 항목을 여기서 버리면 앵커 수보다 답이 적어져
@@ -494,6 +393,6 @@ def added_text(original: bytes, result: bytes) -> list[dict]:
     for a in data["added"]:
         what = _text(a.get("what")) if isinstance(a, dict) else ""
         if what:
-            out.append({"what": what, "where": _text(a.get("where"))})
+            out.append({"what": what, "where": _text(a.get("where")), **_confidence(a)})
     return out
 

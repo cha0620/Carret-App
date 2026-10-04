@@ -4,5 +4,5 @@ def test_pages(client):
 
 
 def test_dev_endpoints(client, tmp_storage):
-    for p in ("/dev/originals", "/dev/pairs", "/dev/gallery"):
+    for p in ("/dev/originals", "/dev/gallery"):
         assert client.get(p).status_code == 200

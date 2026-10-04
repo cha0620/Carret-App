@@ -126,12 +126,11 @@ def _get_seq(monkeypatch, seq):
 
 
 @pytest.mark.parametrize("status", [500, 502,])
-def test_download_5xx_then_success_retries_once(monkeypatch, capsys, status):
+def test_download_5xx_then_success_retries_once(monkeypatch, caplog, status):
     calls = _get_seq(monkeypatch, [_resp(status, b"<html>error</html>"), _resp(200, b"PNG")])
     assert generator_mod._download(URL) == b"PNG"
     assert len(calls) == 2 and all(c["url"] == URL for c in calls)
-    log = capsys.readouterr().out
-    assert "[generate]" in log and "1/2" in log
+    assert "[generate]" in caplog.text and "1/2" in caplog.text
 
 
 @pytest.mark.parametrize("status", [400, 403,])
@@ -154,11 +153,11 @@ def test_download_unfollowed_3xx_raises_without_retry(monkeypatch):
 
 @pytest.mark.parametrize("exc", [
     httpx.ConnectError("refused"), httpx.ReadTimeout("slow"),])
-def test_download_transport_error_then_success(monkeypatch, capsys, exc):
+def test_download_transport_error_then_success(monkeypatch, caplog, exc):
     calls = _get_seq(monkeypatch, [exc, _resp(200, b"PNG")])
     assert generator_mod._download(URL) == b"PNG"
     assert len(calls) == 2
-    assert "[generate]" in capsys.readouterr().out
+    assert "[generate]" in caplog.text
 
 
 def test_generate_ai_5xx_html_page_is_not_returned_as_image(monkeypatch):

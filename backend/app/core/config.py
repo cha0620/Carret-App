@@ -4,7 +4,6 @@ from typing import Annotated
 
 from pydantic import Field, AliasChoices, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
-from typing import Literal
 
 
 class Settings(BaseSettings):              # ⭐ 대문자 클래스
@@ -63,7 +62,7 @@ class Settings(BaseSettings):              # ⭐ 대문자 클래스
     vlm_thinking: Annotated[dict[str, str | int], NoDecode] = Field(default_factory=dict)
     # 호출 이름별 이미지 해상도 덮어쓰기 (기본값은 app/core/vlm.py DEFAULT_MEDIA_RESOLUTION)
     vlm_media_resolution: Annotated[dict[str, str], NoDecode] = Field(default_factory=dict)
-    # 호출 이름별 모델 덮어쓰기 (없으면 VLM_MODEL). 예: {"classify": "gemini-3.5-flash-lite"}
+    # 호출 이름별 모델 덮어쓰기 (없으면 VLM_MODEL). 예: {"judge": "gemini-3.5-flash-lite"}
     vlm_models: Annotated[dict[str, str], NoDecode] = Field(default_factory=dict)
 
     @field_validator("vlm_thinking", "vlm_media_resolution", "vlm_models", mode="before")

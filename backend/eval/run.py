@@ -319,6 +319,8 @@ def main() -> int:
     _isolate(run_dir)
     sys.path.insert(0, str(HERE.parent))
     from app.core import db
+    from app.core.logsetup import setup_logging
+    setup_logging()   # 파이프라인 진행 로그(logger.info)가 콘솔에 보이게
     from app.services.ai import detector
     db.init_db()
     if lock:

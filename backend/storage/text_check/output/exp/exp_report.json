@@ -1,0 +1,82 @@
+[
+  {
+    "file": "book.jpg",
+    "item": "book",
+    "base": {
+      "overall": null,
+      "preserved": 0,
+      "total": 0,
+      "bad": []
+    },
+    "A": {
+      "overall": null,
+      "preserved": 0,
+      "total": 0,
+      "bad": []
+    }
+  },
+  {
+    "file": "graphic.jpg",
+    "item": "t-shirt",
+    "base": {
+      "overall": null,
+      "preserved": 0,
+      "total": 0,
+      "bad": []
+    },
+    "A": {
+      "overall": null,
+      "preserved": 0,
+      "total": 0,
+      "bad": []
+    }
+  },
+  {
+    "file": "polo.jpg",
+    "item": "polo shirt",
+    "base": {
+      "overall": null,
+      "preserved": 0,
+      "total": 0,
+      "bad": []
+    },
+    "A": {
+      "overall": null,
+      "preserved": 0,
+      "total": 0,
+      "bad": []
+    }
+  },
+  {
+    "file": "rolex.jpg",
+    "item": "watch",
+    "base": {
+      "overall": null,
+      "preserved": 0,
+      "total": 0,
+      "bad": []
+    },
+    "A": {
+      "overall": null,
+      "preserved": 0,
+      "total": 0,
+      "bad": []
+    }
+  },
+  {
+    "file": "s.jpg",
+    "item": "certificate template",
+    "base": {
+      "overall": null,
+      "preserved": 0,
+      "total": 0,
+      "bad": []
+    },
+    "A": {
+      "overall": null,
+      "preserved": 0,
+      "total": 0,
+      "bad": []
+    }
+  }
+]

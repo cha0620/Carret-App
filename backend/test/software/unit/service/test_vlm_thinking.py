@@ -61,7 +61,7 @@ def test_media_resolution_unknown_is_none_with_warning(monkeypatch, caplog, bad)
 
 def test_image_part_sets_resolution_for_low_call(monkeypatch):
     monkeypatch.setattr(settings, "vlm_media_resolution", {})
-    part = vlm.image_part(b"IMG", "image/jpeg", "classify")
+    part = vlm.image_part(b"IMG", "image/jpeg", "check_photo")
     assert isinstance(part, types.Part)
     assert part.inline_data.data == b"IMG" and part.inline_data.mime_type == "image/jpeg"
     assert _level(part.media_resolution) == "MEDIA_RESOLUTION_LOW"

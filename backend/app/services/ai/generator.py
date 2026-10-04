@@ -1,3 +1,4 @@
+import logging
 import os
 import tempfile
 
@@ -6,6 +7,8 @@ import httpx
 
 from app.core.config import reveal, settings
 from app.core.tracing import observe
+
+logger = logging.getLogger("carret.generator")
 
 
 GEN_STEPS = 8   # flux-2 flash 는 8 이하 (eval/run.py 가 meta 에 남긴다)
@@ -56,7 +59,7 @@ def _download(url: str) -> bytes:
             status = getattr(getattr(e, "response", None), "status_code", None)
             if attempt == DOWNLOAD_ATTEMPTS or (status is not None and status < 500):
                 raise
-            print(f"[generate] 결과 다운로드 실패 ({attempt}/{DOWNLOAD_ATTEMPTS}), 재시도: {e}")
+            logger.warning(f"[generate] 결과 다운로드 실패 ({attempt}/{DOWNLOAD_ATTEMPTS}), 재시도: {e}")
 
 
 def _upload(data: bytes) -> str:

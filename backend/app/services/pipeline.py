@@ -134,7 +134,7 @@ def read_text(s: State) -> dict:
         try:   # 옛 analyze 결과(texts 없음, 저장해 둔 것)만 여기로
             out = detector.read_item_text(s["original"], s.get("item", "object"))
         except Exception as e:
-            print(f"[read_text] 실패(무시): {e}")
+            logger.warning(f"[read_text] 실패(무시): {e}")
             return {"item_texts": [], "item_box": box}
     upd = {"item_texts": out["texts"], "item_box": box or out.get("item_box")}
     # analyze 가 simple 이라고 했어도 막상 읽어 보니 잔글씨가 많으면 — 생성 전 배경 교체 (안전망).
@@ -143,7 +143,7 @@ def read_text(s: State) -> dict:
     n = settings.composite_first_min_texts
     if (n and len(out["texts"]) >= n and s.get("provided_result") is None
             and not s.get("composite_error")):
-        print(f"[read_text] 글자 {len(out['texts'])}줄 → 생성 전 배경 교체 모드로: text_heavy")
+        logger.info(f"[read_text] 글자 {len(out['texts'])}줄 → 생성 전 배경 교체 모드로: text_heavy")
         upd["composite_reason"] = "text_heavy"
     return upd
 
@@ -151,6 +151,18 @@ def read_text(s: State) -> dict:
 ANALYZE_ATTEMPTS = 2
 DETECT_RETRY_DELAY_S = 1.0   # 429/일시 장애가 바로 또 나지 않게 잠깐 쉰다 (verify 도 같이 씀)
 VERIFY_ATTEMPTS = 2
+
+
+def _with_retry(fn, label: str, attempts: int):
+    """VLM 호출 재시도 — 다시 해 볼 만한 실패(retryable)만, 사이에 잠깐 쉰다. 끝내 실패하면 마지막 예외를 올린다."""
+    for attempt in range(1, attempts + 1):
+        try:
+            return fn()
+        except Exception as e:
+            logger.warning(f"[{label}] 실패 ({attempt}/{attempts}): {e}")
+            if not retryable(e) or attempt == attempts:
+                raise
+            time.sleep(DETECT_RETRY_DELAY_S)
 
 
 def _analysis_name(file_id: str) -> str:
@@ -169,23 +181,18 @@ def load_analysis(file_id: str) -> dict | None:
 
 def analyze_original(file_id: str, original: bytes) -> dict:
     """analyze VLM (재시도 포함) → 결과. 성공하면 저장해 둔다. 실패는 detect_failed=True (저장 안 함)."""
-    for attempt in range(1, ANALYZE_ATTEMPTS + 1):
-        try:
-            out = {**detector.analyze(original), "detect_failed": False}
-            try:
-                storage.save("quality", _analysis_name(file_id),
-                             json.dumps(out, ensure_ascii=False).encode("utf-8"))
-            except Exception as e:
-                print(f"[analyze] 결과 저장 실패(무시): {e}")
-            return out
-        except Exception as e:
-            print(f"[analyze] 실패 ({attempt}/{ANALYZE_ATTEMPTS}): {e}")
-            if not retryable(e):
-                break
-            if attempt < ANALYZE_ATTEMPTS:
-                time.sleep(DETECT_RETRY_DELAY_S)
-    return {"item": "object", "considered": [], "anchors": [], "detect_failed": True,
-            "text_level": None, "photo_type": None, "wear_level": None, "watermark": None}
+    try:
+        out = {**_with_retry(lambda: detector.analyze(original), "analyze", ANALYZE_ATTEMPTS),
+               "detect_failed": False}
+    except Exception:
+        return {"item": "object", "considered": [], "anchors": [], "detect_failed": True,
+                "text_level": None, "photo_type": None, "wear_level": None, "watermark": None}
+    try:
+        storage.save("quality", _analysis_name(file_id),
+                     json.dumps(out, ensure_ascii=False).encode("utf-8"))
+    except Exception as e:
+        logger.warning(f"[analyze] 결과 저장 실패(무시): {e}")
+    return out
 
 
 def analyze(s: State) -> dict:
@@ -201,7 +208,7 @@ def analyze(s: State) -> dict:
     # 고른 번호는 사용자가 본 분석(저장된 것)의 번호다 — 지금 새로 분석했다면 목록 순서가 다를 수 있어 쓰지 않는다
     sell = None if fresh else s.get("sell")
     if fresh and s.get("sell") is not None:
-        print("[analyze] 저장된 분석이 없어 고른 물건 번호를 쓰지 않음 (분석 판단대로)")
+        logger.info("[analyze] 저장된 분석이 없어 고른 물건 번호를 쓰지 않음 (분석 판단대로)")
     return apply_selection(out, sell, s.get("answer_count"))
 
 
@@ -289,7 +296,7 @@ def plan(s: State) -> dict:
         return out   # dev 그래프 — 배경 교체로 가지 않는다 (inspect 에 엉뚱한 사유가 남지 않게)
     reason = _composite_first_reason(s)
     if reason:
-        print(f"[plan] 생성하지 않음: {reason}")
+        logger.info(f"[plan] 생성하지 않음: {reason}")
         out["composite_reason"] = reason
     return out
 
@@ -347,7 +354,7 @@ def generate(s: State) -> dict:
         try:
             storage.save("attempts", f"{s['file_id']}_{s['preset_key']}_try{n}.jpg", gen)
         except Exception as e:
-            print(f"[generate] 시도 이미지 저장 실패(무시): {e}")
+            logger.warning(f"[generate] 시도 이미지 저장 실패(무시): {e}")
     # 저장은 validate_result 가 한다 — 검사 도중 예외로 끝난 이미지가 /storage/result/ 의
     # 예측 가능한 URL 에 남지 않게.
     return {
@@ -370,7 +377,7 @@ def _item_pair(s: State) -> tuple[bytes, bytes] | None:
         return (compositor.isolate(s["original"], s.get("item_box"), original=True),
                 compositor.isolate(s["result"]))
     except Exception as e:
-        print(f"[guards] 물건 오리기 실패(item_dino 생략): {e}")
+        logger.warning(f"[guards] 물건 오리기 실패(item_dino 생략): {e}")
         return None
 
 
@@ -410,7 +417,7 @@ def _local_ocr_check(fut, deadline: float) -> tuple[dict | None, float | None]:
         g = guards.local_ocr_guard(*fut.result(timeout=_remaining(deadline)))
     except Exception as e:
         fut.cancel()
-        print(f"[guards] 로컬 OCR 실패(ocr_local 생략): {e!r}")
+        logger.warning(f"[guards] 로컬 OCR 실패(ocr_local 생략): {e!r}")
         return None, None
     if g is None:
         return None, None
@@ -458,7 +465,7 @@ def validate_result(s: State) -> dict:
         # 기존 실패 정책(개방형, valid=True)과 같게.
         check = photo.result(timeout=settings.vlm_timeout_s + 10)
     except Exception as e:
-        print(f"[validate_result] check_photo 대기 실패(무시): {e}")
+        logger.warning(f"[validate_result] check_photo 대기 실패(무시): {e}")
         check = {"valid": True, "reason": ""}
     ocr_fail, ocr_recall = _local_ocr_check(ocr, t0 + LOCAL_OCR_WAIT_S)
     report = report + ([ocr_fail] if ocr_fail else [])
@@ -471,10 +478,10 @@ def _route_after_validate(s: State) -> str:
     if check.get("valid", True):
         return "ok"
     if s.get("gen_attempts", 0) >= settings.max_generate_attempts:
-        print(f"[validate_result] 재생성 한도 소진, 마지막 결과로 진행: "
+        logger.info(f"[validate_result] 재생성 한도 소진, 마지막 결과로 진행: "
               f"{check.get('reason')}")
         return "ok"
-    print(f"[validate_result] invalid, 재생성 ({s.get('gen_attempts', 0)}/"
+    logger.info(f"[validate_result] invalid, 재생성 ({s.get('gen_attempts', 0)}/"
           f"{settings.max_generate_attempts}): {check.get('reason')}")
     return "retry"
 
@@ -488,7 +495,7 @@ def score_similarity(s: State) -> dict:
     try:
         sim = embedder.cosine_similarity(s["original"], s["result"])
     except Exception as e:
-        print(f"[score_similarity] 실패(무시): {e}")
+        logger.warning(f"[score_similarity] 실패(무시): {e}")
         return {"visual_similarity": None}
     score("visual_similarity", sim, data_type="NUMERIC")
     return {"visual_similarity": sim}
@@ -567,46 +574,47 @@ def verify(s: State) -> dict:
         return {"checks": checks, "gate_passed": False, "verify_failed": False}
     targets = _verify_targets(s)
     saved = storage.load("result", s["result_name"])
-    added = _added_text(s, saved)
-    if added is None:
-        # 덧붙인 검사라 호출이 안 돼도 막지 않는다 — 마크 검사(verify)는 그대로 한다 (10-03 리뷰)
-        added = []
+    # 없던 글자 검사는 마크 검사와 서로 기다릴 이유가 없다 — 같이 돌려 VLM 왕복 한 번만큼 줄인다
+    added_fut = _in_background(_added_text, s, saved)
     if not targets:
+        added = _added_result(added_fut)
         return {"checks": checks, "verify_failed": False, "added_text": added,
                 "gate_passed": False if added else gate_passed}
-    for attempt in range(1, VERIFY_ATTEMPTS + 1):
-        try:
-            checks = detector.verify_and_locate(
-                saved, targets, s.get("item", "object"), strict=True, marks=True)
-            return {"checks": checks, "verify_failed": False, "added_text": added,
-                    "gate_passed": detector.all_preserved(checks, expected=len(targets)) and not added}
-        except Exception as e:
-            print(f"[verify] 실패 ({attempt}/{VERIFY_ATTEMPTS}): {e}")
-            if not retryable(e):
-                break
-            if attempt < VERIFY_ATTEMPTS:
-                time.sleep(DETECT_RETRY_DELAY_S)
-    # 호출 실패(타임아웃·429·장애)는 "보존됨"이 아니다 — 통과로 치지 않는다 (→ 배경 교체)
-    return {"checks": [], "verify_failed": True, "gate_passed": False, "added_text": added}
+    try:
+        checks = _with_retry(lambda: detector.verify_and_locate(
+            saved, targets, s.get("item", "object"), strict=True), "verify", VERIFY_ATTEMPTS)
+    except Exception:
+        # 호출 실패(타임아웃·429·장애)는 "보존됨"이 아니다 — 통과로 치지 않는다 (→ 배경 교체).
+        # 결과가 이미 실패라 없던 글자 검사를 기다리지 않는다 (장애 때 배경 교체가 늦어지지 않게)
+        added_fut.cancel()
+        return {"checks": [], "verify_failed": True, "gate_passed": False, "added_text": []}
+    added = _added_result(added_fut)
+    return {"checks": checks, "verify_failed": False, "added_text": added,
+            "gate_passed": detector.all_preserved(checks, expected=len(targets)) and not added}
+
+
+def _added_result(fut) -> list:
+    """덧붙인 검사라 호출이 안 돼도(None) 막지 않는다 — 마크 검사(verify)는 그대로 한다 (10-03 리뷰)."""
+    try:
+        added = fut.result(timeout=(settings.vlm_timeout_s + 10) * VERIFY_ATTEMPTS)
+    except Exception as e:
+        fut.cancel()
+        logger.warning(f"[added_text] 대기 실패 — 막지 않음: {e}")
+        return []
+    return added or []
 
 
 def _added_text(s: State, result: bytes) -> list | None:
     """생성본에 새로 생긴 글자 · 로고 (설정으로 끄면 빈 목록). 호출이 끝내 실패하면 None — "확인 못 함"."""
     if not settings.added_text_gate:
         return []
-    for attempt in range(1, VERIFY_ATTEMPTS + 1):
-        try:
-            added = detector.added_text(s["original"], result)
-            if added:
-                print(f"[verify] 없던 글자 · 로고: {[a['what'] for a in added]}")
-            return added
-        except Exception as e:
-            print(f"[added_text] 실패 ({attempt}/{VERIFY_ATTEMPTS}) — 막지 않음: {e}")
-            if not retryable(e):
-                break
-            if attempt < VERIFY_ATTEMPTS:
-                time.sleep(DETECT_RETRY_DELAY_S)
-    return None
+    try:
+        added = _with_retry(lambda: detector.added_text(s["original"], result), "added_text", VERIFY_ATTEMPTS)
+    except Exception:
+        return None
+    if added:
+        logger.info(f"[verify] 없던 글자 · 로고: {[a['what'] for a in added]}")
+    return added
 
 
 def _route_after_verify(s: State) -> str:
@@ -634,7 +642,7 @@ def mark_gate_retry(s: State) -> dict:
         # 생긴 글자를 그대로 적지 않는다 — 단어를 쓰면 그걸 다시 그린다 (10-03)
         note += ("\n\nIMPORTANT: a previous attempt drew marks on the product that are not in the input "
                  "image. Every surface of the product must look exactly as in the input image.")
-    print(f"[gate] 실패 → 1회 재생성: 사라짐 {lost} · 새로 생김 {added}")
+    logger.warning(f"[gate] 실패 → 1회 재생성: 사라짐 {lost} · 새로 생김 {added}")
     return {"gate_retried": True, "gate_note": note, "gate_added_text": s.get("added_text") or [],
             "photo_check": None}
 
@@ -650,7 +658,7 @@ def _original_as_result(s: State) -> dict:
 def keep_original(s: State) -> dict:
     """원본 그대로 (plan: inside_view) — 물건 일부·내부 사진은 생성도 오리기도 하지 않는다.
     물건 픽셀도 배경도 원본이라 검사할 것이 없다 (verify·judge 생략)."""
-    print("[keep_original] 물건 일부·내부 사진 → 원본 그대로")
+    logger.info("[keep_original] 물건 일부·내부 사진 → 원본 그대로")
     return _original_as_result(s)
 
 
@@ -684,16 +692,16 @@ def composite(s: State) -> dict:
             # 하자가 넓어 "생성하면 지우거나 지어낸다"고 본 사진 / 책·음반처럼 한 글자만 바뀌어도
             # 다른 물건 — 오리기가 안 되면 생성하지 않고 원본을 그대로 보여준다
             # (생성으로 가면 하자·잔글씨 검사 없이 "보존됨" 배지가 붙는다)
-            print(f"[composite] 실패 + {reason} → 원본 그대로: {e}")
+            logger.warning(f"[composite] 실패 + {reason} → 원본 그대로: {e}")
             return {**_original_as_result(s), "composite_error": str(e), "composite_reason": reason}
         if s.get("result") is None:
             # 생성 전에 왔다(plan) — 이제 정상 생성 경로로
-            print(f"[composite] 실패, 생성으로 진행: {e}")
+            logger.warning(f"[composite] 실패, 생성으로 진행: {e}")
             return {"mode": "generate", "composite_error": str(e), "composite_reason": None}
         # 오리기 실패 — 마지막 생성 결과를 그대로 두고 (게이트 실패 기록은 남음) 끝낸다
-        print(f"[composite] 실패, 생성 결과 유지: {e}")
+        logger.warning(f"[composite] 실패, 생성 결과 유지: {e}")
         return {"mode": "composite_failed", "composite_error": str(e)}
-    print(f"[composite] 배경 교체 모드로 전환 ({reason})")
+    logger.info(f"[composite] 배경 교체 모드로 전환 ({reason})")
     storage.save("result", s["result_name"], out)
     # 합성본은 생성본이 아니다 — 생성본 기준 검사 결과(구도 검사·가드·유사도)를 들고 가지 않는다
     return {"result": out, "mode": "composite", "composite_error": None,
@@ -764,7 +772,7 @@ def _clear_quality(name: str) -> None:
     try:
         storage.delete("quality", name)
     except Exception as e:
-        print(f"[judge] 옛 성적표 삭제 실패(무시): {e}")
+        logger.warning(f"[judge] 옛 성적표 삭제 실패(무시): {e}")
 
 
 def judge_and_save(file_id: str, preset_key: str, *, trace_id: str | None = None,
@@ -794,7 +802,7 @@ def judge_and_save(file_id: str, preset_key: str, *, trace_id: str | None = None
             if not report:
                 return
             if storage.load("result", f"{name}.jpg") != result:
-                print("[judge] 채점 중 결과가 바뀜 → 버림")
+                logger.info("[judge] 채점 중 결과가 바뀜 → 버림")
                 return
             storage.save("quality", f"{name}.json",
                          json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8"))
@@ -806,9 +814,9 @@ def judge_and_save(file_id: str, preset_key: str, *, trace_id: str | None = None
                 for axis in AXES:
                     score(axis, report[axis], data_type="NUMERIC")
             except Exception as e:
-                print(f"[judge] 점수 부착 실패(무시): {e}")
+                logger.warning(f"[judge] 점수 부착 실패(무시): {e}")
     except Exception as e:
-        print(f"[judge] 실패(무시): {e}")
+        logger.warning(f"[judge] 실패(무시): {e}")
     finally:
         flush()
 
@@ -840,7 +848,7 @@ def item_signals_and_save(file_id: str, preset_key: str, *, trace_id: str | None
                                   "item_box": ins.get("item_box")})
             if (storage.load("result", f"{name}.jpg") != result
                     or storage.load("quality", inspect_name) != ins_bytes):
-                print("[guards] 누끼 비교 중 결과가 바뀜 → 버림")
+                logger.info("[guards] 누끼 비교 중 결과가 바뀜 → 버림")
                 return
             ins["item_similarity"] = g.value if g else None
             ins["item_patch_similarity"] = p.value if p else None
@@ -849,7 +857,7 @@ def item_signals_and_save(file_id: str, preset_key: str, *, trace_id: str | None
             storage.save("quality", inspect_name,
                          json.dumps(ins, ensure_ascii=False, indent=2).encode("utf-8"))
     except Exception as e:
-        print(f"[guards] 누끼 비교 실패(무시): {e}")
+        logger.warning(f"[guards] 누끼 비교 실패(무시): {e}")
     finally:
         flush()
 
@@ -871,7 +879,7 @@ def _record_result_safe(file_id, preset_key, result_name, item, considered,
         store.record_result(file_id, preset_key, result_name, item, considered,
                              gate_passed, bubbles, elapsed_s=elapsed_s, route=route)
     except Exception as e:
-        print(f"[record_result] 실패(무시): {e}")
+        logger.warning(f"[record_result] 실패(무시): {e}")
 
 
 def _route_of(out: dict) -> dict:

@@ -10,9 +10,7 @@ from pathlib import Path
 import pytest
 
 import app.core.tracing as tracing
-from app.prompts import (analyze_template, check_photo_template, detect_template, frag,
-                         verify_marks_template,
-                         verify_template)
+from app.prompts import analyze_template, check_photo_template, frag, verify_marks_template
 from app.prompts.presets import PRESETS
 
 BACKEND = Path(__file__).resolve().parents[5] / "backend"
@@ -20,8 +18,8 @@ APP_DIR = BACKEND / "app"
 SEED_SCRIPT = BACKEND / "scripts" / "seed_langfuse_prompts.py"
 
 EXPECTED_STATIC = {
-    "analyze_v2", "classify", "verify_v2", "detect_box", "detect_v2", "verify", "item_text", "views",
-    "check_photo", "match", "judge_system", "auto_feedback_system",
+    "analyze_v2", "verify_v2", "item_text", "views", "objects", "added_text",
+    "check_photo", "judge_system", "auto_feedback_system",
 }
 
 
@@ -108,10 +106,8 @@ def test_seed_has_no_names_unused_at_runtime(seeds):
 def test_seed_templates_match_shared_template_functions(seeds):
     assert seeds["analyze_v2"] == analyze_template()
     assert seeds["verify_v2"] == verify_marks_template()
-    assert seeds["detect_v2"] == detect_template()
-    # 옛 이름 "detect" 는 시드하지 않는다 (배포된 옛 서버가 새 응답 형식을 받지 않게)
-    assert "detect" not in seeds
-    assert seeds["verify"] == verify_template()
+    # 옛 이름 "verify" 는 시드하지 않는다 (배포된 옛 서버가 새 응답 형식을 받지 않게)
+    assert "verify" not in seeds
     assert seeds["check_photo"] == check_photo_template()
     assert seeds["item_text"] == frag("item_text")
 
@@ -142,13 +138,13 @@ def _run_main(mod, monkeypatch, argv):
 
 @pytest.mark.parametrize("argv", [
     ["no_such_prompt"],
-    ["detect", "no_such_prompt"],])
+    ["analyze_v2", "no_such_prompt"],])
 def test_main_rejects_bad_args_before_network(no_network_seed, monkeypatch, capsys, argv):
     with pytest.raises(SystemExit) as exc:
         _run_main(no_network_seed, monkeypatch, argv)
     assert exc.value.code == 1
     out = capsys.readouterr().out
-    assert "detect" in out  # 가능한 이름 목록을 안내
+    assert "analyze_v2" in out  # 가능한 이름 목록을 안내
 
 
 def test_main_valid_args_without_keys_exit_before_network(seed_module, monkeypatch, capsys):
@@ -162,7 +158,7 @@ def test_main_valid_args_without_keys_exit_before_network(seed_module, monkeypat
     monkeypatch.setattr(seed_module.settings, "langfuse_public_key", "", raising=False)
     monkeypatch.setattr(seed_module.settings, "langfuse_secret_key", "", raising=False)
     with pytest.raises(SystemExit) as exc:
-        _run_main(seed_module, monkeypatch, ["detect_v2"])
+        _run_main(seed_module, monkeypatch, ["analyze_v2"])
     assert exc.value.code == 1
     assert "LANGFUSE_PUBLIC_KEY" in capsys.readouterr().out
 
