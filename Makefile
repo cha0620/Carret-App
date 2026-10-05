@@ -5,7 +5,7 @@ e2e:
 	pytest backend/test -m e2e
 
 eval:
-	pytest backend/test -m eval
+	cd backend && python eval/run.py --analyze-only
 
 docs:
 	python3 scripts/md_serve.py --port $${MD_PORT:-8090}

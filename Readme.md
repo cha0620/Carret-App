@@ -56,7 +56,7 @@ flowchart TD
 |---|---|---|---|
 | Video scene picking | OpenCV (local) | 0 | ~2.5 s for a 10 s 1080p clip |
 | Angle labels | Gemini 3.8-flash, low (268 tokens per photo) | ~$0.001 (estimate) | a few seconds (estimate) |
-| analyze (incl. text) · mark gate · report card | Gemini 3.8-flash, high | ~$0.012 VLM total on the generate path | |
+| analyze (incl. text) · mark gate | Gemini 3.8-flash, high | ~$0.012 VLM total on the generate path | |
 | Framing/caption check | Gemini 3.5-flash-lite, low | (included above) | 2–3 s |
 | Generation | fal `flux-2/flash/edit`, 8 steps | ~$0.010 × 1.38 attempts on average | 6–50 s incl. queue |
 | Background swap (fallback) | rembg / fal BiRefNet + solid color | ~$0.007 for the whole path | ~22 s |
@@ -86,7 +86,6 @@ flowchart TD
   V -->|pass| R(["result"])
   X --> R
   O --> R
-  R -.->|after the response| J["score · judge"]
 ```
 
 Finer branches (reading text, cutout failures, retry limits) are in the step list below.
@@ -146,10 +145,10 @@ Finer branches (reading text, cutout failures, retry limits) are in the step lis
    **background-swap mode**: the original item is cut out (fal BiRefNet, local rembg as a
    fallback) and placed on the preset background, so the item's pixels are the
    original's. The result is recorded with `mode: composite` and a `composite_reason`
-10. **judge** (outside the graph, one function: `judge_and_save`): produces a fidelity /
-   realism / trust report card and attaches it to the same trace as Langfuse Scores. The
-   API runs it in the background after the response is sent, and the UI polls
-   `GET /api/quality/{file_id}/{preset}` for it. eval and dev judge right after the graph
+10. **judge** (outside the graph, one function: `judge_and_save`, **eval and dev only**): produces a
+   fidelity / realism / trust report card and attaches it to the same trace as Langfuse Scores.
+   Removed from the live path and the UI on 2026-10-05 — no decision uses it, and it agreed with
+   human verdicts on only 11 of 17 pairs, so showing the score confused more than it helped
 11. The UI overlays mark bubbles on the result and says whether it is generated / the original item
    on a new background / the original as-is. Generated results also say that defects aren't checked
    automatically and should be confirmed on the original. It collects a star rating and comment
@@ -229,7 +228,7 @@ that knows the disk layout.
 - 🛡️ **Mark gate (verify)**: the original's logos and text are checked again in the result, one by one
 - 🔁 **Regeneration that carries the reason**: when a result is rejected for
   cropping or a caption, the reason goes into the next prompt, and retries are capped
-- 📐 **Two kinds of signal**: the Gemini judge gives a judgment, and DINOv2
+- 📐 **Two kinds of signal**: the Gemini judge gives a judgment (eval and dev runs only), and DINOv2
   cosine similarity gives a score on a fixed scale
 - 💬 **Mark bubbles + zoom**: overlay coordinates account for the
   letterboxing from `object-fit: contain`
@@ -238,7 +237,7 @@ that knows the disk layout.
   human feedback
 - 🤖 **Auto-feedback agent + inbox**: put originals in `storage/inbox/` (or
   pass URLs), and each one runs through the real pipeline and gets agent feedback
-- 📊 **Langfuse observability**: per-node traces, a Score for each judge axis,
+- 📊 **Langfuse observability**: per-node traces, a Score for each judge axis (eval and dev runs),
   and prompts you can edit from the console. Without keys it is a complete
   noop, so CI and tests stay safe
 - 🗂️ **Swappable storage**: `STORAGE_BACKEND=local|s3` switches the backend,
@@ -332,7 +331,7 @@ uvicorn main:app --reload   # http://localhost:8000 (frontend included)
 ```bash
 cd backend && pytest test/software/unit -q   # free unit tests (same as CI)
 make test    # everything except eval / e2e
-make eval    # real VLM · fal.ai calls (costs money)
+make eval    # analyze accuracy on backend/eval photos (real VLM calls, costs money)
 make e2e     # browser tests
 make docs    # browse the repo's .md files (http://localhost:8090, renders mermaid)
 ```
@@ -342,7 +341,6 @@ make docs    # browse the repo's .md files (http://localhost:8090, renders merma
 | `test/software/unit/` | service, web and data layers (external calls mocked) |
 | `test/software/integration/` | upload flow, dev replay |
 | `test/software/full/` | user journeys (mock / real), browser |
-| `test/eval/` | eval suite (metrics against ground truth) |
 
 ---
 
@@ -409,7 +407,7 @@ make docs    # browse the repo's .md files (http://localhost:8090, renders merma
 | main CI had been failing since 09-15 because `langfuse` wasn't installed | Update CI's dependency list whenever a new import appears |
 | A failed detect call read as "no defects" (`[]`) and skipped the gate; a verify exception left `gate_passed=None`, which routed as a pass | "Really none" and "couldn't ask" must be different values. Once you find a hole, look for the same kind elsewhere |
 | The most conservative path (blocked = return the original) crashed with a KeyError → 500 | As branches grow, check that every path into a node fills the keys it reads. `TypedDict(total=False)` won't catch it |
-| judge existed twice: a graph node and `judge_later` | Answer "why is it like this?" by grepping the callers. Nothing actually needed synchronous judging |
+| judge existed twice: a graph node and `judge_later` | Answer "why is it like this?" by grepping the callers. At the time nothing needed synchronous judging (since 10-05 only eval and dev judge, synchronously) |
 | After parallelizing, tests called real Gemini with the `.env` key; a fake that didn't accept a new argument passed through the wrong path | Fakes must follow the real signature, or tests pass while checking the wrong thing |
 | A seller's watermark became a "defect to keep", so good results failed the gate | Not the model: the category examples in our prompt listed "watermark". Read the prompt first when chasing false positives |
 | One text-reading call used 62,912 thinking tokens ($0.57), 25% of the last 500 calls' cost | Only capped calls are safe. When adding a VLM call, set its thinking config too |
@@ -532,7 +530,7 @@ make docs    # browse the repo's .md files (http://localhost:8090, renders merma
 - [ ] Tidy the other photos too with a background swap, in one go
 - [ ] A gate check for **added** things (result text minus original text, items that weren't there)
 - [ ] Background-swap quality: non-generative upscaling
-- [ ] Run the judge on a sample or in batch mode (now the most expensive VLM call)
+- [x] Take the judge off the live path — eval and dev only (10-05)
 - [ ] Korean text damage check: line-crop comparison or a Korean-specialized OCR (local EasyOCR/PaddleOCR were inaccurate or unstable)
 - [ ] Match verify answers to marks by id (today the gate only checks the count)
 - [ ] Quantitative scorecard (CSV) + model A/B

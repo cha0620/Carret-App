@@ -188,15 +188,6 @@ body {
 /* 보존 게이트 배지 */
 #gate-badge { font-size: 13px; font-weight: 700; margin: 10px 0 0; }
 
-/* 성적표 */
-.quality-card {
-  margin-top: 12px; padding: 14px 16px;
-  background: #eef2ff; border-left: 4px solid var(--blue);
-  border-radius: var(--radius-sm);
-  text-align: left; font-size: 13px; line-height: 1.6;
-}
-.quality-card .scores { font-weight: 700; margin-bottom: 4px; color: var(--ink); }
-.quality-card .analysis { color: #555; white-space: pre-wrap; }
 
 /* 피드백 */
 .feedback-card {

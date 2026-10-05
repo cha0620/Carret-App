@@ -53,7 +53,7 @@ flowchart TD
 |---|---|---|---|
 | 동영상 장면 고르기 | OpenCV (로컬) | 0 | 1080p 10초 영상 약 2.5초 |
 | 각도 분류 | Gemini 3.8-flash, low (장당 268 토큰) | 약 $0.001 (추정) | 수 초 (추정) |
-| analyze(글자 포함) · 보존 검사 · 성적표 | Gemini 3.8-flash, high | 생성 경로 VLM 합계 약 $0.012 | |
+| analyze(글자 포함) · 보존 검사 | Gemini 3.8-flash, high | 생성 경로 VLM 합계 약 $0.012 | |
 | 구도·자막 확인 | Gemini 3.5-flash-lite, low | (위에 포함) | 2~3초 |
 | 생성 | fal `flux-2/flash/edit`, 8스텝 | 약 $0.010 × 평균 1.38회 | 대기열 포함 6~50초 |
 | 배경 교체 (물러날 때) | rembg / fal BiRefNet + 단색 | 경로 전체 약 $0.007 | 약 22초 |
@@ -83,7 +83,6 @@ flowchart TD
   V -->|통과| R(["결과"])
   X --> R
   O --> R
-  R -.->|응답 뒤| J["채점 · judge"]
 ```
 
 세부 분기(글자 읽기, 오리기 실패 처리, 재생성 한도)는 아래 단계 설명에 있다.
@@ -134,10 +133,9 @@ flowchart TD
    1회 재생성하고, 그래도 실패하면 **배경 교체 모드**로 넘어간다. 원본 물건을 오려
    (fal BiRefNet, 실패하면 로컬 rembg) 프리셋 배경 위에 합성하므로 물건 픽셀은 원본
    그대로다. 결과에는 `mode: composite`와 `composite_reason`이 기록된다
-10. **judge** (그래프 밖, `judge_and_save` 한 곳): fidelity / realism / trust 성적표를
-   만들어 같은 트레이스에 Langfuse Score로 붙인다. API 는 응답을 보낸 뒤 백그라운드로
-   채점하고 UI 는 `GET /api/quality/{file_id}/{preset}`을 폴링해 받아온다.
-   eval·dev 는 그래프 직후 바로 채점한다
+10. **judge** (그래프 밖, `judge_and_save` 한 곳, **eval·dev 만**): fidelity / realism / trust 성적표를
+   만들어 같은 트레이스에 Langfuse Score로 붙인다. 2026-10-05 에 운영 경로와 화면에서 뺐다 —
+   결정에 쓰지 않고, 사람 판정과 17쌍 중 11쌍만 맞아 화면 점수가 오히려 헷갈렸다
 11. UI는 결과 위에 마크 말풍선을 띄우고, 결과가 생성본인지 / 원본 물건 + 배경 교체인지 / 원본 그대로인지
    알려 준다. 생성본에는 "하자는 자동으로 검사하지 않으니 원본 사진으로 확인"을 함께 적는다.
    판매자에게 별점과 코멘트를 받는다
@@ -218,7 +216,7 @@ study/      날짜별 개발 로그: 버그 원인, 설계 판단, 뒤집은 결
 - 🛡️ **마크 게이트 (verify)**: 원본의 로고·글자를 결과에서 체크리스트로 다시 검증한다
 - 🔁 **이유를 넘기는 재생성**: 구도 잘림이나 자막 때문에 반려되면 그 사유를
   다음 프롬프트에 넣고, 재시도 횟수에 상한을 둔다
-- 📐 **VLM + 벡터 이중 신호**: 판단은 Gemini judge가, 고정된 기준의 점수는
+- 📐 **VLM + 벡터 이중 신호**: 판단은 Gemini judge가(eval·dev 실행 때만), 고정된 기준의 점수는
   DINOv2 코사인 유사도가 맡는다
 - 💬 **마크 말풍선 + 줌**: `object-fit: contain`의 레터박스를 계산에 넣은
   좌표로 결과 이미지 위에 보존된 로고·글자 위치를 표시한다
@@ -226,7 +224,7 @@ study/      날짜별 개발 로그: 버그 원인, 설계 판단, 뒤집은 결
   (`source=agent`)을 구분해서 저장하고, 사람 피드백을 에이전트가 덮어쓰지 않는다
 - 🤖 **자동 피드백 에이전트 + 인박스**: `storage/inbox/`에 원본을 넣거나
   URL을 주면 실제 파이프라인을 돌리고 자동 피드백까지 한 번에 쌓는다
-- 📊 **Langfuse 관측성**: 노드별 트레이스, judge 축별 Score, 콘솔에서 고치는
+- 📊 **Langfuse 관측성**: 노드별 트레이스, judge 축별 Score(eval·dev 실행 때), 콘솔에서 고치는
   프롬프트. 키가 없으면 완전히 noop이라 CI와 테스트가 안전하다
 - 🗂️ **스토리지 전환**: `STORAGE_BACKEND=local|s3` 하나로 바꾸며 서빙 URL은
   같다
@@ -312,7 +310,7 @@ uvicorn main:app --reload   # http://localhost:8000 (프론트 포함)
 ```bash
 cd backend && pytest test/software/unit -q   # 무료 유닛 테스트 (CI와 동일)
 make test    # eval / e2e 제외 전체
-make eval    # 실제 VLM·fal.ai 호출 (비용 발생)
+make eval    # backend/eval 사진으로 분류 정확도 (실제 VLM 호출, 비용 발생)
 make e2e     # 브라우저 테스트
 make docs    # 레포의 .md 를 브라우저로 보기 (http://localhost:8090, mermaid 렌더링)
 ```
@@ -322,7 +320,6 @@ make docs    # 레포의 .md 를 브라우저로 보기 (http://localhost:8090, 
 | `test/software/unit/` | 서비스·웹·데이터 계층 (외부 호출은 mock) |
 | `test/software/integration/` | 업로드 흐름, dev 리플레이 |
 | `test/software/full/` | 사용자 여정 (mock / real), 브라우저 |
-| `test/eval/` | 평가 스위트 (GT 대비 지표) |
 
 ---
 
@@ -387,7 +384,7 @@ make docs    # 레포의 .md 를 브라우저로 보기 (http://localhost:8090, 
 | main CI가 `langfuse` 미설치로 09-15부터 실패 중이었음 | CI 의존성 목록은 새 import가 생길 때마다 같이 챙겨야 한다 |
 | detect 호출이 실패해도 "하자 없음"(`[]`)으로 읽혀 게이트를 건너뜀. verify 호출 예외도 `gate_passed=None` → 통과 | "진짜 없음"과 "못 물어봄"은 다른 값이어야 한다. 한 곳에서 찾으면 같은 종류의 구멍을 다른 곳에서도 찾는다 |
 | 가장 보수적인 경로(blocked = 원본 반환)가 KeyError로 500 | 분기가 늘면 "이 노드까지 오는 모든 길에서 이 키가 채워지나"를 따진다. `TypedDict(total=False)`는 못 잡는다 |
-| judge가 그래프 노드와 `judge_later` 두 벌 | "왜 이렇게 돼 있지?"는 호출부를 grep 해서 실제로 읽는 곳을 보고 답한다. 동기 채점이 필요한 곳은 없었다 |
+| judge가 그래프 노드와 `judge_later` 두 벌 | "왜 이렇게 돼 있지?"는 호출부를 grep 해서 실제로 읽는 곳을 보고 답한다. 당시엔 동기 채점이 필요한 곳이 없었다 (10-05 부터는 eval·dev 만 동기로 채점) |
 | 병렬화 뒤 테스트가 `.env` 키로 실제 Gemini를 부름. 가짜가 새 인자를 못 받아 엉뚱한 경로로 통과 | 가짜(fake)는 실제 시그니처를 따라가야 한다. 안 그러면 "통과하지만 엉뚱한 걸 검사하는" 테스트가 된다 |
 | 판매처 워터마크를 "보존할 하자"로 잡아 멀쩡한 생성본이 게이트에서 떨어짐 | 모델 탓이 아니었다 — 프롬프트의 카테고리 예시에 "watermark"가 있었다. 오탐은 프롬프트부터 읽는다 |
 | 글자 읽기 호출 1번이 생각 토큰 62,912개($0.57) — 최근 500건 비용의 25% | 상한을 건 호출만 안전하다. 새 VLM 호출을 만들면 생각 설정도 같이 정한다 |
@@ -497,7 +494,7 @@ make docs    # 레포의 .md 를 브라우저로 보기 (http://localhost:8090, 
 - [ ] 고른 사진 말고 나머지 사진도 배경 교체로 한꺼번에 정리
 - [ ] 게이트에 "새로 생긴 것" 검사 (결과 글자 − 원본 글자, 없던 물건)
 - [ ] 배경 교체 결과 품질: 비생성형 업스케일
-- [ ] 채점(judge)을 표본만 돌리거나 배치 모드로 (지금 가장 비싼 VLM 호출)
+- [x] 채점(judge)을 운영에서 빼기 — eval·dev 만 (10-05)
 - [ ] 한글 글자 깨짐 판정: 줄 단위 크롭 비교 또는 한글 특화 OCR (로컬 EasyOCR/PaddleOCR은 부정확·불안정)
 - [ ] verify 게이트를 마크별 id로 매칭 (지금은 개수만 확인)
 - [ ] 정량 스코어카드 (CSV) + 모델 A/B

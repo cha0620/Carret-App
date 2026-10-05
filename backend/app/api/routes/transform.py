@@ -6,13 +6,11 @@
 3. 에러 → 상태코드 번역
 """
 import logging
-import json
 
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Path
-
-from app.prompts.presets import NOTE_MAX_CHARS, PRESETS, PURPOSES, mood_of, style_key
-from app.schemas.image import (AnalyzeRequest, AnalyzeResponse, QualityReport, StylesResponse,
+from app.prompts.presets import NOTE_MAX_CHARS, PRESETS, PURPOSES, style_key
+from app.schemas.image import (AnalyzeRequest, AnalyzeResponse, StylesResponse,
                                TransformRequest, TransformResponse)
 from app.services import pipeline
 from app.services.persistence import storage
@@ -56,7 +54,7 @@ def transform(req: TransformRequest, background: BackgroundTasks):
     # def = 스레드풀 실행 (rembg 같은 블로킹 작업용 ✅)
     key = style_key(req.preset, req.note)
     try:
-        out = pipeline.run_transform(req.file_id, key, defer_judge=True, note=req.note,
+        out = pipeline.run_transform(req.file_id, key, defer_signals=True, note=req.note,
                                      composition=req.composition, sell=req.sell)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다")
@@ -64,29 +62,19 @@ def transform(req: TransformRequest, background: BackgroundTasks):
         logger.exception("변환 실패")              # 서버 로그엔 상세히
         raise HTTPException(status_code=500, detail="변환 중 오류가 발생했습니다")
 
-    # 관측 신호는 응답을 보낸 뒤 (사용자가 기다리지 않게) — 누끼 비교는 inspect 에, 성적표는 프론트가 폴링
+    # 관측 신호는 응답을 보낸 뒤 (사용자가 기다리지 않게) — 누끼 비교는 inspect 에.
+    # judge 성적표는 운영에서 부르지 않는다 (10-05 — eval · dev 만)
     if out.get("item_signals_pending"):
         background.add_task(pipeline.item_signals_and_save, req.file_id, key,
                             trace_id=out.get("trace_id"),
                             parent_span_id=out.get("trace_span_id"))
-    if out.get("judge_pending"):
-        background.add_task(pipeline.judge_and_save, req.file_id, key,
-                            trace_id=out.get("trace_id"),
-                            parent_span_id=out.get("trace_span_id"))
 
-    quality = None
-    if not out.get("judge_pending"):   # 채점 대기 중이면 지금 있는 파일은 옛 것뿐 (삭제 실패 시)
-        qbytes = storage.load("quality", f"{req.file_id}_{key}.json")
-        if qbytes is not None:
-            quality = QualityReport(**json.loads(qbytes.decode("utf-8")))
- 
     return TransformResponse(
         file_id=req.file_id,
         preset=key,
         result_path=f"storage/result/{out['result_name']}",
         result_url=storage.result_url(req.file_id, key),
         prompt_used=out["prompt_used"],
-        quality=quality,
         bubbles=out["bubbles"],
         gate_passed=out["gate_passed"],
         item=out["item"],                           # ⭐
@@ -98,19 +86,5 @@ def transform(req: TransformRequest, background: BackgroundTasks):
         photo_type=out.get("photo_type"),
         wear_level=out.get("wear_level"),
         watermark=out.get("watermark"),
-        judge_pending=out.get("judge_pending", False),
-        
     )
 
-
-@router.get("/quality/{file_id}/{preset}", response_model=QualityReport)
-def quality(file_id: str = Path(pattern=r"^[a-f0-9]{32}$"),
-            preset: str = Path(pattern=r"^[a-z_]+(-[0-9a-f]{6})?$")):
-    """백그라운드 채점 결과 폴링용 — storage 를 거치므로 S3 모드에서도 보인다
-    (/storage 정적 마운트는 로컬 디스크만 서빙)."""
-    if mood_of(preset) not in PRESETS:
-        raise HTTPException(status_code=422, detail="알 수 없는 무드")
-    qbytes = storage.load("quality", f"{file_id}_{preset}.json")
-    if qbytes is None:
-        raise HTTPException(status_code=404, detail="채점 중이거나 성적표가 없습니다")
-    return QualityReport(**json.loads(qbytes.decode("utf-8")))

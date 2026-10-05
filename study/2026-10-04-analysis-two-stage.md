@@ -532,7 +532,7 @@ Jev(TypeSafe AI)는 글을 쓰지 않는 판단 모델이다 — 고르기 · �
 
 ### 19-5. 다음
 
-- [ ] 모델 교체 eval — `objects` · `judge` · `auto_feedback` 을 lite 로
+- [x] 모델 교체 eval — `objects` · `judge` · `auto_feedback` 을 lite 로 → 10-05 §1
 - [ ] 판단형 프롬프트(check_photo · added_text · verify)에 confidence 요청 → 확신도와 실제 정답률이 맞는지 재기
 - [ ] added_text 오탐률 측정
 - [ ] 풀 포화 시 조용히 통과 · gate None 경우를 inspect 에 "확인 못 함"으로 남기기

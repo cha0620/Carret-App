@@ -215,14 +215,14 @@ def w(monkeypatch):
 
 # ══ 생성 경로 (product) ═════════════════════════════════════════════
 def test_product_without_text_generates_verifies_and_judges(w):
-    out = w.run()
+    out = w.run(score_quality=True)          # eval · dev 경로 — 채점까지
 
     assert w.calls == ["analyze", "generate", "check_photo", "verify", "judge"]
     assert out["mode"] == "generate" and out["composite_reason"] is None
     assert out["gate_passed"] is True and out["gen_attempts"] == 1
     assert [b["label"] for b in out["bubbles"]] == ["🏷️  ACME"]
     assert out["visual_similarity"] == 0.9 and out["item_similarity"] == 0.85
-    assert out["guard_report"] == [] and out["judge_pending"] is False
+    assert out["guard_report"] == []
     assert w.result() == "gen1" and w.quality() is not None
     # 검사는 전부 생성본을, 채점은 (원본, 생성본)을 본다
     assert w.seen == {"check_photo": ["gen1"], "verify": ["gen1"], "compose": [],
@@ -307,12 +307,12 @@ def test_gate_fail_twice_switches_to_composite_and_keeps_what_was_lost(w):
     out = w.run()
 
     assert w.calls == ["analyze", "generate", "check_photo", "verify",
-                       "generate", "check_photo", "verify", "compose", "judge"]
+                       "generate", "check_photo", "verify", "compose"]
     assert out["mode"] == "composite" and out["composite_reason"] == "gate_failed"
     assert out["gate_passed"] is None and out["checks"] == [] and out["bubbles"] == []
     assert out["item_similarity"] is None and out["guard_report"] == []
     assert w.result() == "comp"
-    assert w.seen["compose"] == ["orig"] and w.seen["judge"] == [("orig", "comp")]
+    assert w.seen["compose"] == ["orig"]
     ins = w.inspect()
     assert [c["preserved"] for c in ins["gate_checks"]] == [False]
     assert ins["visual_similarity"] == 0.77 and ins["guard_report"] == []   # 합성본으로 다시 잰다
@@ -335,8 +335,8 @@ def test_composite_first_skips_generate_and_verify(w, analysis, reason, composer
     w.analysis.update(analysis)
     out = w.run()
 
-    assert w.calls == ["analyze", composer, "judge"]
-    assert w.seen["compose"] == ["orig"] and w.seen["judge"] == [("orig", "comp")]
+    assert w.calls == ["analyze", composer]
+    assert w.seen["compose"] == ["orig"]
     assert out["mode"] == "composite" and out["composite_reason"] == reason
     assert out["gate_passed"] is None and out["prompt_used"].startswith("COMPOSITE")
     assert w.result() == "comp"
@@ -352,8 +352,8 @@ def test_cut_off_or_multi_item_goes_composite_without_generating(w, analysis, re
     """10-03: 물건이 잘렸거나(cut_off) 여러 개(multi_item)면 생성하지 않고 배경만 바꾼다."""
     w.analysis.update(analysis)
     out = w.run(composition="shoes_side")
-    assert w.calls == ["analyze", "compose", "judge"]
-    assert w.seen["compose"] == ["orig"] and w.seen["judge"] == [("orig", "comp")]
+    assert w.calls == ["analyze", "compose"]
+    assert w.seen["compose"] == ["orig"]
     assert out["mode"] == "composite" and out["composite_reason"] == reason
     assert out["gate_passed"] is None and out["prompt_used"].startswith("COMPOSITE")
     assert w.result() == "comp" and w.inspect()["composite_reason"] == reason
@@ -371,11 +371,11 @@ def test_cut_off_from_cached_analysis(w):
 
 def test_inside_view_keeps_original_without_any_check(w):
     w.analysis.update(photo_type="inside_view", text_level="dense", wear_level="heavy")
-    out = w.run()
+    out = w.run(score_quality=True)         # 채점을 켜도 원본이면 안 한다
 
     assert w.calls == ["analyze"]          # 생성·오리기·검사·채점 없음
     assert out["mode"] == "original" and out["composite_reason"] == "inside_view"
-    assert out["gate_passed"] is None and out["judge_pending"] is False
+    assert out["gate_passed"] is None
     assert out["prompt_used"].startswith("ORIGINAL")
     assert w.result() == "orig" and w.quality() is None
     assert w.route() == {"mode": "original", "composite_reason": "inside_view",
@@ -450,8 +450,9 @@ def test_worst_path_fits_recursion_limit(w, monkeypatch):
 
 def test_defer_leaves_item_signals_for_after_response(w):
     """라우트 경로: 응답 때 누끼 비교는 비어 있고, 응답 뒤 item_signals_and_save 가 채운다."""
-    out = w.run(defer_judge=True)
+    out = w.run(defer_signals=True)
     assert out["item_signals_pending"] is True and out["item_similarity"] is None
+    assert "judge" not in w.calls and w.quality() is None     # 운영 경로는 채점하지 않는다
     assert w.inspect()["item_similarity"] is None
     pipeline_mod.item_signals_and_save(FID, PRESET)
     assert w.inspect()["item_similarity"] == 0.85 and w.inspect()["item_patch_similarity"] == 0.97

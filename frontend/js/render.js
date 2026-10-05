@@ -1,8 +1,5 @@
 /* 렌더링 계층 — 화면만 그림. 서버 모름. */
 
-const qBox      = document.getElementById('quality-box');
-const qScores   = document.getElementById('quality-scores');
-const qAnalysis = document.getElementById('quality-analysis');
 const overlay   = document.getElementById('overlay');
 const gateBadge = document.getElementById('gate-badge');
 
@@ -10,14 +7,6 @@ const feedbackBox     = document.getElementById('feedback-box');
 const feedbackStars   = document.getElementById('feedback-stars');
 const feedbackComment = document.getElementById('feedback-comment');
 const feedbackStatus  = document.getElementById('feedback-status');
-
-function renderQuality(quality) {
-  if (!quality) { qBox.classList.add('hidden'); return; }
-  qScores.textContent =
-    `🛡️ 충실성 ${quality.fidelity}/5 · 현실감 ${quality.realism}/5 · 신뢰 ${quality.trust}/5`;
-  qAnalysis.textContent = quality.analysis || '';
-  qBox.classList.remove('hidden');
-}
 
 // 캔버스 안에서 이미지가 실제로 그려지는 영역(%) — object-fit:contain 이 만드는
 // 레터박스(여백)를 그대로 계산해서, 좌표(0~1000, 이미지 기준)를 오버레이(캔버스 기준)
@@ -120,10 +109,8 @@ function resetZoom() {
 }
 
 function clearResults() {
-  stopQualityPoll();
   overlay.innerHTML = '';
   gateBadge.hidden = true;
-  qBox.classList.add('hidden');
   hideFeedbackBox();
   resetZoom();
 }
