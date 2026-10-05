@@ -12,11 +12,12 @@ description: Carret 파이프라인 수치 보기 — 쌓인 inspect JSON·성�
 ```bash
 python .claude/skills/eval-report/inspect_stats.py            # 전체
 python .claude/skills/eval-report/inspect_stats.py --preset studio_white
+python .claude/skills/eval-report/inspect_stats.py --url http://localhost:8000   # S3 · 원격 dev 서버
 ```
 
 - 입력: `backend/storage/quality/*_inspect.json` (+ 같은 이름의 성적표 `.json`)
 - 성적표(judge)는 10-05 부터 eval · dev 실행분에만 있다 — 운영 결과면 judge 칸이 비는 게 정상이다.
-- `STORAGE_BACKEND=s3` 면 로컬에 없다 — 사용자에게 알리고 dev 서버의 `GET /dev/results` 를 대신 쓴다.
+- `STORAGE_BACKEND=s3` 면 로컬에 없다 — `--url` 로 dev 서버의 `GET /dev/results` 를 페이지(100건)씩 읽는다. 서버가 안 떠 있으면 사용자에게 알린다.
 - 표본이 적으면(n < 20) 결론 대신 "표본 부족"이라고 쓴다.
 
 ## 2. Langfuse (MCP `langfuse` 가 연결돼 있을 때)

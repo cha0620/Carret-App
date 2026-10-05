@@ -12,7 +12,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -216,8 +216,8 @@ def _local_names(folder: Path) -> list[str]:
 
 
 @router.get("/results")
-def dev_results():
-    """파이프라인이 만든 결과 전부를 원본과 묶어서 한 번에 — 판정(judge),
+def dev_results(offset: int = Query(0, ge=0), limit: int | None = Query(None, ge=1, le=500)):
+    """파이프라인이 만든 결과를 원본과 묶어서 (offset/limit 로 나눠 받기, limit 없으면 전부) — 판정(judge),
     인스펙트(anchors/checks/gate/guard), 피드백, 원본 이름을 모아 돌려준다.
     계산은 하지 않는다: 이미 저장된 산출물을 읽기만 한다 (최신순).
     목록은 storage 를 거친다 (STORAGE_BACKEND=local/s3 무관), 이미지 URL 은 /storage 라우트와 짝."""
@@ -232,6 +232,9 @@ def dev_results():
             continue
         found.append((mtime, n, file_id, preset))
     found.sort(key=lambda t: t[0], reverse=True)
+    total = len(found)
+    # 항목마다 DB · json 을 읽는 게 느린 부분 — 목록 정렬은 싸니 전부 하고, 읽기는 이 페이지만
+    found = found[offset:offset + limit if limit else None]
 
     items = []
     for mtime, n, file_id, preset in found:
@@ -253,4 +256,4 @@ def dev_results():
             "inspect": _safe(_load_json, "quality", f"{file_id}_{preset}_inspect.json"),
             "feedback": _safe(store.get_feedbacks, file_id, preset) or {"user": None, "agent": None},
         })
-    return {"items": items}
+    return {"items": items, "total": total, "offset": offset}

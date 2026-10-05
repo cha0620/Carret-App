@@ -151,3 +151,37 @@ def test_storage_route_rejects_names_outside_pattern(client, tmp_storage):
     """original 이라도 {file_id}[_preset].(jpg|jpeg|png|webp) 꼴이 아니면 404."""
     (tmp_storage / "original" / "notes.txt").write_bytes(b"x")
     assert client.get("/storage/original/notes.txt").status_code == 404
+
+
+def test_paging_keeps_newest_first_order_and_total(client, feedback_db, tmp_storage):
+    fids = [_fid() for _ in range(5)]
+    for i, fid in enumerate(fids):
+        _put_result(tmp_storage, fid, "studio_white", mtime=1_700_000_000 + i)
+    newest_first = list(reversed(fids))
+
+    first = client.get("/dev/results?offset=0&limit=2").json()
+    rest = client.get("/dev/results?offset=2&limit=2").json()
+    last = client.get("/dev/results?offset=4&limit=2").json()
+
+    assert first["total"] == rest["total"] == last["total"] == 5
+    got = [it["file_id"] for page in (first, rest, last) for it in page["items"]]
+    assert got == newest_first
+    assert client.get("/dev/results?offset=9&limit=2").json()["items"] == []
+
+
+def test_paging_rejects_bad_params(client, feedback_db, tmp_storage):
+    assert client.get("/dev/results?limit=0").status_code == 422
+    assert client.get("/dev/results?offset=-1").status_code == 422
+
+
+def test_paging_offset_without_limit_returns_rest(client, feedback_db, tmp_storage):
+    fids = [_fid() for _ in range(3)]
+    for i, fid in enumerate(fids):
+        _put_result(tmp_storage, fid, "studio_white", mtime=1_700_000_000 + i)
+    body = client.get("/dev/results?offset=1").json()
+    assert body["total"] == 3 and body["offset"] == 1
+    assert [it["file_id"] for it in body["items"]] == [fids[1], fids[0]]
+
+
+def test_paging_rejects_limit_over_500(client, feedback_db, tmp_storage):
+    assert client.get("/dev/results?limit=501").status_code == 422

@@ -324,6 +324,8 @@ def _p(i, obj, view=None, **kw):
     return {"index": i, "object": obj, "view": view, **kw}
 
 
+# 칸(slot) 없이 올린 옛 사진 경로 — AI 가 상품/근거를 정한다. 근거 칸(proof_files) 경로는
+# test_create_item_proof_files_saved_with_slot 등이 따로 본다.
 SHOES_AND_CARD = {
     "objects": [_o("A", name="sneakers", label="흰 운동화", category="shoes"),
                 _o("B", "proof", name="warranty card", label="보증서", proof_for="A")],
