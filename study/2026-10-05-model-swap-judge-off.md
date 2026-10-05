@@ -113,7 +113,7 @@
 | reviewer | `/storage` 이름에 문자셋 제한 없음 (S3 GET 남용) | 정규식 |
 | reviewer | dev results 가 결과마다 S3 GET 2번 + DB — 쌓이면 느려짐 | 남김 (dev 전용) |
 | reviewer | `main.py` 가 S3 모드에서도 빈 `./storage` 를 다시 만든다, eval-report 스킬이 로컬 quality 를 읽는다 | 남김 — 아래 할 일 |
-| tester | S3 list · 병합 · S3 모드 업로드가 로컬에 안 쓰임 · dev results 목록 · quality 404 — 5개 추가 | 684 통과 |
+| tester | S3 list · 병합 · S3 모드 업로드가 로컬에 안 쓰임 · dev results 목록 · quality 404 · 깨진 이미지 400 · 이름 제한 — 7개 추가 | 686 통과 |
 
 - [ ] 로컬 storage 비우기 — S3 에 없는 파일을 올릴지 사용자 확인 뒤
 - [ ] dev results 페이지 단위 조회 (결과가 쌓이면 느려짐)
