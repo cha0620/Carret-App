@@ -75,7 +75,6 @@ def transform(req: TransformRequest, background: BackgroundTasks):
         result_path=f"storage/result/{out['result_name']}",
         result_url=storage.result_url(req.file_id, key),
         prompt_used=out["prompt_used"],
-        bubbles=out["bubbles"],
         gate_passed=out["gate_passed"],
         item=out["item"],                           # ⭐
         considered=out["considered"],

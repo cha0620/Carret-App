@@ -32,4 +32,4 @@ def test_verify_replay(client, tmp_storage, monkeypatch, make_png):
     r = client.post("/dev/verify",
                     json={"file_id": fid, "preset": "studio_white"})
     assert r.status_code == 200
-    assert r.json()["bubbles"]
+    assert r.json()["checks"] and r.json()["gate_passed"] is not None

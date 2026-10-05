@@ -26,31 +26,32 @@ def get_original(file_id):
 
 
 def record_result(file_id, preset_key, result_name, item,
-                  considered, gate_passed, bubbles, elapsed_s=None, route=None):
+                  considered, gate_passed, elapsed_s=None, route=None):
     """route: {"mode", "composite_reason", "photo_type", "wear_level"} — 어느 경로로 나갔고 왜.
     없는 키는 NULL (재변환이면 옛 값도 NULL 로 덮는다 — 옛 경로가 새 결과에 남지 않게)."""
+    # bubbles 열은 10-05 말풍선을 없앤 뒤로 쓰지 않는다 (새 행은 NULL, 다시 기록해도 옛 값은 그대로)
     route = route or {}
     vals = [route.get(k) for k in db.RESULT_ROUTE_COLS]
     with db.get_conn() as c:
         c.execute("""
             INSERT INTO results(file_id, preset_key, result_name, item,
-                                considered, gate_passed, bubbles, elapsed_s,
+                                considered, gate_passed, elapsed_s,
                                 mode, composite_reason, photo_type, wear_level)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(file_id, preset_key) DO UPDATE SET
               result_name=excluded.result_name, item=excluded.item,
               considered=excluded.considered, gate_passed=excluded.gate_passed,
-              bubbles=excluded.bubbles, elapsed_s=excluded.elapsed_s,
+              elapsed_s=excluded.elapsed_s,
               mode=excluded.mode, composite_reason=excluded.composite_reason,
               photo_type=excluded.photo_type, wear_level=excluded.wear_level
         """, (file_id, preset_key, result_name, item,
               json.dumps(considered, ensure_ascii=False),
               None if gate_passed is None else int(gate_passed),
-              json.dumps(bubbles, ensure_ascii=False), elapsed_s, *vals))
+              elapsed_s, *vals))
 
 
 FEEDBACK_TAGS = ("defect_lost", "text_broken", "shape_changed", "color_changed",
-                 "framing", "background", "bubble_wrong", "good")
+                 "framing", "background", "bubble_wrong", "good")   # bubble_wrong 은 옛 피드백용 (10-05 말풍선 없앰)
 
 
 def save_feedback(file_id, preset_key, rating, comment=None, source="user", tags=None):

@@ -337,7 +337,6 @@ arrangeBtn.onclick = async () => {
   try {
     const r = await arrangeObjects(item.item_id, picked, layout, photos);
     clearResults();
-    overlay.innerHTML = '';
     document.getElementById('meta-chips').classList.add('hidden');   // 앞 변환의 물건 이름이 남지 않게
     beforeImg.hidden = true;                                          // 원본 한 장과 나란히 두면 그 사진의 결과처럼 보인다
     afterImg.onload = null;
@@ -485,11 +484,7 @@ runBtn.onclick = async () => {
   try {
     const data = await requestTransform(fileId_, PRESET, comp_, sell_);
 
-    // 이전 결과의 말풍선이 새 이미지 로드 전까지 잘못 남아있지 않도록 즉시 비움
-    overlay.innerHTML = '';
-
-    // 말풍선은 새 이미지가 실제로 로드된 뒤에 그려야 크기 계산(naturalWidth 등)이 맞음
-    afterImg.onload = () => renderBubbles(data.bubbles || []);
+    afterImg.onload = null;
     afterImg.onerror = () => { statusEl.textContent = '결과 이미지를 불러오지 못했습니다'; };
     afterImg.src = data.result_url + '?t=' + Date.now();
     afterImg.hidden = false;

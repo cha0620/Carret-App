@@ -75,7 +75,6 @@ class TransformRequest(BaseModel):
     def _clean_note(cls, v: str) -> str:
         from app.prompts.presets import clean_note
         return clean_note(v)
-    bubbles: list[Bubble] = []
     gate_passed: bool | None = None
 
 
@@ -85,7 +84,6 @@ class TransformResponse(BaseModel):
     result_path: str = Field(description="저장된 파일 경로")
     result_url: str = Field(description="브라우저에서 바로 보는 URL")
     prompt_used: str = Field(description="사용된 프롬프트 (실험 기록용)")
-    bubbles: list[Bubble] = []
     gate_passed: bool | None = None
     item: str = "object"
     considered: list[str] = []
