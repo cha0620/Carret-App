@@ -169,6 +169,10 @@ def _text(v) -> str:
     return "" if v is None else prompt_safe(v)
 
 
+# 물건 역할 (10-05): 본품 | 본구성품(빠지면 본품이 완전하지 않음) | 부가품(없어도 같은 상품 — 충전기 · 케이스 · 상자)
+ROLES = ("main", "component", "accessory")
+
+
 def analyze(image_bytes: bytes) -> dict:
     """파이프라인 첫 단계 (VLM 1회) — 예전 classify + detect 를 합친 것.
 
@@ -187,7 +191,10 @@ def analyze(image_bytes: bytes) -> dict:
     if not isinstance(data, dict) or not isinstance(data.get("marks"), list):
         raise ValueError(f"analyze: 응답에 marks 목록 없음: {str(data)[:200]}")
     anchors = [{"category": "print", "what": _text(m.get("what")),
-                "where": _text(m.get("where"))}
+                "where": _text(m.get("where")),
+                # 10-05: 어느 물건 위 · 크기 — 모르는 값은 본품 · 큰 마크(엄격한 쪽, 예전 동작)
+                "on": m.get("on") if m.get("on") in ROLES else "main",
+                "size": "small" if m.get("size") == "small" else "large"}
                for m in data["marks"] if isinstance(m, dict)]
     anchors = [a for a in anchors if a["what"]]
     level = _level(data, "text_level", TEXT_LEVELS, "simple")
@@ -226,7 +233,8 @@ def _parse_objects(raw) -> list[dict]:
             continue
         what, box = _text(o.get("what")), _from_box_2d({"box_2d": o.get("box_2d")})
         if what and _has_box(box):
-            out.append({"what": what, "box": _box(box), "for_sale": o.get("for_sale") not in (False, 0, "false", "False")})
+            out.append({"what": what, "box": _box(box), "for_sale": o.get("for_sale") not in (False, 0, "false", "False"),
+                        "role": o.get("role") if o.get("role") in ROLES else "main"})
         if len(out) >= MAX_OBJECTS:
             break
     return out
@@ -360,14 +368,23 @@ def _has_box(c: dict) -> bool:
     return c["x1"] != c["x2"] and c["y1"] != c["y2"]
 
 
-def _call_pair(original: bytes, result: bytes, prompt: str, name: str):
-    """원본 · 생성본 두 장 비교 호출 (temp 0 + JSON). 파싱 실패는 예외 — 호출부가 "확인 못 함"으로."""
+OTHER_VIEWS_NOTE = ("\n\nThe photos marked \"other angle\" show the SAME original item from other angles. "
+                    "Anything visible in them counts as already in photo 1.")
+
+
+def _call_pair(original: bytes, result: bytes, prompt: str, name: str, others: list[bytes] | None = None):
+    """원본 · 생성본 두 장 비교 호출 (temp 0 + JSON). 파싱 실패는 예외 — 호출부가 "확인 못 함"으로.
+    others: 같은 물건의 다른 각도 원본 (multi_view) — 거기 보이는 글자는 "원래 있던 것"으로."""
     client = get_client()
+    extra = []
+    for i, b in enumerate(others or [], 1):
+        extra += [f"Photo 1 — other angle {i} (same original item):", image_part(b, "image/jpeg", name)]
     with observe(name, as_type="generation", model=vlm_model(name), input=prompt) as obs:
         resp = client.models.generate_content(
             model=vlm_model(name),
-            contents=["Photo 1 (original):", image_part(original, "image/jpeg", name),
-                      "Photo 2 (redrawn):", image_part(result, "image/jpeg", name), prompt],
+            contents=["Photo 1 (original):", image_part(original, "image/jpeg", name), *extra,
+                      "Photo 2 (redrawn):", image_part(result, "image/jpeg", name),
+                      prompt + (OTHER_VIEWS_NOTE if others else "")],
             config=types.GenerateContentConfig(temperature=0, response_mime_type="application/json",
                                                thinking_config=thinking(name)),
         )
@@ -388,10 +405,11 @@ def _parse_added(raw) -> list[dict]:
     return out
 
 
-def added_text(original: bytes, result: bytes) -> list[dict]:
+def added_text(original: bytes, result: bytes, others: list[bytes] | None = None) -> list[dict]:
     """원본에 없던 글자 · 로고가 생성본에 생겼나 (10-03, VLM 1회 · 두 장 비교).
     반환: [{"what", "where"}] — 없으면 빈 목록. 응답이 깨지면 예외 (호출부가 "확인 못 함"으로)."""
-    data = _call_pair(original, result, P.added_text_prompt(), "added_text")
+    data = (_call_pair(original, result, P.added_text_prompt(), "added_text", others) if others
+            else _call_pair(original, result, P.added_text_prompt(), "added_text"))
     if not isinstance(data, dict) or not isinstance(data.get("added"), list):
         raise ValueError(f"added_text: 응답에 added 목록 없음: {str(data)[:200]}")
     return _parse_added(data["added"])
@@ -406,3 +424,15 @@ def verify_combined(original: bytes, result: bytes, anchors: list, item: str = "
     checks = [_clean_check(c) for c in data["checks"] if isinstance(c, dict) and _valid_check(c)]
     added = _parse_added(data["added"]) if isinstance(data.get("added"), list) else None
     return checks, added
+
+
+def prep_check(image_bytes: bytes, things: list[str]) -> list[str]:
+    """정답 사진의 준비물(자유 문장) 중 이 사진에 안 보이는 것 (10-05, VLM 1회). 빈 목록이면 다 있다.
+    응답이 깨지면 예외 — 호출부가 "확인 못 함 = 이 정답은 안 씀"으로 (틀린 선 그림보다 없는 게 낫다)."""
+    data = _call(image_bytes, P.prep_check_prompt(things), "prep_check")
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        data = data[0]
+    checks = data.get("checks") if isinstance(data, dict) else None
+    if not isinstance(checks, list) or len(checks) != len(things):
+        raise ValueError(f"prep_check: 응답 형식이 다름: {str(data)[:200]}")
+    return [t for t, c in zip(things, checks) if not (isinstance(c, dict) and c.get("visible") is True)]

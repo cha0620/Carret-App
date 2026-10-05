@@ -56,20 +56,32 @@ def analyze_prompt() -> str:
     return get_prompt_text("analyze_v2", fallback=analyze_template())
 
 
+def _mark_lines(anchors: list) -> str:
+    """검사 목록 한 줄씩. loose(본구성품의 작은 인쇄, 10-05)는 [presence only] — 규칙 3이 느슨하게 본다."""
+    return "\n".join(f"- {a['what']} ({a['where']})" + (" [presence only]" if a.get("loose") else "")
+                     for a in anchors)
+
+
 def verify_prompt(anchors: list, item: str) -> str:
     """생성본 게이트 "verify_v2" — 아이덴티티 마크 · 글자만 (옛 "verify" 는 배포된 옛 서버용으로 Langfuse 에만 남는다)."""
-    lines = "\n".join(f"- {a['what']} ({a['where']})" for a in anchors)
+    lines = _mark_lines(anchors)
     return get_prompt_text("verify_v2", fallback=verify_marks_template(), item=item, lines=lines)
 
 
 def verify_combined_prompt(anchors: list, item: str) -> str:
     """verify + added_text 한 호출 (10-05, settings.verify_combined) — 원본 · 생성본 두 장을 같이 본다."""
-    lines = "\n".join(f"- {a['what']} ({a['where']})" for a in anchors) or "(none)"
+    lines = _mark_lines(anchors) or "(none)"
     return get_prompt_text("verify_combined", fallback=frag("verify_combined"), item=item, lines=lines)
 
 
 def item_text_prompt(item: str) -> str:
     return get_prompt_text("item_text", fallback=frag("item_text"), item=item)
+
+
+def prep_check_prompt(things: list[str]) -> str:
+    """정답 사진의 준비물이 판매자 사진에 다 보이나 (10-05, 스타일 참고 고르기)."""
+    lines = "\n".join(f"- {t}" for t in things)
+    return get_prompt_text("prep_check", fallback=frag("prep_check"), lines=lines)
 
 
 def added_text_prompt() -> str:

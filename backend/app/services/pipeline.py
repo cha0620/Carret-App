@@ -47,6 +47,7 @@ from app.prompts.presets import (TEXT_LOCK_MAX_CHARS, get_preset, leave_out, pro
 from app.prompts.rubric import AXES
 from app.services import compositions
 from app.services.ai import compositor, detector, embedder, judge
+from app.services import style_refs
 from app.services.ai.generator import _generate_ai
 from app.services.persistence import storage, store
 from app.services.quality import guards
@@ -104,6 +105,11 @@ class State(TypedDict, total=False):
     gate_checks: list          # 배경 교체로 가기 전 생성본 게이트의 checks (무엇이 사라졌나 — 기록용)
     gate_passed: bool | None
     prompt_used: str
+    extra_view_ids: list       # multi_view: 같은 물건의 다른 각도 원본 file_id (최대 2)
+    ref_category: str | None   # style_ref: 참고 고르기용 종류 · 주 사진 각도 (묶음 화면에서 안다, 10-05)
+    ref_view: str | None
+    ref_file: str | None       # 게시글 단위로 미리 고른 정답 (style_refs.plan)
+    style_ref: str | None      # 고른 참고 선 그림 파일 (없으면 None)
 
 
 # ── 노드 ─────────────────────────────────────────
@@ -248,8 +254,31 @@ def apply_selection(a: dict, sell: list | None, answer_count: int | None = None)
                 out["item_texts"] = [t for t in a.get("item_texts") or []
                                      if not (any(_inside(t, o["box"]) for o in dropped)
                                              and not any(_inside(t, o["box"]) for o in picked))]
+    elif objs:
+        out.update(_drop_accessories(out, objs))
     if isinstance(answer_count, int) and not isinstance(answer_count, bool) and answer_count >= 1:
         out["item_count"] = answer_count
+    return out
+
+
+def _drop_accessories(a: dict, objs: list) -> dict:
+    """부가품(충전기 · 케이스 · 상자 — 없어도 같은 상품)은 썸네일에서 뺀다 (10-05 사용자 결정).
+    사용자가 고르지 않았을 때만 — 고르면 고른 대로. 본품 · 본구성품이 하나도 없으면 그대로 둔다.
+    개수(item_count)는 바꾸지 않는다 — 본품 + 본구성품(레고 차 + 피규어 + 설명서)을 세면 "여러 개"가 돼 배경 교체로 간다."""
+    drop = [o for o in objs if o.get("for_sale") and o.get("role") == "accessory"]
+    keep = [o for o in objs if o.get("for_sale") and o.get("role") != "accessory"]
+    if not drop or not keep:
+        return {}
+    names = {o["what"] for o in keep}
+    out = {"leave_out": list(dict.fromkeys([*(a.get("leave_out") or []),
+                                             *(o["what"] for o in drop if o["what"] not in names)])),
+           "leave_out_boxes": [*(a.get("leave_out_boxes") or []), *(o["box"] for o in drop)],
+           "item_box": {"x1": min(o["box"]["x1"] for o in keep), "y1": min(o["box"]["y1"] for o in keep),
+                        "x2": max(o["box"]["x2"] for o in keep), "y2": max(o["box"]["y2"] for o in keep)}}
+    if "item_texts" in a:
+        out["item_texts"] = [t for t in a.get("item_texts") or []
+                             if not (any(_inside(t, o["box"]) for o in drop)
+                                     and not any(_inside(t, o["box"]) for o in keep))]
     return out
 
 def _result_name(s: State) -> str:
@@ -325,6 +354,42 @@ def _route_after_plan_dev(s: State) -> str:
     return "read_text" if _needs_text(s) else "use_provided"
 
 
+STYLE_REF_NOTE = (
+    "\n\nThe LAST image is only a LINE DRAWING that shows the camera angle, placement and framing — it is "
+    "not the item. Follow its angle, placement and framing, centered on a pure white background with a soft "
+    "shadow. Take color, body, parts, materials and every printed detail ONLY from the photo(s) of the item. "
+    "Do not add any text or logo.")
+MULTI_VIEW_NOTE = (
+    "\n\nThe FIRST image is the photo to edit — keep its camera angle and its item. The next {n} image(s) show "
+    "the SAME item from other angles. Use them only to check shape, color, material and lettering that are "
+    "blurry or hidden in the first image. Do NOT merge the other angles into the result and do NOT draw a "
+    "second copy of the item.")
+
+
+def _extra_views(s: State) -> list[bytes]:
+    if not settings.multi_view:
+        return []
+    out = []
+    for fid in (s.get("extra_view_ids") or [])[:2]:
+        b = storage.load_original(fid)
+        if b is not None:
+            out.append(b)
+    return out
+
+
+def _style_ref(s: State) -> tuple[str, bytes] | None:
+    """정답 선 그림 (settings.style_ref). 재생성 때는 처음 고른 것 그대로 (VLM 대조를 또 하지 않는다).
+    게시글 단위로 미리 고른 정답(ref_file — 주 사진에서 준비물을 이미 대조함)이 있으면 그것, 없으면 이 사진으로 대조."""
+    if not settings.style_ref:
+        return None
+    if s.get("style_ref"):
+        return style_refs.sketch(s["style_ref"])
+    if s.get("ref_file"):
+        return style_refs.sketch(s["ref_file"])
+    return style_refs.pick(s.get("item"), s.get("ref_category"), s.get("ref_view"), s["original"],
+                           detector.prep_check)
+
+
 def generate(s: State) -> dict:
     preset = s["preset"]
     # 고른 정석 구도의 틀(가운데 · 여백 · 수평) — 각도는 잠금이 지킨다. 글자 잠금은 그 뒤에.
@@ -345,7 +410,21 @@ def generate(s: State) -> dict:
             f"\n\nIMPORTANT: a previous attempt was rejected for this reason: "
             f"\"{note}\". Show the FULL item in frame (no cropping/zoom) and do "
             f"NOT add any caption, subtitle, watermark, or overlaid text.")}
-    gen = _generate_ai(s["original"], preset)
+    ref = _style_ref(s)
+    if ref and s.get("leave_out") and style_refs.shows_accessory(ref[0]):
+        # 정답 사진이 상자 같은 부가품을 같이 보여 준다 (준비물로 확인함) — 썸네일에서 부가품을 빼지 않는다
+        acc = {o["what"] for o in s.get("objects") or [] if o.get("role") == "accessory"}
+        lo = [n for n in s["leave_out"] if n not in acc]
+        if lo != s["leave_out"]:
+            preset = {**preset, "prompt": preset["prompt"].replace(leave_out(s["leave_out"]), leave_out(lo))}
+    extras = _extra_views(s)
+    if extras:
+        preset = {**preset, "prompt": preset["prompt"] + MULTI_VIEW_NOTE.format(n=len(extras))}
+    if ref:
+        preset = {**preset, "prompt": preset["prompt"] + STYLE_REF_NOTE}
+        logger.info(f"[style_ref] {ref[0]}")
+    kw = {**({"style_ref": ref[1]} if ref else {}), **({"extra_views": extras} if extras else {})}
+    gen = _generate_ai(s["original"], preset, **kw)
     result_name = _result_name(s)
     n = s.get("gen_attempts", 0) + 1
     if settings.keep_attempts:
@@ -361,6 +440,7 @@ def generate(s: State) -> dict:
         "result_name": result_name,
         "prompt_used": preset["prompt"],
         "gen_attempts": n,
+        "style_ref": ref[0] if ref else None,
         "visual_similarity": None,   # 새 이미지 — 이전 결과 기준 값은 무효
         "item_similarity": None,
         "item_patch_similarity": None,
@@ -545,7 +625,9 @@ def _verify_targets(s: State) -> list:
     TEXT_LOCK 은 생성 전에 "글자를 지켜라"고 부탁만 한다 — 실제로 지켜졌는지는
     여기서 게이트에 건다 (뭉개지면 preserved:false → 재생성/배경 교체).
     detect 가 같은 글자를 print 앵커로 이미 올렸으면 중복으로 넣지 않는다."""
-    targets = list(s.get("anchors") or [])
+    # 부가품 위 마크는 보지 않는다 (썸네일에서 뺐다). 본구성품의 작은 인쇄(설명서 번호 등)는 "있는지만" (10-05 B)
+    targets = [{**a, "loose": True} if a.get("on") == "component" and a.get("size") == "small" else a
+               for a in s.get("anchors") or [] if a.get("on") != "accessory"]
     covered = " ".join(a.get("what", "") for a in targets
                        if a.get("category") == "print").lower()
     targets += [{"category": "print", "what": f'text: "{text}"',
@@ -627,7 +709,9 @@ def _added_text(s: State, result: bytes) -> list | None:
     if not settings.added_text_gate:
         return []
     try:
-        added = _with_retry(lambda: detector.added_text(s["original"], result), "added_text", VERIFY_ATTEMPTS)
+        others = _extra_views(s)
+        added = _with_retry(lambda: (detector.added_text(s["original"], result, others) if others
+                                     else detector.added_text(s["original"], result)), "added_text", VERIFY_ATTEMPTS)
     except Exception:
         return None
     _log_added(added)
@@ -994,7 +1078,9 @@ RECURSION_LIMIT = 80
 
 def run_transform(file_id: str, preset_key: str, *, defer_signals: bool = False,
                   score_quality: bool = False, note: str = "", composition: str | None = None,
-                  sell: list | None = None, answer_count: int | None = None) -> dict:
+                  sell: list | None = None, answer_count: int | None = None,
+                  extra_view_ids: list | None = None, ref_category: str | None = None,
+                  ref_view: str | None = None, ref_file: str | None = None) -> dict:
     """defer_signals=True: 누끼 비교를 하지 않고 결과에 item_signals_pending/trace_id 를 실어 보낸다 —
     호출부(transform 라우트)가 응답 뒤 item_signals_and_save() 를 돌린다.
     score_quality=True: 그래프 직후 judge 성적표를 채점 (eval · dev 만 — 운영 경로는 안 부른다)."""
@@ -1022,7 +1108,9 @@ def run_transform(file_id: str, preset_key: str, *, defer_signals: bool = False,
             # 남겨 두면 새 결과에 옛 점수가 붙는다 (원본 그대로·채점 실패 때도)
             _clear_quality(f"{file_id}_{preset_key}.json")
             out = GRAPH.invoke({"file_id": file_id, "preset_key": preset_key, "style_note": note,
-                                "composition": composition, "sell": sell, "answer_count": answer_count},
+                                "composition": composition, "sell": sell, "answer_count": answer_count,
+                                "extra_view_ids": extra_view_ids or [],
+                                "ref_category": ref_category, "ref_view": ref_view, "ref_file": ref_file},
                                {"recursion_limit": RECURSION_LIMIT})
             # 채점할 때만: 그래프 도중에 같은 쌍을 돌던 다른 eval · dev 채점이 옛 점수를 저장했을 수
             # 있다 — 새로 채점하기 전에 한 번 더 지운다 (운영은 성적표를 만들지 않아 삭제 왕복을 아낀다).

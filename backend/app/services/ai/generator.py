@@ -14,15 +14,23 @@ logger = logging.getLogger("carret.generator")
 GEN_STEPS = 8   # flux-2 flash 는 8 이하 (eval/run.py 가 meta 에 남긴다)
 
 
-def _generate_ai(image_bytes: bytes, preset: dict, seed: int | None = None) -> bytes:
+MAX_IMAGES = 4   # flux-2 flash edit 는 앞의 4장만 쓴다
+
+
+def _generate_ai(image_bytes: bytes, preset: dict, seed: int | None = None,
+                 style_ref: bytes | None = None, extra_views: list[bytes] | None = None) -> bytes:
     """생성 편집 모델: 프롬프트가 전체 편집을 지시 (마스크 불필요).
-    seed=None 이면 fal 기본(랜덤) — 출력 가드 재시도만 seed 를 명시해서 바꾼다."""
+    seed=None 이면 fal 기본(랜덤) — 출력 가드 재시도만 seed 를 명시해서 바꾼다.
+    style_ref 가 있으면 두 번째 이미지로 (스타일 참고 — 무엇을 따라 할지는 프롬프트가 정한다)."""
     os.environ.setdefault("FAL_KEY", reveal(settings.fal_key))
 
-    image_url = _upload(image_bytes)
+    # 순서: 주 사진 → 같은 물건 다른 각도 → 스타일 참고 (프롬프트가 이 순서로 가리킨다)
+    extras = (extra_views or [])[:MAX_IMAGES - 1 - (1 if style_ref else 0)]
+    image_urls = ([_upload(image_bytes)] + [_upload(b) for b in extras]
+                  + ([_upload(style_ref)] if style_ref else []))
 
     arguments = {
-        "image_urls": [image_url],           # ← 리스트로! (참조 이미지 목록)
+        "image_urls": image_urls,            # ← 리스트로! (참조 이미지 목록, 첫 장이 원본)
         "prompt": preset["prompt"],
         # num_inference_steps: 삭제 (기본값) 또는 8 이하
         "num_inference_steps": GEN_STEPS,

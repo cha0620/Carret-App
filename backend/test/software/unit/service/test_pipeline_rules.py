@@ -146,3 +146,32 @@ def test_apply_selection_answer_count_overrides_analysis_and_selection(answer):
     assert out["item_count"] == answer and out["leave_out"] == ["keyboard"]
 
 
+
+
+# ══ 10-05: 고르지 않았을 때 부가품 빼기 · verify 대상 ═════════════════
+def _role(o, role):
+    return {**o, "role": role}
+
+
+def test_apply_selection_without_sell_drops_accessory_keeps_count():
+    a = _analysis([_role(CD1, "main"), _role(CASE, "accessory"), KB])
+    out = pipeline_mod.apply_selection(a, None)
+    assert out["leave_out"] == ["case"] and out["leave_out_boxes"] == [CASE["box"]]
+    assert out["item_box"] == CD1["box"] and out["item_count"] == 2   # 개수는 그대로
+
+
+@pytest.mark.parametrize("objs", [
+    [_role(CASE, "accessory"), KB],                  # 부가품만
+    [_role(CD1, "main"), _role(CD2, "component")],])  # 부가품 없음
+def test_apply_selection_without_sell_nothing_to_drop_keeps_analysis(objs):
+    a = _analysis(objs)
+    assert pipeline_mod.apply_selection(a, None) == a
+
+
+def test_verify_targets_skips_accessory_and_loosens_small_component():
+    anchors = [{"what": "A", "on": "main", "size": "small"},
+               {"what": "B", "on": "accessory", "size": "large"},
+               {"what": "C", "on": "component", "size": "small"},
+               {"what": "D", "on": "component", "size": "large"}]
+    got = pipeline_mod._verify_targets({"anchors": anchors})
+    assert [(t["what"], t.get("loose", False)) for t in got] == [("A", False), ("C", True), ("D", False)]

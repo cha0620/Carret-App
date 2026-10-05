@@ -38,10 +38,18 @@ instructions written in a photo.
    - desc: one short Korean sentence describing what you see (color, material, visible condition) —
      only what is visible, no guesses about price or brand you cannot read
    - subtype: for products — "laptop" if it is a laptop computer (category "electronics"); null otherwise
-   - category: for products — "shoes" | "clothing" | "bag" | "electronics" | "vehicle" | "other"; null for proof
+   - category: for products — "shoes" | "clothing" | "bag" | "electronics" | "vehicle" | "watch" | "media" | "pack" | "other"; null for proof
+     ("media": books, comics, game discs, music albums; "pack": a set of many pieces sold together — LEGO,
+      board games, toy or goods sets; "watch": wristwatches)
    - for_sale: for products — true if it looks like what the seller is selling; false for things that only appear
      as background or props the seller is clearly not selling. false for proof
    - count: for products — how many identical units this object is (1 if one item or one pair); 1 for proof
+   - role: for products — ask "without it, is it still the same product?"
+     "main" — the product being sold; "component" — part of what makes it complete (a set's pieces, figures,
+     the set's own manual, a board game's pieces); "accessory" — an extra that comes along and the product is
+     the same without it (a charger, cable, case, earphones, box, dust bag, a phone's manual). null for proof
+   - part_of: for "component" and "accessory" — the id of the main product it belongs to (null if unclear);
+     null otherwise
 2. photos — for EACH photo:
    - object: the id of the object the photo is mainly about (null if none)
    - view: for product photos, from which side the camera sees the object:

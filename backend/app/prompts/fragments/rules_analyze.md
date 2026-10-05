@@ -9,6 +9,13 @@ Report:
    its box = two entries), at most 12. For each: what (short noun), box_2d, and for_sale — true if it
    is part of what is being sold (the items you counted in item_count), false for things around it
    (a keyboard behind, a mug next to it). Do not list hands, people, furniture, the floor or walls.
+   role (for things for sale) — ask "without it, is it still the same product?":
+     "main"      — the product being sold (a phone, sneakers, a LEGO set's built model, a board game)
+     "component" — part of what makes the product complete; without it the product is incomplete
+                   (bricks, figures and the set's own manual of a LEGO set, a board game's board, pieces and cards)
+     "accessory" — an extra that comes along; the product is the same without it
+                   (a charger, cable, case, earphones, box, dust bag, receipt, a phone's manual)
+   For things not for sale use "accessory".
    item_cut_off — true if part of an item for sale is outside the photo (cut by the frame edge) or
    hidden behind something, so its whole outline is not shown. A close-up of one spot is
    "inside_view", not cut off. false if every item for sale is fully in the photo.
@@ -24,6 +31,9 @@ Report:
    Do NOT list watermarks, captions or UI overlays laid over the photo.
    - what: short description (e.g. "SUZUKI logo on side fairing")
    - where: short region (e.g. "left side panel")
+   - on: which object the mark is on — "main" | "component" | "accessory" (same roles as objects)
+   - size: "large" for a main logo or name a buyer sees at a glance; "small" for fine print, set numbers,
+     small labels
 
 4. photo_type — what kind of photo this is. Pick exactly one:
    - "document": an actual paper document whose written content IS the item —

@@ -205,6 +205,9 @@ class ItemObject(BaseModel):
     subtype: str | None = Field(default=None, description="종류보다 좁은 물건 (coverage.SUBTYPES — laptop), 아니면 None")
     for_sale: bool = False
     count: int = Field(default=1, description="같은 물건 몇 개 (product 만)")
+    role: Literal["main", "component", "accessory"] | None = Field(
+        default=None, description="product 만: 본품 | 본구성품(빠지면 본품이 완전하지 않음) | 부가품(없어도 같은 상품 — 썸네일에서 뺀다)")
+    part_of: str | None = Field(default=None, description="본구성품 · 부가품: 어느 본품 것인가 (id)")
     photo_ids: list[str] = Field(default_factory=list)
     missing: list[MissingView] = Field(default_factory=list)
     retake: list[Retake] = Field(default_factory=list)
@@ -220,6 +223,8 @@ class ItemObjectEdit(BaseModel):
     category: str | None = Field(default=None, max_length=20)
     for_sale: bool = False
     count: int = Field(default=1, ge=1, le=99)
+    role: Literal["main", "component", "accessory"] | None = None
+    part_of: str | None = Field(default=None, pattern=r"^o[0-9]{1,3}$")
     proof_type: str | None = Field(default=None, max_length=20)
     proof_for: str | None = Field(default=None, pattern=r"^o[0-9]{1,3}$")
 

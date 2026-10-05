@@ -202,8 +202,10 @@ def test_analyze_parses_full_response(monkeypatch):
     assert out == {
         "item": "electric shaver",
         "considered": ["logo", "model text"],       # 빈 문자열 제외, strip
-        "anchors": [{"category": "print", "what": "BRAUN", "where": "front"},
-                    {"category": "print", "what": "Series 9", "where": "side"}],
+        "anchors": [{"category": "print", "what": "BRAUN", "where": "front",
+                     "on": "main", "size": "large"},
+                    {"category": "print", "what": "Series 9", "where": "side",
+                     "on": "main", "size": "large"}],   # on · size 없으면 main · large
         # box_2d = [ymin, xmin, ymax, xmax] → x1=xmin ...
         "item_box": {"x1": 200, "y1": 100, "x2": 800, "y2": 700},
         "photo_type": "product", "wear_level": "none", "watermark": "background",
@@ -285,8 +287,9 @@ def test_analyze_parses_objects_for_sell_choice(monkeypatch):
         {"what": "", "box_2d": [0, 0, 10, 10]}, {"what": "bad box", "box_2d": [1, 2]}, "junk",
         *({"what": f"o{i}", "box_2d": [0, 0, 10, 10]} for i in range(20))]})
     objs = detector.analyze(b"x")["objects"]
-    assert objs[0] == {"what": "CD", "box": {"x1": 50, "y1": 100, "x2": 450, "y2": 900}, "for_sale": True}
-    assert objs[1]["for_sale"] is True and objs[2] == {"what": "keyboard", "for_sale": False,
+    assert objs[0] == {"what": "CD", "box": {"x1": 50, "y1": 100, "x2": 450, "y2": 900}, "for_sale": True,
+                       "role": "main"}
+    assert objs[1]["for_sale"] is True and objs[2] == {"what": "keyboard", "for_sale": False, "role": "main",
                                                         "box": {"x1": 0, "y1": 0, "x2": 1000, "y2": 80}}
     assert len(objs) == detector.MAX_OBJECTS and all(o["what"] for o in objs)
 
@@ -339,3 +342,9 @@ def test_verify_combined_bad_added_is_none(monkeypatch):
     monkeypatch.setattr(detector, "_call_pair", lambda *a, **k: {
         "checks": [{"what": "a", "preserved": True}], "added": "none"})
     assert detector.verify_combined(b"o", b"r", [{"what": "a", "where": "b"}])[1] is None
+
+
+def test_prep_check_count_mismatch_raises(monkeypatch):
+    _analyze_with(monkeypatch, {"checks": [{"visible": True}]})
+    with pytest.raises(ValueError):
+        detector.prep_check(b"x", ["box", "figure"])
