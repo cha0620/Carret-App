@@ -7,7 +7,7 @@
 """
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, StringConstraints, field_validator
+from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
 
 class Bubble(BaseModel):
     what: str
@@ -46,6 +46,15 @@ class TransformRequest(BaseModel):
     sell: list[int] | None = Field(
         default=None, max_length=12,
         description="팔 물건 (POST /api/analyze 의 objects[].index, 여러 개 가능) — 없으면 분석 판단대로")
+
+    separate: bool = Field(
+        default=False, description="물건마다 따로 만드는 중 (sell 은 하나) — 결과 이름에 물건 번호를 붙여 서로 덮어쓰지 않게")
+
+    @model_validator(mode="after")
+    def _separate_needs_one(self):
+        if self.separate and (not self.sell or len(self.sell) != 1):
+            raise ValueError("따로 만들 때는 팔 물건을 하나만 골라 주세요")
+        return self
 
     @field_validator("sell")
     @classmethod

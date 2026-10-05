@@ -162,7 +162,7 @@
 
 | 열 | 값 |
 |---|---|
-| `category` | `shoes` / `clothing` / `bag` / `electronics` / `vehicle` / `other` / `watch` / `media` (`watch` · `media` 는 앱에선 other) |
+| `category` | `shoes` / `clothing` / `bag` / `electronics` / `vehicle` / `other` / `watch` / `media` / `pack` (`watch` · `media` · `pack` 은 앱에선 other. `pack` = 박스 안에 구성품이 든 세트 — 보드게임 · 굿즈 시즌그리팅) |
 | `photo_type` | `document` / `inside_view` / `product` |
 | `wear_level` | `none` / `light` / `heavy` — 앱 분석이 아직 이 값을 써서 기준선까지는 그대로. 분석을 바꿀 때 "넓은 흔적 있음 / 없음"으로 바꾼다 |
 | `text_level` | `none` / `simple` / `dense` |

@@ -85,7 +85,14 @@
       <p class="note-help">배경과 조명만 바뀌어요. 물건의 색·흠집·글자는 그대로 둬요.</p>
     </div>
     <button id="run" class="btn btn-primary btn-block" disabled>변환하기</button>
+    <div id="multi-choice" class="multi-choice hidden" role="group" aria-label="여러 물건">
+      <p id="multi-q" class="step-label"></p>
+      <button id="multi-together" type="button" class="btn btn-ghost">한 장에 같이</button>
+      <button id="multi-separate" type="button" class="btn btn-ghost">물건마다 따로</button>
+      <button id="multi-cancel" type="button" class="btn btn-ghost">취소</button>
+    </div>
     <p id="status"></p>
+    <div id="multi-results" class="multi-results hidden" role="radiogroup" aria-label="물건별 결과"></div>
   </section>
 
   <section class="result-grid">

@@ -74,12 +74,13 @@ async function analyzePhoto(fileId) {
   return resp.json();
 }
 
-async function requestTransform(fileId, preset, composition = null, sell = null) {
+// separate = 물건마다 따로 만드는 중 (sell 은 하나) — 서버가 결과 이름에 물건 번호를 붙인다
+async function requestTransform(fileId, preset, composition = null, sell = null, separate = false) {
   // 1) fetch → Response 객체 받기
   const resp = await fetch("/api/transform", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({ file_id: fileId, preset: preset, composition, sell }),
+    body: JSON.stringify({ file_id: fileId, preset: preset, composition, sell, separate }),
   });
 
   // 2) 실패면 throw (Response 상태에서)

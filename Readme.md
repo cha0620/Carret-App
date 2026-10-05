@@ -434,6 +434,9 @@ make docs    # browse the repo's .md files (http://localhost:8090, renders merma
   own section. The section decides product vs. proof (the VLM only groups photos and suggests the proof type); a new
   proof type `mark` covers logo / serial / hologram close-ups. Proof photos stay attached to the listing and are not
   used for generation or checks
+- **Several items in one photo — together or separately**: when two or more items for sale are picked, the app asks
+  before converting. "Separately" converts each item on its own (`separate=true`, result name gets `-o<n>`) and shows
+  the results as a thumbnail strip. Cost and time grow with the number of items
 
 **2026-10-01**
 - **Workflow redesigned around multi-angle upload**: photos or a video → angle labels (one low-res VLM call) → missing

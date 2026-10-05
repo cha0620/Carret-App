@@ -331,3 +331,12 @@ body {
 .layout-grid .layout-pic i:nth-child(1) { left: 9px; top: 2px; } .layout-grid .layout-pic i:nth-child(2) { left: 27px; top: 2px; } .layout-grid .layout-pic i:nth-child(3) { left: 18px; top: 18px; }
 .layout-overlap .layout-pic i { width: 16px; height: 18px; bottom: 4px; }
 .layout-overlap .layout-pic i:nth-child(1) { left: 4px; } .layout-overlap .layout-pic i:nth-child(2) { left: 16px; opacity: .85; } .layout-overlap .layout-pic i:nth-child(3) { left: 28px; opacity: 1; }
+
+/* 여러 물건 — 같이 / 따로 (10-05) */
+.multi-choice { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+.multi-choice .step-label { width: 100%; margin: 0; }
+.multi-results { display: flex; gap: 8px; overflow-x: auto; margin-top: 10px; }
+.multi-result { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 4px;
+  border: 2px solid transparent; border-radius: 10px; background: none; cursor: pointer; font-size: 12px; }
+.multi-result img { width: 84px; height: 84px; object-fit: cover; border-radius: 8px; }
+.multi-result.on { border-color: var(--accent); }
