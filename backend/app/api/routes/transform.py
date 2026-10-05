@@ -53,6 +53,8 @@ def analyze(req: AnalyzeRequest):
 def transform(req: TransformRequest, background: BackgroundTasks):
     # def = 스레드풀 실행 (rembg 같은 블로킹 작업용 ✅)
     key = style_key(req.preset, req.note)
+    if req.separate:
+        key += f"-o{req.sell[0]}"     # 물건마다 따로 — 같은 사진의 다른 물건 결과를 덮어쓰지 않게 (10-05)
     try:
         out = pipeline.run_transform(req.file_id, key, defer_signals=True, note=req.note,
                                      composition=req.composition, sell=req.sell)

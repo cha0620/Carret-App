@@ -53,7 +53,7 @@ ENUMS = {"photo_type": ("document", "inside_view", "product"),
          "wear_level": ("none", "light", "heavy"),
          "text_level": ("none", "simple", "dense")}
 # 물건 종류 — 앱 종류(coverage.CATEGORIES) + 앱에선 other 인 것 중 따로 세고 싶은 것
-DATA_CATEGORIES = (*coverage.CATEGORIES, "watch", "media")
+DATA_CATEGORIES = (*coverage.CATEGORIES, "watch", "media", "pack")   # pack: 박스 안에 구성품이 든 세트 (보드게임 · 굿즈, 10-05)
 # 사진 성격 태그 (여러 개) — 어느 층 사진에든 단다. COLLECT.md "edge 태그" 표와 같게.
 # 묶음: judge 판단이 애매(edge 층의 이유) · cut 오리기·검출 · gen 생성에서 망가지기 쉬움 · privacy 가릴 것
 EDGE_TAGS = {

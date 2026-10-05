@@ -493,3 +493,9 @@ def test_add_with_old_entries_mixed(intake_mod, capsys):
     assert not [p for p in m.problems(entries, m.IMAGES, m.load_split_log()) if "게시글" in p]
 
 
+
+
+def test_parse_label_row_accepts_pack_category(intake_mod):
+    vals, errors, _ = intake_mod.parse_label_row(
+        {"category": "pack", "photo_type": "product", "wear_level": "none", "text_level": "none"})
+    assert errors == [] and vals["category"] == "pack"

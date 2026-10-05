@@ -109,6 +109,7 @@ function needsSave() {
 
 let composition = null;          // 고른 정석 구도 키 (신발만 — 없으면 null)
 let sell = null;                 // 고른 팔 물건 번호 (analyze objects) — 목록이 없으면 null (분석 판단대로)
+let analysisObjects = null;      // 분석이 준 사진 속 물건 (따로 만들 때 이름 표시용)
 let sellDirty = false;           // 사용자가 기본 체크를 바꿨나 — 안 바꿨으면 서버에 보내지 않는다 (분석 판단대로)
 let analyzing = false;           // 미리 분석 중 — 끝나기 전에 변환하면 서버가 같은 사진을 두 번 분석한다
 let analyzeToken = 0;            // 사진을 바꾸면 늦게 온 분석 응답을 버린다
@@ -116,9 +117,12 @@ let analyzeToken = 0;            // 사진을 바꾸면 늦게 온 분석 응답
 function resetSell() {
   ++analyzeToken;
   sell = null;
+  analysisObjects = null;
   sellDirty = false;
   analyzing = false;
   renderSell(null);
+  renderMultiResults([]);
+  if (cancelAsk) cancelAsk();
 }
 
 async function loadSellObjects(fid) {
@@ -136,6 +140,7 @@ async function loadSellObjects(fid) {
     };
     if (NOTE[a.reason] && !busy) statusEl.textContent = NOTE[a.reason];
     const objs = a.objects || [];
+    analysisObjects = objs;
     if (objs.length < 2) return;            // 하나뿐이면 고를 게 없다
     sell = objs.filter(o => o.for_sale).map(o => o.index);
     if (!sell.length) sell = objs.map(o => o.index);
@@ -517,23 +522,102 @@ urlBtn.onclick = async () => {
 };
 
 // ---- 변환 ----
+// 팔 물건이 여러 개면 한 장에 같이 / 물건마다 따로를 묻는다 (10-05) — 'together' | 'separate' | null(취소)
+let cancelAsk = null;             // 묻는 중이면 질문을 닫는 함수 (사진을 바꾸면 취소)
+
+function askMulti(n) {
+  const box = document.getElementById('multi-choice');
+  document.getElementById('multi-q').textContent = `팔 물건이 ${n}개예요. 어떻게 만들까요?`;
+  box.classList.remove('hidden');
+  return new Promise(resolve => {
+    const done = v => { box.classList.add('hidden'); cancelAsk = null; resolve(v); };
+    cancelAsk = () => done(null);
+    document.getElementById('multi-together').onclick = () => done('together');
+    document.getElementById('multi-separate').onclick = () => done('separate');
+    document.getElementById('multi-cancel').onclick = () => done(null);
+  });
+}
+
+function showResult(data) {
+  afterImg.onload = null;
+  afterImg.onerror = () => { statusEl.textContent = '결과 이미지를 불러오지 못했습니다'; };
+  afterImg.src = data.result_url + '?t=' + Date.now();
+  afterImg.hidden = false;
+  renderMetaChips(data);
+  renderGate(data);
+}
+
+// 물건별 결과 — 누르면 위 큰 화면에 (VLM 이 준 물건 이름은 textContent 로만)
+function renderMultiResults(list) {
+  const wrap = document.getElementById('multi-results');
+  wrap.replaceChildren();
+  wrap.classList.toggle('hidden', !list.length);
+  list.forEach(({ label, data }, k) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'multi-result' + (k === 0 ? ' on' : '');
+    b.setAttribute('role', 'radio');
+    b.setAttribute('aria-checked', k === 0 ? 'true' : 'false');
+    const img = document.createElement('img');
+    img.src = data.result_url + '?t=' + Date.now();
+    img.alt = label;
+    const cap = document.createElement('span');
+    cap.textContent = label;
+    b.append(img, cap);
+    b.onclick = () => {
+      for (const x of wrap.children) { x.classList.remove('on'); x.setAttribute('aria-checked', 'false'); }
+      b.classList.add('on');
+      b.setAttribute('aria-checked', 'true');
+      showResult(data);
+    };
+    wrap.append(b);
+  });
+}
+
+async function runSeparate(fileId_, comp_, picked) {
+  const names = new Map((analysisObjects || []).map(o => [o.index, o.what || `물건 ${o.index + 1}`]));
+  const ok = [], failed = [];
+  for (const [k, i] of picked.entries()) {
+    statusEl.textContent = `물건마다 따로 만드는 중... (${k + 1}/${picked.length})`;
+    const label = names.get(i) || `물건 ${i + 1}`;
+    try {
+      ok.push({ label, data: await requestTransform(fileId_, PRESET, comp_, [i], true) });
+    } catch (e) {
+      failed.push(label);
+    }
+  }
+  if (fileId_ !== fileId) return;            // 그사이 다른 사진으로 바뀌었다 — 새 사진 위에 그리지 않는다
+  renderMultiResults(ok);
+  if (ok.length) showResult(ok[0].data);
+  // 피드백은 사진 하나 · 무드 하나 기준이라 물건별 결과에는 달지 않는다
+  hideFeedbackBox();
+  statusEl.textContent = failed.length ? `물건 ${picked.length}개 중 ${ok.length}개 완료 — 실패: ${failed.join(', ')}`
+                                       : `완료! 🎉 물건 ${ok.length}개`;
+}
+
 runBtn.onclick = async () => {
   if (busy || !canRun()) return;
   const fileId_ = fileId;        // 변환 중 사진을 바꿔도 이 결과 · 피드백은 이 사진에
   const comp_ = composition;
   const sell_ = sellDirty ? sell : null;   // 기본 체크 그대로면 보내지 않는다 — 분석 판단대로
+  const picked = sell ? [...sell] : [];
+  let how = 'together';
+  if (picked.length >= 2) {
+    setBusy(true);                 // 묻는 동안 사진 · 팔 물건 고르기 · 변환 버튼을 잠근다 (질문 버튼만 살아 있다)
+    how = await askMulti(picked.length);
+    setBusy(false);
+    if (!how || fileId_ !== fileId) return;   // 취소했거나 그사이 사진이 바뀌었다
+  }
+  renderMultiResults([]);
   setBusy(true);
+  if (how === 'separate') {
+    try { await runSeparate(fileId_, comp_, picked); } finally { setBusy(false); }
+    return;
+  }
   statusEl.textContent = '변환 중... (몇 초 걸려요)';
   try {
     const data = await requestTransform(fileId_, PRESET, comp_, sell_);
-
-    afterImg.onload = null;
-    afterImg.onerror = () => { statusEl.textContent = '결과 이미지를 불러오지 못했습니다'; };
-    afterImg.src = data.result_url + '?t=' + Date.now();
-    afterImg.hidden = false;
-
-    renderMetaChips(data);
-    renderGate(data);
+    showResult(data);
 
     // 피드백: 우선 빈 박스 표시, 기존 피드백 있으면 채워넣기
     currentRating = 0;
