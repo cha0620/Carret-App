@@ -13,5 +13,6 @@ Not added (do not list):
 When unsure whether something was in photo 1, do not list it.
 
 Output JSON only:
-{"added": [{"what": str, "where": str}]}
-("where": short region in photo 2, e.g. "chest", "dial", "background top-left". Empty list if nothing was added.)
+{"added": [{"what": str, "where": str, "confidence": float}]}
+("where": short region in photo 2, e.g. "chest", "dial", "background top-left";
+ "confidence": 0.0-1.0, how sure you are that it was NOT in photo 1. Empty list if nothing was added.)

@@ -149,7 +149,7 @@ Finer branches (reading text, cutout failures, retry limits) are in the step lis
    fidelity / realism / trust report card and attaches it to the same trace as Langfuse Scores.
    Removed from the live path and the UI on 2026-10-05 — no decision uses it, and it agreed with
    human verdicts on only 11 of 17 pairs, so showing the score confused more than it helped
-11. The UI overlays mark bubbles on the result and says whether it is generated / the original item
+11. The UI says whether it is generated / the original item
    on a new background / the original as-is. Generated results also say that defects aren't checked
    automatically and should be confirmed on the original. It collects a star rating and comment
 
@@ -230,8 +230,6 @@ that knows the disk layout.
   cropping or a caption, the reason goes into the next prompt, and retries are capped
 - 📐 **Two kinds of signal**: the Gemini judge gives a judgment (eval and dev runs only), and DINOv2
   cosine similarity gives a score on a fixed scale
-- 💬 **Mark bubbles + zoom**: overlay coordinates account for the
-  letterboxing from `object-fit: contain`
 - ⭐ **Feedback loop**: human feedback (`source=user`) and agent feedback
   (`source=agent`) are stored separately, and the agent never overwrites
   human feedback
@@ -424,6 +422,14 @@ make docs    # browse the repo's .md files (http://localhost:8090, renders merma
 ---
 
 ## 📝 Recent Changes
+
+**2026-10-05**
+- **Mark bubbles removed**: the result no longer draws boxes and bubbles over preserved marks. verify stops asking
+  for coordinates, so its answer is shorter. Old rows keep their `bubbles` column, new rows leave it empty
+- **One call for the post-generation check (experiment, off by default)**: `VERIFY_COMBINED=true` sends the original
+  and the result together and gets mark preservation and new text in one VLM call instead of two parallel ones
+- **Confidence on judgment prompts**: verify, added_text and check_photo also return `confidence` (0–1). It is stored
+  in inspect to compare with human grading; the gate does not use it yet
 
 **2026-10-01**
 - **Workflow redesigned around multi-angle upload**: photos or a video → angle labels (one low-res VLM call) → missing

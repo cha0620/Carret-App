@@ -6,6 +6,7 @@
 4. 옛 하자 스위트(test/eval) 삭제 · 문서 정리
 5. 다음 할 일
 6. storage 정리 — S3 + SQLite 만
+7. 생성 뒤 검사 한 호출 · 확신도 · 말풍선 삭제
 
 ## 1. 모델 교체 eval — objects · judge · auto_feedback 을 lite 로?
 
@@ -85,8 +86,8 @@
 
 - [x] storage 정리 → §6 — `real_defects` · `text_check` 를 `eval/data/` 로, dev 라우트의 로컬 폴더 목록(`storage.BASE` glob)을 storage 추상화로, 로컬 storage 비우기 (DB 는 SQLite 그대로)
   - `.env` 는 이미 `STORAGE_BACKEND=s3`, `/storage/{kind}/{name}` 은 이미 storage 를 거쳐 서빙 — "S3 면 사진이 안 보인다" 고 처음에 말한 건 틀렸다
-- [ ] 생성 뒤 호출 합치기 — verify + added_text 한 호출 (설정으로 켜고 끔), 다음에 check_photo 까지 (왕복 2~3초)
-- [ ] 판단형 프롬프트에 확신도 — verify · added_text · check_photo, inspect 에 남겨 사람 채점과 비교
+- [x] 생성 뒤 호출 합치기 — verify + added_text 한 호출 (설정으로 켜고 끔), 다음에 check_photo 까지 (왕복 2~3초) → §7
+- [x] 판단형 프롬프트에 확신도 — verify · added_text · check_photo, inspect 에 남겨 사람 채점과 비교 → §7
 - [ ] 위 두 실험을 중고나라 새 사진 15장으로 (사용자가 모음, 라벨은 돌리기 전에) — 같은 채점으로 judge 재평가도
 - [x] 모델 교체 eval → §1
 
@@ -118,3 +119,49 @@
 - [ ] 로컬 storage 비우기 — S3 에 없는 파일을 올릴지 사용자 확인 뒤
 - [ ] dev results 페이지 단위 조회 (결과가 쌓이면 느려짐)
 - [ ] eval-report 스킬을 S3 / `GET /dev/results` 기준으로
+
+## 7. 생성 뒤 검사 한 호출 · 확신도 · 말풍선 삭제
+
+§5 의 남은 일 1 · 2번.
+
+### 7-1. verify + added_text 한 호출 (실험, 기본 꺼짐)
+
+- 지금: 생성 뒤 verify(생성본 한 장, 마크 보존)와 added_text(원본 · 생성본, 없던 글자)를 병렬로 부른다
+- 한 것: `VERIFY_COMBINED=true` 면 원본 · 생성본을 한 번에 보내 `checks` 와 `added` 를 같이 받는다
+  (`detector.verify_combined`, `pipeline._verify_combined`, 프롬프트 `verify_combined.md`, 생각 상한 3072)
+- 실패 의미는 따로 부를 때와 같게: 마크 판정이 깨지면 `verify_failed` → 배경 교체, `added` 만 깨지면 경고 로그만 남기고 막지 않음,
+  `ADDED_TEXT_GATE=false` 면 added 무시. 마크가 없으면 예전처럼 added_text 만
+- 기본을 바꾸는 건 §5 의 새 사진 15장 eval 로 판정이 같은지 본 뒤. check_photo 까지 합치는 건 그다음
+
+### 7-2. 판단형 프롬프트에 확신도
+
+- verify · added_text · check_photo 응답 형식에 `confidence`(0~1). 파서(`_confidence`)는 10-04 에 이미 있었다
+- 게이트는 안 본다 — inspect 의 checks · added_text · photo_check 에 남겨 사람 채점과 비교만
+- Langfuse 에 4개 다시 등록: verify_v2 v2, check_photo v2, added_text v1, verify_combined v1.
+  `added_text` 가 v1 — 그동안 Langfuse 에 없어서 코드 fallback 으로 돌았다
+
+### 7-3. 마크 말풍선 삭제
+
+- 계기: 합친 호출은 두 장을 보내서 VLM 이 원본 기준 박스를 줄 위험이 새로 생겼다 (reviewer).
+  사용자 결정 — 말풍선은 이제 없앤다
+- 지운 것: 프론트 `renderBubbles` · `#overlay` · CSS, dev 의 초록 박스 · "말풍선 위치 틀림" 버튼, 응답 `bubbles` · `Bubble` 스키마 ·
+  `detector.bubbles`, verify 프롬프트의 `box_2d`
+- 남긴 것: DB `bubbles` 열(새 행 NULL, 다시 기록해도 옛 값 유지), 피드백 태그 `bubble_wrong`(옛 피드백)
+- "edge tag 남기자" 는 eval 데이터셋의 `edge_tags` 얘기 — 말풍선과 무관해서 그대로
+
+| 누가 | 잡은 것 | 처리 |
+|---|---|---|
+| reviewer | 합친 호출에서 added 만 깨지면 "확인 못 함" 이 로그에 안 남음 | 경고 로그 |
+| reviewer | 재시도 로그 이름이 둘 다 `verify` | `verify_combined` |
+| reviewer | 없던 글자 로그 중복 | `_log_added` |
+| reviewer | 두 장을 보내 말풍선 좌표가 원본 기준일 위험 | 말풍선 삭제로 사라짐 |
+| reviewer | added 만 깨져도 재시도 안 함 · 원본 MIME 고정 · 앵커 글자 프롬프트 주입 | 남김 (실험 플래그, 기존과 같은 위험) |
+| reviewer | `verify_combined.md` 가 기존 조각을 복사 — 한쪽만 고치면 어긋남 | 남김 — 기본값으로 정하면 조각으로 묶기 |
+| reviewer | 확신도가 0~100 · 문자열이면 버려짐 | 남김 — 실제로 얼마나 비는지 eval 에서 |
+| reviewer | 다시 기록할 때 옛 `bubbles` 를 NULL 로 덮음 | UPSERT 에서 뺌 |
+| tester | 합친 호출 9개 추가 (파싱 · 실패 · added None · 게이트 끔 · 시드 목록) | 695 통과 |
+| tester | 말풍선 전제 테스트 10개 수정, `test_browser.py` 삭제, 옛 bubbles 유지 1개 추가 | 696 통과 |
+
+- [ ] 합친 호출 vs 병렬 두 호출 — 새 사진 15장으로 판정 · 왕복 시간 비교 (§5)
+- [ ] 확신도가 실제로 얼마나 들어오는지, 사람 채점과 맞는지
+- [ ] eval `test_journey_real` 이 이제 `checks` 1개 이상을 본다 — 다음 eval 때 확인

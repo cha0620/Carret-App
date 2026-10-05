@@ -47,7 +47,7 @@ def test_full_item_bundles_everything(client, feedback_db, tmp_storage, make_png
     _put_json(tmp_storage, f"{fid}_{preset}.json", judge)
     _put_json(tmp_storage, f"{fid}_{preset}_inspect.json", inspect)
     store.record_original(fid, "png", "upload", original_name="내사진.png", size_bytes=123)
-    store.record_result(fid, preset, rp.name, "mug", ["a", "b"], True, [], elapsed_s=1.5)
+    store.record_result(fid, preset, rp.name, "mug", ["a", "b"], True, elapsed_s=1.5)
     store.save_feedback(fid, preset, 4, "괜찮은 결과네요", source="agent")
 
     r = client.get("/dev/results")

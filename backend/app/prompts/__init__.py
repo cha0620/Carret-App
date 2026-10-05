@@ -1,6 +1,6 @@
 """검출 프롬프트 층 - fragment 조립식 + Langfuse 프롬프트 관리.
 
-각 프롬프트는 Langfuse에 이름(analyze_v2/verify_v2/item_text/added_text/check_photo/
+각 프롬프트는 Langfuse에 이름(analyze_v2/verify_v2/verify_combined/item_text/added_text/check_photo/
 objects/views)으로
 등록되어 있으면 그 내용(운영자가 콘솔에서 수정 가능)을 쓰고, 없거나 조회에
 실패하면 아래 fragment 조합을 그대로 fallback 으로 쓴다 — 동작은 항상 동일하게
@@ -60,6 +60,12 @@ def verify_prompt(anchors: list, item: str) -> str:
     """생성본 게이트 "verify_v2" — 아이덴티티 마크 · 글자만 (옛 "verify" 는 배포된 옛 서버용으로 Langfuse 에만 남는다)."""
     lines = "\n".join(f"- {a['what']} ({a['where']})" for a in anchors)
     return get_prompt_text("verify_v2", fallback=verify_marks_template(), item=item, lines=lines)
+
+
+def verify_combined_prompt(anchors: list, item: str) -> str:
+    """verify + added_text 한 호출 (10-05, settings.verify_combined) — 원본 · 생성본 두 장을 같이 본다."""
+    lines = "\n".join(f"- {a['what']} ({a['where']})" for a in anchors) or "(none)"
+    return get_prompt_text("verify_combined", fallback=frag("verify_combined"), item=item, lines=lines)
 
 
 def item_text_prompt(item: str) -> str:

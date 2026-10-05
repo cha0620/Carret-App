@@ -19,7 +19,7 @@
   3) verify     : 생성본 → 아이덴티티 마크·글자 보존 여부 + 좌표. 실패 → 1회 재생성 → composite
                   (배경 교체·원본 그대로는 물건 픽셀이 원본이라 부르지 않는다)
                   (하자는 목록으로 확인하지 않는다 — 수준(wear_level)으로 plan 에서만 본다)
-  4) finalize   : bubbles + 로깅
+  4) finalize   : 로깅
   (그래프 밖) judge_and_save : 품질 성적표 — eval · dev 에서만 (10-05 운영에서 뺌: 결정에 안 쓰고
        사람 판정과 11/17 만 맞아 화면 점수가 오히려 헷갈림 — study 10-05).
        item_signals_and_save : 누끼 비교(item_dino·item_patch, 관측용) — 예전엔 validate_result 가
@@ -103,7 +103,6 @@ class State(TypedDict, total=False):
     checks: list
     gate_checks: list          # 배경 교체로 가기 전 생성본 게이트의 checks (무엇이 사라졌나 — 기록용)
     gate_passed: bool | None
-    bubbles: list
     prompt_used: str
 
 
@@ -574,6 +573,8 @@ def verify(s: State) -> dict:
         return {"checks": checks, "gate_passed": False, "verify_failed": False}
     targets = _verify_targets(s)
     saved = storage.load("result", s["result_name"])
+    if targets and settings.verify_combined:
+        return _verify_combined(s, saved, targets)
     # 없던 글자 검사는 마크 검사와 서로 기다릴 이유가 없다 — 같이 돌려 VLM 왕복 한 번만큼 줄인다
     added_fut = _in_background(_added_text, s, saved)
     if not targets:
@@ -589,6 +590,23 @@ def verify(s: State) -> dict:
         added_fut.cancel()
         return {"checks": [], "verify_failed": True, "gate_passed": False, "added_text": []}
     added = _added_result(added_fut)
+    return {"checks": checks, "verify_failed": False, "added_text": added,
+            "gate_passed": detector.all_preserved(checks, expected=len(targets)) and not added}
+
+
+def _verify_combined(s: State, saved: bytes, targets: list) -> dict:
+    """verify + added_text 한 호출 (settings.verify_combined, 10-05). 실패 처리는 따로 부를 때와 같다 —
+    마크 판정을 못 받으면 verify_failed, 없던 글자 부분만 깨지면 막지 않는다."""
+    try:
+        checks, added = _with_retry(lambda: detector.verify_combined(
+            s["original"], saved, targets, s.get("item", "object")), "verify_combined", VERIFY_ATTEMPTS)
+    except Exception:
+        return {"checks": [], "verify_failed": True, "gate_passed": False, "added_text": []}
+    if added is None and settings.added_text_gate:
+        # checks 만 성하면 재시도하지 않는다 — 없던 글자는 따로 부를 때처럼 "확인 못 함 = 막지 않음"
+        logger.warning("[verify_combined] added 목록 없음 — 없던 글자 확인 못 함, 막지 않음")
+    added = (added or []) if settings.added_text_gate else []
+    _log_added(added)
     return {"checks": checks, "verify_failed": False, "added_text": added,
             "gate_passed": detector.all_preserved(checks, expected=len(targets)) and not added}
 
@@ -612,9 +630,13 @@ def _added_text(s: State, result: bytes) -> list | None:
         added = _with_retry(lambda: detector.added_text(s["original"], result), "added_text", VERIFY_ATTEMPTS)
     except Exception:
         return None
+    _log_added(added)
+    return added
+
+
+def _log_added(added: list) -> None:
     if added:
         logger.info(f"[verify] 없던 글자 · 로고: {[a['what'] for a in added]}")
-    return added
 
 
 def _route_after_verify(s: State) -> str:
@@ -871,12 +893,12 @@ def _inline_item_signals(file_id: str, preset_key: str, result: dict) -> None:
 
 
 def _record_result_safe(file_id, preset_key, result_name, item, considered,
-                         gate_passed, bubbles, elapsed_s, route=None):
+                         gate_passed, elapsed_s, route=None):
     """DB 기록은 detect/verify/judge와 같은 원칙 — 실패해도 이미 끝난(비용 든)
     변환 자체를 실패로 되돌리지 않는다. route = 결과의 mode·composite_reason·photo_type·wear_level."""
     try:
         store.record_result(file_id, preset_key, result_name, item, considered,
-                             gate_passed, bubbles, elapsed_s=elapsed_s, route=route)
+                             gate_passed, elapsed_s=elapsed_s, route=route)
     except Exception as e:
         logger.warning(f"[record_result] 실패(무시): {e}")
 
@@ -888,7 +910,6 @@ def _route_of(out: dict) -> dict:
 
 def finalize(s: State) -> dict:
     checks = s.get("checks", [])
-    bubbles = detector.bubbles(checks)
     logger.info(f"[analyze] item={s.get('item')} anchors={len(s['anchors'])} "
                 f"photo_type={s.get('photo_type')} wear={s.get('wear_level')} "
                 f"watermark={s.get('watermark')} text={s.get('text_level')}")
@@ -897,8 +918,8 @@ def finalize(s: State) -> dict:
     logger.info(f"[validate_result] attempts={s.get('gen_attempts')} "
                 f"photo_check={s.get('photo_check')}")
     logger.info(f"transform {s['file_id']}/{s['preset_key']} "
-                f"bubbles={bubbles} gate={s.get('gate_passed')}")
-    return {"bubbles": bubbles}
+                f"gate={s.get('gate_passed')}")
+    return {}
 
 
 def use_provided(s: State) -> dict:
@@ -988,9 +1009,9 @@ def run_transform(file_id: str, preset_key: str, *, defer_signals: bool = False,
         storage.save("result", result_name, original)
         _clear_quality(f"{file_id}_{preset_key}.json")   # 옛 실행의 성적표
         _record_result_safe(file_id, preset_key, result_name, "object", [],
-                             None, [], elapsed_s=time.time() - t0)
+                             None, elapsed_s=time.time() - t0)
         return {"result_name": result_name, "prompt_used": "PASS-THROUGH",
-                "checks": [], "bubbles": [], "gate_passed": None, "item": "object", "considered": [],
+                "checks": [], "gate_passed": None, "item": "object", "considered": [],
                 "guard_report": [], "mode": "generate"}
 
     try:
@@ -1016,7 +1037,6 @@ def run_transform(file_id: str, preset_key: str, *, defer_signals: bool = False,
                 "result_name": out["result_name"],
                 "prompt_used": out["prompt_used"],
                 "checks": out["checks"],
-                "bubbles": out["bubbles"],
                 "gate_passed": out["gate_passed"],
                 "item": out.get("item", "object"),
                 "considered": out.get("considered", []),
@@ -1042,7 +1062,6 @@ def run_transform(file_id: str, preset_key: str, *, defer_signals: bool = False,
             if obs is not None:
                 obs.update(output={
                     "gate_passed": result["gate_passed"],
-                    "bubbles": len(result["bubbles"]),
                     "item": result["item"],
                     "visual_similarity": result["visual_similarity"],
                     "item_similarity": result.get("item_similarity"),
@@ -1062,7 +1081,7 @@ def run_transform(file_id: str, preset_key: str, *, defer_signals: bool = False,
     elapsed_s = time.time() - t0
     logger.info(f"total {elapsed_s:.1f}s")
     _record_result_safe(file_id, preset_key, result["result_name"], result["item"],
-                         result["considered"], result["gate_passed"], result["bubbles"],
+                         result["considered"], result["gate_passed"],
                          elapsed_s, route=_route_of(result))
     return result
 
@@ -1094,7 +1113,6 @@ def run_transform_with_result(file_id: str, preset_key: str, result_bytes: bytes
                 "result_name": s["result_name"],
                 "prompt_used": s["prompt_used"],
                 "checks": s["checks"],
-                "bubbles": s["bubbles"],
                 "gate_passed": s["gate_passed"],
                 "item": s.get("item", "object"),
                 "considered": s.get("considered", []),
@@ -1112,7 +1130,6 @@ def run_transform_with_result(file_id: str, preset_key: str, result_bytes: bytes
             if obs is not None:
                 obs.update(output={
                     "gate_passed": result["gate_passed"],
-                    "bubbles": len(result["bubbles"]),
                     "item": result["item"],
                     "visual_similarity": result["visual_similarity"],
                     "item_similarity": result.get("item_similarity"),
@@ -1122,6 +1139,6 @@ def run_transform_with_result(file_id: str, preset_key: str, result_bytes: bytes
     elapsed_s = time.time() - t0
     logger.info(f"[test] total {elapsed_s:.1f}s (generate skipped)")
     _record_result_safe(file_id, preset_key, result["result_name"], result["item"],
-                         result["considered"], result["gate_passed"], result["bubbles"],
+                         result["considered"], result["gate_passed"],
                          elapsed_s, route=_route_of(result))
     return result

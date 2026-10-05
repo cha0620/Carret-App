@@ -316,3 +316,26 @@ def test_check_photo_keeps_only_valid_confidence(monkeypatch, conf, expected):
     assert out.get("confidence") == expected
     if expected is not None:
         assert type(out["confidence"]) is float
+
+
+# ── verify_combined (10-05): checks 깨지면 예외, added 만 깨지면 None ──
+def test_verify_combined_parses_checks_and_added(monkeypatch):
+    monkeypatch.setattr(detector, "_call_pair", lambda *a, **k: {
+        "checks": [{"what": "ACME", "preserved": "true"}, "junk"],
+        "added": [{"what": "H4", "where": "chest"}, {"what": ""}]})
+    checks, added = detector.verify_combined(b"o", b"r", [{"what": "ACME", "where": "x"}])
+    assert [c["preserved"] for c in checks] == [True]
+    assert [a["what"] for a in added] == ["H4"]
+
+
+@pytest.mark.parametrize("resp", [{}, {"checks": None, "added": []}, []])
+def test_verify_combined_without_checks_raises(monkeypatch, resp):
+    monkeypatch.setattr(detector, "_call_pair", lambda *a, **k: resp)
+    with pytest.raises(ValueError):
+        detector.verify_combined(b"o", b"r", [{"what": "a", "where": "b"}])
+
+
+def test_verify_combined_bad_added_is_none(monkeypatch):
+    monkeypatch.setattr(detector, "_call_pair", lambda *a, **k: {
+        "checks": [{"what": "a", "preserved": True}], "added": "none"})
+    assert detector.verify_combined(b"o", b"r", [{"what": "a", "where": "b"}])[1] is None

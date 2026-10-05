@@ -3,26 +3,6 @@ const $ = id => document.getElementById(id);
 const out = $('out');
 let selOrig = null;
 
-function drawBoxes(container, items, color) {
-  items.forEach(it => {
-    if (it.x2 == null) return;
-    const b = document.createElement('div');
-    b.className = 'box';
-    b.style.borderColor = color;
-    b.style.left = it.x1 / 10 + '%';
-    b.style.top = it.y1 / 10 + '%';
-    b.style.width = (it.x2 - it.x1) / 10 + '%';
-    b.style.height = (it.y2 - it.y1) / 10 + '%';
-    const t = document.createElement('span');
-    t.className = 'tag';
-    t.style.background = color;
-    t.style.left = it.x1 / 10 + '%';
-    t.style.top = it.y1 / 10 + '%';
-    t.textContent = it.what;
-    container.append(b, t);
-  });
-}
-
 async function load() {
   const g = await fetch('/dev/gallery').then(r => r.json());
 
@@ -56,10 +36,8 @@ $('btn-with-result').onclick = async () => {
   $('wr-viewer').classList.add('show');
   $('wr-orig').src = `/storage/original/${selOrig}.jpg`;
   $('wr-after').src = d.result_url + '?t=' + Date.now();
-  $('wr-overlay').innerHTML = '';
-  drawBoxes($('wr-overlay'), d.bubbles || [], '#2ecc71');
   $('wr-metrics').textContent =
-    `item=${d.item} gate_passed=${d.gate_passed} bubbles=${(d.bubbles || []).length}`;
+    `item=${d.item} gate_passed=${d.gate_passed}`;
   out.textContent = JSON.stringify(d, null, 2);
 };
 const esc = s => String(s ?? '').replace(/[&<>"']/g,
@@ -77,7 +55,7 @@ let rsShownItems = [];
 const FB_TAGS = {
   defect_lost: '하자 사라짐', text_broken: '글자·로고 깨짐', shape_changed: '물건 모양 변형',
   color_changed: '색감 변함', framing: '구도·잘림', background: '배경 어색',
-  bubble_wrong: '말풍선 위치 틀림', good: '좋음',
+  good: '좋음',
 };
 const fbOf = it => it.feedback || { user: null, agent: null };
 const ratingOf = it => fbOf(it).user?.rating ?? fbOf(it).agent?.rating;
@@ -171,8 +149,7 @@ function rsCard(it, idx) {
       <div class="pane"><span class="label">원본</span>
         ${it.orig ? `<a href="${esc(it.orig)}" target="_blank"><img src="${esc(it.orig)}" alt="원본" loading="lazy"></a>` : '<p class="tc-empty">원본 없음</p>'}</div>
       <div class="pane"><span class="label">${esc(it.preset)}</span>
-        <a href="${esc(it.result)}" target="_blank"><img src="${esc(it.result)}" alt="결과" loading="lazy"></a>
-        <div class="rs-overlay" data-idx="${idx}"></div></div>
+        <a href="${esc(it.result)}" target="_blank"><img src="${esc(it.result)}" alt="결과" loading="lazy"></a></div>
     </div>
     ${guards ? `<div class="tc-head" style="margin-top:8px">${guards}</div>` : ''}
     <div class="tc-texts">
@@ -226,8 +203,6 @@ async function saveFeedback(box) {
     const idx = rsShownItems.indexOf(it);
     if (it && idx >= 0) {
       card.outerHTML = rsCard(it, idx);
-      const fresh = $('rs-list').querySelector(`.rs-overlay[data-idx="${idx}"]`);
-      if (fresh) drawBoxes(fresh, (it.inspect?.checks || []).filter(c => c.preserved), '#2ecc71');
       const newStatus = $('rs-list').querySelector(
         `.fb-box[data-fid="${CSS.escape(it.file_id)}"][data-preset="${CSS.escape(it.preset)}"] .fb-status`);
       if (newStatus) newStatus.textContent = '✅ 저장됨';
@@ -265,11 +240,6 @@ function renderResults() {
     ? `<button id="btn-rs-more" class="btn btn-ghost">더 보기 (${items.length - shown.length}장 남음)</button>` : '');
   const more = $('btn-rs-more');
   if (more) more.onclick = () => { rsShown += RS_PAGE; renderResults(); };
-  // 보존된 마크(로고·글자) 위치를 결과 위에 초록 박스로 (좌표 있는 것만)
-  $('rs-list').querySelectorAll('.rs-overlay').forEach(el => {
-    const it = shown[+el.dataset.idx];
-    drawBoxes(el, (it.inspect?.checks || []).filter(c => c.preserved), '#2ecc71');
-  });
 }
 
 async function loadResults() {

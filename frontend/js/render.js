@@ -1,59 +1,11 @@
 /* 렌더링 계층 — 화면만 그림. 서버 모름. */
 
-const overlay   = document.getElementById('overlay');
 const gateBadge = document.getElementById('gate-badge');
 
 const feedbackBox     = document.getElementById('feedback-box');
 const feedbackStars   = document.getElementById('feedback-stars');
 const feedbackComment = document.getElementById('feedback-comment');
 const feedbackStatus  = document.getElementById('feedback-status');
-
-// 캔버스 안에서 이미지가 실제로 그려지는 영역(%) — object-fit:contain 이 만드는
-// 레터박스(여백)를 그대로 계산해서, 좌표(0~1000, 이미지 기준)를 오버레이(캔버스 기준)
-// %로 정확히 옮긴다. 캔버스 자체가 줌으로 transform: scale() 되어도 두 rect의
-// 비율은 그대로 유지되므로 줌 배율과 무관하게 항상 맞는다.
-function imageBoxInCanvas() {
-  const img = document.getElementById('after');
-  const canvas = document.getElementById('result-canvas');
-  const cw = canvas.clientWidth, ch = canvas.clientHeight;
-  if (!img.naturalWidth || !cw || !ch) return null;
-
-  const scale = Math.min(cw / img.naturalWidth, ch / img.naturalHeight);
-  const dispW = img.naturalWidth * scale;
-  const dispH = img.naturalHeight * scale;
-  return {
-    offXPct: (cw - dispW) / 2 / cw * 100,
-    offYPct: (ch - dispH) / 2 / ch * 100,
-    wPct: dispW / cw * 100,
-    hPct: dispH / ch * 100,
-  };
-}
-
-function renderBubbles(bubbles) {
-  overlay.innerHTML = '';
-  const box = imageBoxInCanvas();
-  if (!box) return;
-
-  (bubbles || []).forEach(b => {
-    const L = box.offXPct + (b.x1 / 1000) * box.wPct;
-    const T = box.offYPct + (b.y1 / 1000) * box.hPct;
-    const W = ((b.x2 - b.x1) / 1000) * box.wPct;
-    const H = ((b.y2 - b.y1) / 1000) * box.hPct;
-
-    const el = document.createElement('div');
-    el.className = 'defect-box';
-    el.style.cssText = `left:${L}%;top:${T}%;width:${W}%;height:${H}%`;
-    overlay.appendChild(el);
-
-    const below = b.y1 < 150;
-    const bub = document.createElement('div');
-    bub.className = 'bubble' + (below ? ' below' : '');
-    bub.style.left = (L + W / 2) + '%';
-    bub.style.top  = (below ? T + H : T) + '%';
-    bub.textContent = `💬 ${b.what} (${b.where})`;
-    overlay.appendChild(bub);
-  });
-}
 
 // res = transform 응답. 무엇을 보여주는지(원본/합성/생성)에 따라 문구가 달라야 정직하다.
 function renderGate(res) {
@@ -109,7 +61,6 @@ function resetZoom() {
 }
 
 function clearResults() {
-  overlay.innerHTML = '';
   gateBadge.hidden = true;
   hideFeedbackBox();
   resetZoom();

@@ -78,7 +78,6 @@ def dev_verify(req: DevPairReq):
     except ValueError as e:
         raise HTTPException(502, f"verify 응답이 깨짐: {e}")
     return {"anchors": targets, "checks": checks,
-            "bubbles": detector.bubbles(checks),
             "gate_passed": detector.all_preserved(checks, expected=len(targets))}
 
 

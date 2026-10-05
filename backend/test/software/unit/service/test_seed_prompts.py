@@ -18,7 +18,7 @@ APP_DIR = BACKEND / "app"
 SEED_SCRIPT = BACKEND / "scripts" / "seed_langfuse_prompts.py"
 
 EXPECTED_STATIC = {
-    "analyze_v2", "verify_v2", "item_text", "views", "objects", "added_text",
+    "analyze_v2", "verify_v2", "item_text", "views", "objects", "added_text", "verify_combined",
     "check_photo", "judge_system", "auto_feedback_system",
 }
 

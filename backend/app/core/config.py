@@ -39,6 +39,9 @@ class Settings(BaseSettings):              # ⭐ 대문자 클래스
     # 10-03: 생성본에 원본에 없던 글자 · 로고가 생겼나 (원본 · 생성본 두 장 비교, VLM 1회) — 생기면 게이트 실패.
     # VLM 이 없는 글자를 있다고 볼 수 있어 끌 수 있게 (ADDED_TEXT_GATE=false)
     added_text_gate: bool = True
+    # 10-05 실험: verify(마크 보존) + added_text(없던 글자)를 VLM 한 호출로 (원본 · 생성본 두 장). 병렬 두 호출과
+    # 왕복은 비슷하지만 호출 · 이미지 입력이 하나 준다. 판정이 같은지 eval 로 비교한 뒤 기본값을 정한다
+    verify_combined: bool = False
     # 생성 전에 바로 배경 교체 모드로 보내는 기준 (0 = 끔). 생성 모델이 거의 확실히
     # 못 지키는 사진에 FLUX·재생성·verify 비용을 쓰지 않기 위함. 경험값 — eval 로 조정.
     #   글자 줄 수: 잔글씨 많은 물건(책·화장품)은 TEXT_LOCK 이 있어도 뭉개지기 쉽다

@@ -11,4 +11,4 @@ def test_journey_real(client, tmp_storage):
                       files={"file": ("s.png", FIX.read_bytes(), "image/png")}).json()["file_id"]
     body = client.post("/api/transform",
                        json={"file_id": fid, "preset": "studio_white"}).json()
-    assert body["bubbles"], "진짜 모델이 하자를 1개 이상 봐야 함"
+    assert body["checks"], "진짜 모델이 지킬 대상을 1개 이상 검사해야 함"
