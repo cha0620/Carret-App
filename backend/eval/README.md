@@ -13,7 +13,8 @@ eval/
 ├─ README.md · 스크립트 (run · report · compare · board · grade · intake · fetch · refs)
 ├─ docs/      COLLECT.md (사진 모으기) · REFS.md (구도 예시) · EXPERIMENTS.md (실험 목록)
 ├─ data/      dataset.json · splits.jsonl · refs.json · locks/ (실험 잠금 문구)
-│             images/ · refs/ (사진 — git 밖)
+│             images/ · refs/ · real_defects/ (사진 — git 밖)
+│             text_check/ (09월 글자 보존 실험 입력·결과 — 스크립트는 없어졌고 기록만)
 └─ results/   runs/ (지금 보는 실행 — git 밖) · archive/ (이미지를 지운 옛 실행, 기록만 — git 밖)
               reviews/ (사람 채점 — git)
 ```

@@ -13,17 +13,26 @@ from app.schemas.image import UploadResponse
 logger = logging.getLogger("carret")
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}  # ✅ 허용 목록 방식 (보안 기본기)
 
+def _save_original(file_id: str, data: bytes) -> int:
+    """원본 저장 — storage 가 JPEG 로 다시 쓰므로 이름도 .jpg 로 통일 (items.py 와 같게, 10-05).
+    깨진 이미지 · 확장자만 바꾼 파일 · 압축 폭탄은 400 (normalize 의 예외가 500 으로 새지 않게)."""
+    try:
+        return storage.save("original", f"{file_id}.jpg", data)
+    except (OSError, ValueError) as e:   # PIL UnidentifiedImageError ⊂ OSError, 너무 큰 그림 = ValueError
+        raise HTTPException(status_code=400, detail="이미지를 읽을 수 없습니다") from e
+
+
 class UrlUploadRequest(BaseModel):
     url: str
 
 
 @router.post("/upload-url")
 async def upload_url(req: UrlUploadRequest):
-    data, ext = await fetch_image(req.url)
+    data, _ = await fetch_image(req.url)
     file_id = uuid.uuid4().hex
-    size_bytes = storage.save("original", f"{file_id}.{ext}", data)
+    size_bytes = _save_original(file_id, data)
     try:
-        store.record_original(file_id, f".{ext}", "upload_url",
+        store.record_original(file_id, ".jpg", "upload_url",
                                original_name=req.url, size_bytes=size_bytes)
     except Exception:
         # 파일은 이미 저장됐고 file_id도 응답해야 하니, 메타데이터 기록 실패로
@@ -47,16 +56,13 @@ async def upload_image(file: UploadFile = File(...)):
     if size_mb > settings.max_upload_size_mb:
         raise HTTPException(status_code=400, detail="파일 크기 초과 (최대 10MB)")
 
-    # 3️⃣ 저장 (이름을 uuid로 바꾸는 게 핵심 ✅)
-    save_dir = Path(settings.storage_dir) / "original"
-    save_dir.mkdir(parents=True, exist_ok=True)  # 폴더 없으면 만들고, 있어도 에러 없음
-
+    # 3️⃣ 저장 (이름을 uuid로 바꾸는 게 핵심 ✅) — storage 를 거친다 (STORAGE_BACKEND=s3 면 S3 로).
+    # 예전엔 로컬 디스크에 직접 써서 S3 모드에서도 로컬 storage/original 이 쌓였다 (10-05)
     file_id = uuid.uuid4().hex   # 예측 불가능한 고유 이름 (보안+중복방지)
-    save_path = save_dir / f"{file_id}{ext}"
-    save_path.write_bytes(content)
+    size_bytes = _save_original(file_id, content)
     try:
-        store.record_original(file_id, ext, "upload",
-                               original_name=file.filename, size_bytes=len(content))
+        store.record_original(file_id, ".jpg", "upload",
+                               original_name=file.filename, size_bytes=size_bytes)
     except Exception:
         logger.exception("원본 메타데이터 기록 실패(무시)")
 

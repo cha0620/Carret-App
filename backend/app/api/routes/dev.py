@@ -10,6 +10,7 @@ import logging
 import re
 import threading
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
@@ -59,7 +60,7 @@ def _result_bytes(file_id: str, preset: str) -> bytes:
 def dev_originals():
     """이미 저장된 원본 목록."""
     return {"originals": sorted(
-        p.stem for p in (storage.BASE / "original").glob("*.jpg"))}
+        Path(n).stem for n in storage.list_files("original") if n.endswith(".jpg"))}
 
 
 @router.post("/verify")
@@ -175,9 +176,9 @@ async def dev_run_inbox(req: DevRunInboxReq = DevRunInboxReq()):
 
 @router.get("/gallery")
 def dev_gallery():
-    """저장된 원본 갤러리 (URL 조립만, 서빙은 마운트가)."""
-    originals = [{"name": p.stem, "url": f"/storage/original/{p.name}"}
-                 for p in sorted((storage.BASE / "original").glob("*.jpg"))]
+    """저장된 원본 갤러리 (URL 조립만, 서빙은 /storage 라우트가 storage 를 거쳐)."""
+    originals = [{"name": Path(n).stem, "url": f"/storage/original/{n}"}
+                 for n in sorted(storage.list_files("original")) if n.endswith(".jpg")]
     return {"originals": originals}
 
 
@@ -200,15 +201,19 @@ def _safe(fn, *args):
         return None
 
 
-def _prefix_map(folder, sep: str) -> dict:
-    """폴더를 한 번만 훑어 {file_id: 파일} — 결과마다 glob 하지 않기 위함."""
+def _prefix_map(names, sep: str) -> dict:
+    """파일 이름 목록을 한 번만 훑어 {file_id: 이름} — 결과마다 찾지 않기 위함."""
     out = {}
-    if folder.is_dir():
-        for f in folder.iterdir():
-            fid = f.name[:32]
-            if f.is_file() and FILE_ID_RE.fullmatch(fid) and f.name[32:33] == sep:
-                out.setdefault(fid, f)
+    for n in sorted(names):
+        fid = n[:32]
+        if FILE_ID_RE.fullmatch(fid) and n[32:33] == sep:
+            out.setdefault(fid, n)
     return out
+
+
+def _local_names(folder: Path) -> list[str]:
+    """inbox 는 사용자가 파일을 던져 두는 로컬 폴더 (storage 백엔드와 무관)."""
+    return [f.name for f in folder.iterdir() if f.is_file()] if folder.is_dir() else []
 
 
 @router.get("/results")
@@ -216,34 +221,32 @@ def dev_results():
     """파이프라인이 만든 결과 전부를 원본과 묶어서 한 번에 — 판정(judge),
     인스펙트(anchors/checks/gate/guard), 피드백, 원본 이름을 모아 돌려준다.
     계산은 하지 않는다: 이미 저장된 산출물을 읽기만 한다 (최신순).
-    목록·이미지 URL 은 로컬 storage 기준 (/storage 마운트와 짝)."""
-    originals = _prefix_map(storage.BASE / "original", ".")
-    done = _prefix_map(storage.BASE / "inbox" / "done", "_")
+    목록은 storage 를 거친다 (STORAGE_BACKEND=local/s3 무관), 이미지 URL 은 /storage 라우트와 짝."""
+    originals = _prefix_map(storage.list_files("original"), ".")
+    done = _prefix_map(_local_names(storage.BASE / "inbox" / "done"), "_")
     found = []
-    for p in (storage.BASE / "result").glob("*.jpg"):
-        file_id, _, preset = p.stem.partition("_")
+    for n, mtime in storage.list_files("result").items():
+        if not n.endswith(".jpg"):
+            continue
+        file_id, _, preset = Path(n).stem.partition("_")
         if not FILE_ID_RE.fullmatch(file_id) or not preset:
             continue
-        try:
-            mtime = p.stat().st_mtime
-        except FileNotFoundError:   # glob 과 stat 사이에 덮어쓰기/삭제
-            continue
-        found.append((mtime, p, file_id, preset))
+        found.append((mtime, n, file_id, preset))
     found.sort(key=lambda t: t[0], reverse=True)
 
     items = []
-    for mtime, p, file_id, preset in found:
+    for mtime, n, file_id, preset in found:
         orig = originals.get(file_id)
         meta = _safe(store.get_original, file_id) or {}
         # 원본 파일명: DB 에 없으면(메타 기록 도입 전 실행분) inbox/done/{file_id}_{원래이름} 에서 복원
         name = meta.get("original_name")
         if not name and file_id in done:
-            name = done[file_id].name[33:]
+            name = done[file_id][33:]
         items.append({
             "file_id": file_id,
             "preset": preset,
-            "orig": f"/storage/original/{orig.name}" if orig else None,
-            "result": f"/storage/result/{p.name}",
+            "orig": f"/storage/original/{orig}" if orig else None,
+            "result": f"/storage/result/{n}",
             "created": mtime,
             "name": name,
             "db": _safe(store.get_result, file_id, preset),

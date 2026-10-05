@@ -5,6 +5,7 @@
 3. judge 를 운영에서 뺌
 4. 옛 하자 스위트(test/eval) 삭제 · 문서 정리
 5. 다음 할 일
+6. storage 정리 — S3 + SQLite 만
 
 ## 1. 모델 교체 eval — objects · judge · auto_feedback 을 lite 로?
 
@@ -82,9 +83,38 @@
 
 ## 5. 다음 할 일
 
-- [ ] storage 정리 — `real_defects` · `text_check` 를 `eval/data/` 로, dev 라우트의 로컬 폴더 목록(`storage.BASE` glob)을 storage 추상화로, 로컬 storage 비우기 (DB 는 SQLite 그대로)
+- [x] storage 정리 → §6 — `real_defects` · `text_check` 를 `eval/data/` 로, dev 라우트의 로컬 폴더 목록(`storage.BASE` glob)을 storage 추상화로, 로컬 storage 비우기 (DB 는 SQLite 그대로)
   - `.env` 는 이미 `STORAGE_BACKEND=s3`, `/storage/{kind}/{name}` 은 이미 storage 를 거쳐 서빙 — "S3 면 사진이 안 보인다" 고 처음에 말한 건 틀렸다
 - [ ] 생성 뒤 호출 합치기 — verify + added_text 한 호출 (설정으로 켜고 끔), 다음에 check_photo 까지 (왕복 2~3초)
 - [ ] 판단형 프롬프트에 확신도 — verify · added_text · check_photo, inspect 에 남겨 사람 채점과 비교
 - [ ] 위 두 실험을 중고나라 새 사진 15장으로 (사용자가 모음, 라벨은 돌리기 전에) — 같은 채점으로 judge 재평가도
 - [x] 모델 교체 eval → §1
+
+## 6. storage 정리 — S3 + SQLite 만
+
+- 목표: 로컬 `backend/storage` 를 비우고 S3(이미지 · JSON) + SQLite(`data/carret.db`, 그대로) 만 쓴다
+- 처음 판단이 틀렸다: "S3 모드면 사진이 안 보인다" 고 했는데 `main.py` 의 `/storage/{kind}/{name}` 이 이미 storage 를 거쳐 서빙하고, `.env` 도 이미 `STORAGE_BACKEND=s3` 였다
+- 진짜 원인: 한 장 업로드(`routes/images.py`)가 설정과 상관없이 **로컬 디스크에 직접** 썼다 — 로컬 `storage/original` 이 계속 쌓인 이유. 읽기가 로컬로 폴백해서 티가 안 났다
+
+한 것:
+
+- 업로드 두 곳(`/upload`, `/upload-url`)을 `storage.save` 로 — 이름은 `.jpg` 로 통일 (normalize 가 JPEG 로 다시 쓴다, items.py 와 같게), 깨진 이미지 · 압축 폭탄은 400
+- `storage.list_files(kind)` (로컬 · S3 paginator, `Delimiter="/"`, 폴더 마커 제외) → dev 원본 · 갤러리 · 결과 목록이 S3 에서도 보인다. 인박스는 사용자가 파일을 던지는 로컬 폴더라 그대로
+- `/storage/...` 는 이미지(original · result)와 파이프라인이 만드는 이름만 — 그동안 성적표 · 분석 · 묶음 JSON 도 이 주소로 열렸다
+- S3 오류 중 404 가 아닌 것(권한 · 요청 제한)은 로그 — 로컬을 비우면 "파일 없음" 으로만 보여 장애가 감춰진다
+- `text_check` · `real_defects` → `backend/eval/data/` (real_defects 는 남의 사진이라 git 밖). 안 쓰던 `dataset` 분기 · `original_of` 삭제
+
+| 누가 | 잡은 것 | 처리 |
+|---|---|---|
+| reviewer | 업로드 이름이 `.png` 인데 내용은 JPEG — 응답 형식 · dev 목록(.jpg 만) · dev.js 주소가 어긋남 | `.jpg` 로 통일 |
+| reviewer | normalize 예외가 500 으로 샘 | 400 |
+| reviewer | S3 폴더 마커가 빈 이름으로 섞임 | 거름 |
+| reviewer | ClientError 를 전부 "없음" 으로 | 404 외엔 로그 |
+| reviewer | `/storage` 이름에 문자셋 제한 없음 (S3 GET 남용) | 정규식 |
+| reviewer | dev results 가 결과마다 S3 GET 2번 + DB — 쌓이면 느려짐 | 남김 (dev 전용) |
+| reviewer | `main.py` 가 S3 모드에서도 빈 `./storage` 를 다시 만든다, eval-report 스킬이 로컬 quality 를 읽는다 | 남김 — 아래 할 일 |
+| tester | S3 list · 병합 · S3 모드 업로드가 로컬에 안 쓰임 · dev results 목록 · quality 404 — 5개 추가 | 684 통과 |
+
+- [ ] 로컬 storage 비우기 — S3 에 없는 파일을 올릴지 사용자 확인 뒤
+- [ ] dev results 페이지 단위 조회 (결과가 쌓이면 느려짐)
+- [ ] eval-report 스킬을 S3 / `GET /dev/results` 기준으로

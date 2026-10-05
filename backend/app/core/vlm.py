@@ -46,7 +46,7 @@ DEFAULT_THINKING: dict[str, str | int] = {
 #   classify, check_photo → 3.5-flash-lite: 품목 16/17 같은 뜻, valid 15/17 (3.8-flash 도 15/17), 단가 ~1/5
 #   item_text: 3.8-flash 기준 글자 71%, lite 13%(JSON 깨짐 6건) / detect: 앵커 32→24(3.8)·17(lite)
 #   verify: 둘 다 게이트 판정 11/15
-# 같은 날 진짜 하자 세트(19장, storage/real_defects) detect: 3.8 은 진짜 하자를 3.5 만큼 찾고, 3.5 가 잡은
+# 같은 날 진짜 하자 세트(19장, eval/data/real_defects) detect: 3.8 은 진짜 하자를 3.5 만큼 찾고, 3.5 가 잡은
 #   헛하자(부엉이 찻잔 물결 테두리, 빈티지 마감 찬장)는 잡지 않았다 → 기본 모델(VLM_MODEL)을 3.8-flash 로.
 #   judge 도 3.8 로 바뀌어 성적표 점수의 기준선이 이날부터 달라진다 (이전 점수와 직접 비교 금지).
 # 주의: 3.8-flash 는 thinking_level "minimal" 을 400 으로 거부한다 — 모델을 바꿀 땐 DEFAULT_THINKING 도 확인.
