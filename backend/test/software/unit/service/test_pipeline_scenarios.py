@@ -220,7 +220,6 @@ def test_product_without_text_generates_verifies_and_judges(w):
     assert w.calls == ["analyze", "generate", "check_photo", "verify", "judge"]
     assert out["mode"] == "generate" and out["composite_reason"] is None
     assert out["gate_passed"] is True and out["gen_attempts"] == 1
-    assert [b["label"] for b in out["bubbles"]] == ["🏷️  ACME"]
     assert out["visual_similarity"] == 0.9 and out["item_similarity"] == 0.85
     assert out["guard_report"] == []
     assert w.result() == "gen1" and w.quality() is not None
@@ -234,7 +233,7 @@ def test_product_without_text_generates_verifies_and_judges(w):
                          "photo_type": "product", "wear_level": "light"}
     row = w.row()
     assert row["item"] == "chair" and row["gate_passed"] == 1
-    assert json.loads(row["bubbles"])[0]["what"] == MARK["what"]
+    assert row["bubbles"] is None                      # 말풍선 제거 — 열은 남고 NULL
 
 
 def test_product_with_simple_text_reads_it_locks_prompt_and_verifies_it(w):
@@ -309,7 +308,7 @@ def test_gate_fail_twice_switches_to_composite_and_keeps_what_was_lost(w):
     assert w.calls == ["analyze", "generate", "check_photo", "verify",
                        "generate", "check_photo", "verify", "compose"]
     assert out["mode"] == "composite" and out["composite_reason"] == "gate_failed"
-    assert out["gate_passed"] is None and out["checks"] == [] and out["bubbles"] == []
+    assert out["gate_passed"] is None and out["checks"] == [] and "bubbles" not in out
     assert out["item_similarity"] is None and out["guard_report"] == []
     assert w.result() == "comp"
     assert w.seen["compose"] == ["orig"]
@@ -628,3 +627,46 @@ def test_verify_call_failure_goes_composite_without_waiting_added_text(w):
     out = w.run()
     assert out["mode"] == "composite" and out["composite_reason"] == "verify_failed"
     assert w.count("generate") == 1 and not out.get("added_text")
+
+
+# ══ 10-05: verify + added_text 한 호출 (settings.verify_combined) ═══════
+@pytest.fixture()
+def combined(w, monkeypatch):
+    """verify_combined 를 World 의 verify · added 가짜를 합쳐 흉내 — 따로 부르는 두 함수는 안 불려야 한다."""
+    monkeypatch.setattr(settings, "verify_combined", True)
+    w.combined_calls = 0
+
+    def fake(original, result, targets, item="object"):
+        w.combined_calls += 1
+        checks = w._verify(result, targets, item)
+        a = w.added.pop(0) if w.added else []
+        return checks, a
+    monkeypatch.setattr(pipeline_mod.detector, "verify_combined", fake)
+    return w
+
+
+def test_combined_added_fails_gate_then_regenerates_in_one_call_each(combined):
+    w = combined
+    w.added = [ADDED, []]
+    out = w.run()
+    assert w.count("generate") == 2 and out["gate_passed"] is True
+    assert w.combined_calls == 2 and w.added_calls == []      # 따로 부르는 added_text 는 안 쓴다
+
+
+def test_combined_added_none_does_not_block(combined):
+    combined.added = [None]
+    out = combined.run()
+    assert out["mode"] == "generate" and out["gate_passed"] is True and combined.count("generate") == 1
+
+
+def test_combined_added_ignored_when_gate_off(combined, monkeypatch):
+    monkeypatch.setattr(settings, "added_text_gate", False)
+    combined.added = [ADDED]
+    out = combined.run()
+    assert out["gate_passed"] is True and combined.count("generate") == 1 and not out.get("added_text")
+
+
+def test_combined_call_failure_goes_verify_failed(combined):
+    combined.verifies = [RuntimeError("down")] * 8
+    out = combined.run()
+    assert out["mode"] == "composite" and out["composite_reason"] == "verify_failed"

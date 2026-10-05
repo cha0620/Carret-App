@@ -9,9 +9,11 @@ async function uploadFile(file) {
 }
 
 // 여러 각도 — 사진 여러 장 · 동영상 → 물건 묶음 (각도 · 빠진 면)
-async function uploadItem(files, itemId = null) {
+// proofFiles = 근거 칸 (보증서 · 정품 마크 · 영수증) — 서버가 칸대로 근거 사진으로 둔다
+async function uploadItem(files, itemId = null, proofFiles = []) {
   const fd = new FormData();
   for (const f of files) fd.append('files', f);
+  for (const f of proofFiles) fd.append('proof_files', f);
   const url = itemId ? `/api/items/${itemId}/files` : '/api/items';
   const res = await fetch(url, { method: 'POST', body: fd });
   if (!res.ok) {

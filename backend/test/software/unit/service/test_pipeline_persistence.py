@@ -84,8 +84,6 @@ def test_run_transform_real_mode_second_call_with_changed_fields_updates_row(mon
     assert second_row["id"] == first_row["id"]
     assert second_row["result_name"] == "v2.jpg"
     assert second_row["gate_passed"] == 0
-    import json
-    assert json.loads(second_row["bubbles"]) == []
 
     from app.core import db
     with db.get_conn() as c:

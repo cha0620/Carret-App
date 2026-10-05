@@ -36,7 +36,7 @@ def _route(row):
 
 
 def _record(fid="f", preset="p", route=None, **kw):
-    store.record_result(fid, preset, f"{fid}_{preset}.jpg", "mug", ["a"], True, [],
+    store.record_result(fid, preset, f"{fid}_{preset}.jpg", "mug", ["a"], True,
                         elapsed_s=1.0, route=route, **kw)
     return store.get_result(fid, preset)
 
@@ -173,3 +173,12 @@ def test_migrate_uses_add_column_and_survives_race(monkeypatch, tmp_path):
     assert [cd.split()[0] for t, cd in seen if t == "results"] == list(db.RESULT_ROUTE_COLS)
 
 
+
+
+def test_record_result_leaves_legacy_bubbles_column_untouched():
+    """10-05 말풍선 제거: 새 행은 NULL, 재기록해도 옛 bubbles 값은 그대로."""
+    from app.core import db
+    assert _record("b", "p")["bubbles"] is None
+    with db.get_conn() as c:
+        c.execute("UPDATE results SET bubbles='[1]' WHERE file_id='b'")
+    assert _record("b", "p")["bubbles"] == "[1]"

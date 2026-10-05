@@ -15,8 +15,7 @@ if env_path.exists():
 def isolated_storage(monkeypatch, tmp_path):
     """⭐ 두 문(BASE / storage_dir) 을 하나의 tmp 로."""
     root = tmp_path / "storage"
-    for sub in ("original", "result", "quality",
-                "dataset/img", "dataset/after"):
+    for sub in ("original", "result", "quality"):
         (root / sub).mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setattr("app.services.persistence.storage.BASE", root)

@@ -151,3 +151,41 @@ def test_delete_s3_error_propagates(tmp_storage, monkeypatch):
         storage.delete("quality", "f.json")
 
 
+
+
+# ===== list() / list_files() =====
+
+def test_s3_list_uses_paginator_with_delimiter():
+    """S3Backend.list — list_objects_v2 paginator 를 Delimiter='/' 로 훑어 {이름: epoch} (가짜 클라이언트)."""
+    from datetime import datetime, timezone
+    calls = []
+
+    class FakePaginator:
+        def paginate(self, **kw):
+            calls.append(kw)
+            t = datetime(2026, 1, 1, tzinfo=timezone.utc)
+            return [{"Contents": [{"Key": "p/result/", "LastModified": t},   # 폴더 마커 — 제외
+                                  {"Key": "p/result/a.jpg", "LastModified": t}]},
+                    {"Contents": [{"Key": "p/result/b.jpg", "LastModified": t}]}]
+
+    class FakeClient:
+        def get_paginator(self, op):
+            assert op == "list_objects_v2"
+            return FakePaginator()
+
+    b = storage.S3Backend.__new__(storage.S3Backend)
+    b.bucket, b.prefix, b.s3 = "bk", "p", FakeClient()
+    out = b.list("result")
+    assert set(out) == {"a.jpg", "b.jpg"}
+    assert out["a.jpg"] == datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp()
+    assert calls == [{"Bucket": "bk", "Prefix": "p/result/", "Delimiter": "/"}]
+
+
+def test_list_files_merges_local_and_backend_wins_on_same_name(tmp_storage, monkeypatch):
+    fake = _force_fake_s3(monkeypatch)
+    fake.list = lambda kind: {"both.jpg": 200.0, "s3only.jpg": 300.0}
+    (tmp_storage / "original" / "both.jpg").write_bytes(b"x")
+    (tmp_storage / "original" / "localonly.jpg").write_bytes(b"x")
+    out = storage.list_files("original")
+    assert set(out) == {"both.jpg", "s3only.jpg", "localonly.jpg"}
+    assert out["both.jpg"] == 200.0

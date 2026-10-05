@@ -1,4 +1,5 @@
 import mimetypes
+import re
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Response
@@ -47,17 +48,19 @@ app.include_router(feedback.router, prefix="/api", tags=["feedback"])
 app.include_router(items.router, prefix="/api", tags=["items"])
 
 # 2) 결과 파일 서빙 — storage 추상화를 거친다 (STORAGE_BACKEND=local/s3 무관하게 동일 URL로 서빙)
+# 이미지(original · result)만 — quality(성적표 · inspect · 분석 JSON)는 dev API 로만 읽는다 (10-05)
+SERVED_KINDS = {"original", "result"}
+# 파이프라인이 만드는 이름만 (file_id hex32 + 선택적 _preset/_layout + 이미지 확장자) — S3 GET 남용 · 이상한 키 차단
+SERVED_NAME = re.compile(r"[0-9a-f]{32}(_[A-Za-z0-9_-]+)?\.(jpg|jpeg|png|webp)")
+
+
 @app.get("/storage/{kind}/{name:path}")
 def serve_storage(kind: str, name: str):
-    if kind == "dataset":   # 평가셋 고정 자산 — 항상 로컬, 백엔드 전환과 무관
-        path = Path(settings.storage_dir) / "dataset" / name
-        if not path.exists():
-            raise HTTPException(404, "파일 없음")
-        data = path.read_bytes()
-    else:
-        data = storage.load(kind, name)
-        if data is None:
-            raise HTTPException(404, "파일 없음")
+    if kind not in SERVED_KINDS or not SERVED_NAME.fullmatch(name):
+        raise HTTPException(404, "파일 없음")
+    data = storage.load(kind, name)
+    if data is None:
+        raise HTTPException(404, "파일 없음")
     media_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
     return Response(content=data, media_type=media_type)
 

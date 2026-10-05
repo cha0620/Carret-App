@@ -25,6 +25,13 @@
     </div>
     <input type="file" id="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,.jpg,.jpeg,.png,.webp,.mp4,.mov,.m4v,.webm" multiple hidden>
 
+    <div id="proof-zone" class="proof-zone" role="button" tabindex="0">
+      <span>🧾 보증서 · 정품 마크 · 영수증 <span class="muted">(선택)</span></span>
+      <span class="dropzone-help">상품 사진과 따로 올려 주세요 — 판매 글에 근거 사진으로 붙어요. 사진만</span>
+      <span id="proof-pending" class="proof-pending"></span>
+    </div>
+    <input type="file" id="proof-file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" multiple hidden>
+
     <div class="or-divider"><span>또는</span></div>
 
     <div class="url-row">
@@ -106,7 +113,6 @@
       <div id="after-wrap" class="viewport">
         <div class="canvas" id="result-canvas">
           <img id="after" hidden>
-          <div id="overlay"></div>
         </div>
       </div>
 

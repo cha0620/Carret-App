@@ -159,32 +159,6 @@ body {
   user-select: none; -webkit-user-drag: none;
 }
 
-#overlay {
-  position: absolute; inset: 0; pointer-events: none;
-}
-
-/* 결함 말풍선 */
-.defect-box {
-  position: absolute; border: 2px dashed var(--accent); border-radius: 6px;
-  background: rgba(255, 106, 26, 0.1);
-}
-.bubble {
-  position: absolute; transform: translate(-50%, -100%);
-  background: #fff; border: 2px solid var(--accent); border-radius: 10px;
-  padding: 3px 9px; font-size: 12px; white-space: nowrap;
-  box-shadow: var(--shadow);
-}
-.bubble::after {
-  content: ''; position: absolute; top: 100%; left: 50%;
-  transform: translateX(-50%);
-  border: 6px solid transparent; border-top-color: var(--accent);
-}
-.bubble.below { transform: translate(-50%, 0); }
-.bubble.below::after {
-  top: auto; bottom: 100%;
-  border-top-color: transparent; border-bottom-color: var(--accent);
-}
-
 /* 보존 게이트 배지 */
 #gate-badge { font-size: 13px; font-weight: 700; margin: 10px 0 0; }
 
@@ -278,6 +252,15 @@ body {
 .item-missing ul { margin: 0; padding-left: 18px; }
 #item-add { margin-top: 4px; }
 #dropzone.disabled { opacity: .5; pointer-events: none; }
+.proof-zone {
+  display: flex; flex-direction: column; gap: 2px; margin-top: 10px; padding: 10px 14px;
+  border: 1.5px dashed var(--line, #d0d0d0); border-radius: 12px; cursor: pointer; font-size: 14px;
+}
+.proof-zone:hover, .proof-zone.over { border-color: var(--accent); background: var(--accent-soft); }
+.proof-zone.disabled { opacity: .5; pointer-events: none; }
+.proof-zone .dropzone-help { font-size: 12px; color: var(--muted); }
+.proof-pending { font-size: 12px; color: var(--accent-dark); }
+.proof-cancel { font-size: 12px; border: none; background: none; color: var(--muted); text-decoration: underline; cursor: pointer; }
 .item-photos.locked { opacity: .6; pointer-events: none; }
 
 /* 정석 구도 카드 */

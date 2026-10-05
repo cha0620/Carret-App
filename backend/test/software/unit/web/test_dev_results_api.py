@@ -47,7 +47,7 @@ def test_full_item_bundles_everything(client, feedback_db, tmp_storage, make_png
     _put_json(tmp_storage, f"{fid}_{preset}.json", judge)
     _put_json(tmp_storage, f"{fid}_{preset}_inspect.json", inspect)
     store.record_original(fid, "png", "upload", original_name="내사진.png", size_bytes=123)
-    store.record_result(fid, preset, rp.name, "mug", ["a", "b"], True, [], elapsed_s=1.5)
+    store.record_result(fid, preset, rp.name, "mug", ["a", "b"], True, elapsed_s=1.5)
     store.save_feedback(fid, preset, 4, "괜찮은 결과네요", source="agent")
 
     r = client.get("/dev/results")
@@ -123,3 +123,31 @@ def test_broken_json_only_blanks_that_item(client, feedback_db, tmp_storage):
     items = {it["file_id"]: it for it in r.json()["items"]}
     assert items[bad]["judge"] is None
     assert items[good]["judge"] == {"fidelity": 4}
+
+
+def test_results_listed_via_storage_list_files(client, feedback_db, tmp_storage, monkeypatch):
+    """목록은 로컬 glob 이 아니라 storage.list_files 로 (S3 모드에서도 보이게)."""
+    from app.services.persistence import storage
+    fid, preset = _fid(), "studio_white"
+    listing = {"original": {f"{fid}.jpg": 1.0}, "result": {f"{fid}_{preset}.jpg": 5.0}}
+    monkeypatch.setattr(storage, "list_files", lambda kind: listing.get(kind, {}))
+
+    items = client.get("/dev/results").json()["items"]
+
+    assert len(items) == 1
+    assert items[0]["orig"] == f"/storage/original/{fid}.jpg"
+    assert items[0]["result"] == f"/storage/result/{fid}_{preset}.jpg"
+    assert items[0]["created"] == 5.0
+
+
+def test_storage_route_does_not_serve_quality(client, tmp_storage):
+    """/storage 는 original/result 만 — quality(성적표·inspect JSON)는 404."""
+    name = f"{_fid()}.jpg"   # 이름 규칙은 통과하는 이름 — kind 제한만 본다
+    (tmp_storage / "quality" / name).write_bytes(b"x")
+    assert client.get(f"/storage/quality/{name}").status_code == 404
+
+
+def test_storage_route_rejects_names_outside_pattern(client, tmp_storage):
+    """original 이라도 {file_id}[_preset].(jpg|jpeg|png|webp) 꼴이 아니면 404."""
+    (tmp_storage / "original" / "notes.txt").write_bytes(b"x")
+    assert client.get("/storage/original/notes.txt").status_code == 404

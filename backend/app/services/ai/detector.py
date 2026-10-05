@@ -2,14 +2,15 @@
 
 라이브 경로:
   analyze          : 원본 → 물건·아이덴티티 마크·사진 유형·하자 수준·워터마크·글자 수준 (VLM 1회)
-  verify_and_locate: 결과 → 보존 여부 + 결과 좌표 (말풍선용)
+  verify_and_locate: 결과 → 보존 여부 (좌표는 10-05 말풍선을 없애며 안 받는다)
 
   added_text       : 원본 · 생성본 비교 → 새로 생긴 글자 · 로고
+  verify_combined  : 위 둘을 한 호출로 (settings.verify_combined)
   check_photo      : 생성본 구도 잘림 · 자막
   read_item_text   : 원본 물건 위 글자 (analyze 가 texts 를 주기 전에 저장된 옛 분석만)
   classify_views / group_objects : 여러 장 업로드 — 각도 · 물건별 묶기
 
-공유: bubbles / all_preserved / _box / _call / 검증 헬퍼
+공유: all_preserved / _box / _call / 검증 헬퍼
 """
 import logging
 import json
@@ -120,17 +121,19 @@ def classify_views(images: list[bytes]) -> dict:
             "item": _text(data.get("item")) or "object", "photos": photos}
 
 
-def group_objects(images: list[bytes]) -> dict:
+def group_objects(images: list[bytes], slots: list[str | None] | None = None) -> dict:
     """여러 장 → 물건별 묶음 + 사진마다 각도 · 가림 · 흐림 (VLM 1회, 낮은 해상도) — 10-04, 업로드 단계.
 
     반환: listing.normalize 결과 {"objects": [...], "photos": [입력 순서, 사진마다 object · view · …]}.
-    호출 자체가 실패하면 예외 (호출부가 "묶지 못했다"로 처리). classify_views 는 eval 이 한 장 각도에 쓴다."""
+    호출 자체가 실패하면 예외 (호출부가 "묶지 못했다"로 처리). classify_views 는 eval 이 한 장 각도에 쓴다.
+    slots: 사진마다 판매자가 올린 칸 (product | proof, 10-05) — 프롬프트에 알려 주고, 종류는 normalize 가 칸대로 정한다."""
     from app.services import listing
     client = get_client()
     prompt = P.objects_prompt(len(images))
     parts = []
     for i, img in enumerate(images):
-        parts += [f"Photo {i}:", image_part(img, "image/jpeg", "objects")]
+        box = " (seller put this in the PROOF section)" if slots and i < len(slots) and slots[i] == "proof" else ""
+        parts += [f"Photo {i}{box}:", image_part(img, "image/jpeg", "objects")]
     with observe("objects", as_type="generation", model=vlm_model("objects"), input=prompt) as obs:
         resp = client.models.generate_content(
             model=vlm_model("objects"),
@@ -141,7 +144,7 @@ def group_objects(images: list[bytes]) -> dict:
         data = json.loads(resp.text)
         if obs is not None:
             obs.update(output=data, usage_details=_usage(resp))
-    return listing.normalize(data, len(images))
+    return listing.normalize(data, len(images), slots)
 
 
 TEXT_LEVELS = ("none", "simple", "dense")
@@ -342,21 +345,9 @@ def _as_bool(v) -> bool:
     return bool(v)
 
 
-def bubbles(checks: list) -> list:
-    out = []
-    for c in checks:
-        if c.get("preserved") and _has_box(c):
-            label = c["what"]
-            if label.startswith(("logo:", "text:")):
-                label = "🏷️ " + label.split(":", 1)[1]   # 말풍선용
-            out.append({**c, "label": label})
-    return out
-
-
 # ── 검증 헬퍼 ────────────────────────────────────
 def _valid_check(c: dict) -> bool:
-    """what 만 있으면 게이트 계산에 남긴다. 좌표는 말풍선용이라 bubbles() 가 따로
-    거른다 — 보존됐는데 좌표만 빠진 항목을 여기서 버리면 앵커 수보다 답이 적어져
+    """what 만 있으면 게이트 계산에 남긴다. 좌표가 없어도 — 보존됐는데 좌표만 빠진 항목을 여기서 버리면 앵커 수보다 답이 적어져
     all_preserved(expected=) 가 멀쩡한 결과를 실패로 판정한다."""
     return bool(str(c.get("what") or "").strip())
 
@@ -369,30 +360,49 @@ def _has_box(c: dict) -> bool:
     return c["x1"] != c["x2"] and c["y1"] != c["y2"]
 
 
-def added_text(original: bytes, result: bytes) -> list[dict]:
-    """원본에 없던 글자 · 로고가 생성본에 생겼나 (10-03, VLM 1회 · 두 장 비교).
-    반환: [{"what", "where"}] — 없으면 빈 목록. 응답이 깨지면 예외 (호출부가 "확인 못 함"으로)."""
+def _call_pair(original: bytes, result: bytes, prompt: str, name: str):
+    """원본 · 생성본 두 장 비교 호출 (temp 0 + JSON). 파싱 실패는 예외 — 호출부가 "확인 못 함"으로."""
     client = get_client()
-    prompt = P.added_text_prompt()
-    with observe("added_text", as_type="generation", model=vlm_model("added_text"), input=prompt) as obs:
+    with observe(name, as_type="generation", model=vlm_model(name), input=prompt) as obs:
         resp = client.models.generate_content(
-            model=vlm_model("added_text"),
-            contents=["Photo 1 (original):", image_part(original, "image/jpeg", "added_text"),
-                      "Photo 2 (redrawn):", image_part(result, "image/jpeg", "added_text"), prompt],
+            model=vlm_model(name),
+            contents=["Photo 1 (original):", image_part(original, "image/jpeg", name),
+                      "Photo 2 (redrawn):", image_part(result, "image/jpeg", name), prompt],
             config=types.GenerateContentConfig(temperature=0, response_mime_type="application/json",
-                                               thinking_config=thinking("added_text")),
+                                               thinking_config=thinking(name)),
         )
         data = json.loads(resp.text)
         if obs is not None:
             obs.update(output=data, usage_details=_usage(resp))
     if isinstance(data, list) and data and isinstance(data[0], dict):
         data = data[0]
-    if not isinstance(data, dict) or not isinstance(data.get("added"), list):
-        raise ValueError(f"added_text: 응답에 added 목록 없음: {str(data)[:200]}")
+    return data
+
+
+def _parse_added(raw) -> list[dict]:
     out = []
-    for a in data["added"]:
+    for a in raw:
         what = _text(a.get("what")) if isinstance(a, dict) else ""
         if what:
             out.append({"what": what, "where": _text(a.get("where")), **_confidence(a)})
     return out
 
+
+def added_text(original: bytes, result: bytes) -> list[dict]:
+    """원본에 없던 글자 · 로고가 생성본에 생겼나 (10-03, VLM 1회 · 두 장 비교).
+    반환: [{"what", "where"}] — 없으면 빈 목록. 응답이 깨지면 예외 (호출부가 "확인 못 함"으로)."""
+    data = _call_pair(original, result, P.added_text_prompt(), "added_text")
+    if not isinstance(data, dict) or not isinstance(data.get("added"), list):
+        raise ValueError(f"added_text: 응답에 added 목록 없음: {str(data)[:200]}")
+    return _parse_added(data["added"])
+
+
+def verify_combined(original: bytes, result: bytes, anchors: list, item: str = "object") -> tuple[list, list]:
+    """verify_and_locate(strict) + added_text 를 한 호출로 (10-05). 반환: (checks, added).
+    checks 가 깨지면 예외 (= verify 실패). added 만 깨지면 None — 따로 부를 때처럼 막지 않는다."""
+    data = _call_pair(original, result, P.verify_combined_prompt(anchors, item), "verify_combined")
+    if not isinstance(data, dict) or not isinstance(data.get("checks"), list):
+        raise ValueError(f"verify_combined: 응답에 checks 목록 없음: {str(data)[:200]}")
+    checks = [_clean_check(c) for c in data["checks"] if isinstance(c, dict) and _valid_check(c)]
+    added = _parse_added(data["added"]) if isinstance(data.get("added"), list) else None
+    return checks, added

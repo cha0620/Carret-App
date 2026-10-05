@@ -1,8 +1,8 @@
 """스토리지 계층 — local FS 또는 S3 (설정으로 전환).
 
-경로 규칙: 로컬 백엔드의 유일한 기준점은 BASE(=settings.storage_dir) 하나뿐이다.
-images.py 의 업로드 저장, main.py 의 `/storage` StaticFiles 마운트, dev.py/
-pipeline.py 의 파일 직접 접근이 전부 이 BASE 를 공유해야 서빙이 깨지지 않는다.
+저장 · 읽기 · 목록은 모두 이 모듈을 거친다 (업로드 · 파이프라인 · main.py 의 `/storage` 라우트 ·
+dev 목록) — 그래야 STORAGE_BACKEND=s3 에서도 같은 주소로 서빙된다. 로컬 기준점은 BASE(=settings.storage_dir)
+하나뿐이고, S3 모드에선 옛 로컬 사본의 읽기 폴백 + dev 인박스(사용자가 파일을 던지는 로컬 폴더)에만 쓴다.
 """
 from pathlib import Path
 import logging
@@ -45,6 +45,26 @@ class LocalBackend:
     def delete(self, kind: str, name: str) -> None:
         _safe_path(kind, name).unlink(missing_ok=True)
 
+    def list(self, kind: str) -> dict[str, float]:
+        folder = _safe_path(kind, "")
+        out = {}
+        if folder.is_dir():
+            for f in folder.iterdir():
+                try:
+                    if f.is_file():
+                        out[f.name] = f.stat().st_mtime
+                except FileNotFoundError:   # 훑는 사이 삭제
+                    continue
+        return out
+
+
+def _warn_unless_missing(e: ClientError, op: str, kind: str, name: str) -> None:
+    """없음(404)은 조용히, 그 밖(권한 403 · 요청 제한 등)은 로그 — 로컬을 비운 뒤엔 "파일 없음" 404 로만
+    보여 장애가 감춰진다 (10-05 리뷰). 동작은 예전처럼 "없음" 으로 둔다."""
+    code = str(e.response.get("Error", {}).get("Code", ""))
+    if code not in ("404", "NoSuchKey", "NotFound"):
+        logger.warning(f"[storage] S3 {op} {kind}/{name} 실패: {code}")
+
 
 class S3Backend:
     def __init__(self):
@@ -67,18 +87,31 @@ class S3Backend:
         try:
             r = self.s3.get_object(Bucket=self.bucket, Key=self._key(kind, name))
             return r["Body"].read()
-        except ClientError:
+        except ClientError as e:
+            _warn_unless_missing(e, "load", kind, name)
             return None
 
     def exists(self, kind: str, name: str) -> bool:
         try:
             self.s3.head_object(Bucket=self.bucket, Key=self._key(kind, name))
             return True
-        except ClientError:
+        except ClientError as e:
+            _warn_unless_missing(e, "exists", kind, name)
             return False
 
     def delete(self, kind: str, name: str) -> None:
         self.s3.delete_object(Bucket=self.bucket, Key=self._key(kind, name))
+
+    def list(self, kind: str) -> dict[str, float]:
+        prefix = self._key(kind, "")
+        out = {}
+        for page in self.s3.get_paginator("list_objects_v2").paginate(
+                Bucket=self.bucket, Prefix=prefix, Delimiter="/"):   # 하위 폴더는 안 내려감 (로컬과 같게)
+            for o in page.get("Contents", []):
+                name = o["Key"][len(prefix):]
+                if name:   # 콘솔이 만든 "폴더 마커"(Key == prefix) 는 뺀다
+                    out[name] = o["LastModified"].timestamp()
+        return out
 
 
 _LOCAL = LocalBackend()   # 읽기 폴백 전용 — 백엔드 전환 전 저장된 로컬 fixture 접근용
@@ -129,6 +162,13 @@ def delete(kind: str, name: str) -> None:
         _LOCAL.delete(kind, name)
 
 
+def list_files(kind: str) -> dict[str, float]:
+    """kind 폴더 바로 아래 파일 {이름: 수정 시각(epoch)}. load 처럼 로컬 사본도 합친다
+    (같은 이름이면 설정된 백엔드 쪽). dev 도구의 목록용 — 운영 경로는 쓰지 않는다."""
+    out = _LOCAL.list(kind) if BACKEND is not _LOCAL else {}
+    return {**out, **BACKEND.list(kind)}
+
+
 def load_original(file_id: str) -> bytes | None:
     """원본 바이트 (확장자 탐색). S3/local 공통."""
     for ext in (".jpg", ".jpeg", ".png", ".webp"):
@@ -138,15 +178,6 @@ def load_original(file_id: str) -> bytes | None:
     return None
 
 
-def original_of(file_id: str) -> Path | None:
-    """원본 파일 경로. 로컬 전용(dev 도구/파이프라인이 파일시스템을 직접 다룰 때 사용).
-
-    file_id는 스키마가 hex32 를 보증하므로 glob 이 안전하다 ✅
-    """
-    hits = list((BASE / "original").glob(f"{file_id}.*"))
-    return hits[0] if hits else None
-
-
 def result_url(file_id: str, preset: str) -> str:
-    """브라우저에서 바로 보는 주소 (로컬 백엔드 기준, `/storage` 마운트와 짝)."""
+    """브라우저에서 바로 보는 주소 — main.py 의 `/storage` 라우트가 storage 를 거쳐 서빙 (local/s3 같은 주소)."""
     return f"/storage/result/{file_id}_{preset}.jpg"

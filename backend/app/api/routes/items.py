@@ -82,12 +82,20 @@ def _read_upload(f: UploadFile) -> tuple[str, bytes]:
     return ext, data
 
 
-def _ingest(files: list[UploadFile], room: int) -> list[dict]:
-    """업로드 → 저장한 사진 목록. 장수는 읽기 전에, 내용은 저장 전에 검사하고, 저장 중 실패하면 지운다."""
+def _ingest(files: list[UploadFile], room: int, proof_files: list[UploadFile] = ()) -> list[dict]:
+    """업로드 → 저장한 사진 목록. 장수는 읽기 전에, 내용은 저장 전에 검사하고, 저장 중 실패하면 지운다.
+    proof_files = 근거 칸(보증서 · 정품 마크 · 영수증 …, 10-05) — 사진만. 사진마다 slot 이 product | proof 로
+    남고, 묶기(listing.normalize)가 그 칸대로 물건 종류를 정한다."""
+    proof_files = list(proof_files or [])
+    if any(FsPath(f.filename or "").suffix.lower() in VIDEO_EXTENSIONS for f in proof_files):
+        raise HTTPException(400, "근거 칸에는 사진만 올려 주세요")
+    files = list(files or [])
+    n_product = len(files)                       # 앞은 상품 칸, 뒤는 근거 칸 (위치로 칸을 정한다)
+    files += proof_files
     if not files:
         raise HTTPException(400, "사진이나 동영상을 올려 주세요")
     if room <= 0 or len(files) > room:
-        raise HTTPException(400, f"사진은 물건 하나에 {settings.max_item_photos}장까지예요")
+        raise HTTPException(400, f"사진은 물건 하나에 {settings.max_item_photos}장까지예요 (근거 사진 포함)")
     videos = [f for f in files if FsPath(f.filename or "").suffix.lower() in VIDEO_EXTENSIONS]
     if len(videos) > MAX_VIDEOS:
         raise HTTPException(400, f"동영상은 한 번에 {MAX_VIDEOS}개까지 올려 주세요")
@@ -105,17 +113,17 @@ def _ingest(files: list[UploadFile], room: int) -> list[dict]:
                 frames = video.extract_frames(data, ext, max_frames=min(8, per_video))
             except video.VideoError as e:
                 raise HTTPException(400, str(e))
-            by_pos[pos] = [(fr, "video", f"{f.filename}#{i}") for i, fr in enumerate(frames)]
+            by_pos[pos] = [(fr, "video", f"{f.filename}#{i}", "product") for i, fr in enumerate(frames)]
         else:
             _check_image(data, f.filename)
-            by_pos[pos] = [(data, "photo", f.filename)]
+            by_pos[pos] = [(data, "photo", f.filename, "proof" if pos >= n_product else "product")]
     staged = [x for pos in range(len(files)) for x in by_pos[pos]]
     saved = []
     try:
-        for data, source, name in staged:
+        for data, source, name, slot in staged:
             file_id = uuid.uuid4().hex
             size = storage.save("original", f"{file_id}.jpg", data)   # 저장하며 JPEG 로 통일 (EXIF 회전 적용)
-            saved.append({"file_id": file_id, "source": source})
+            saved.append({"file_id": file_id, "source": source, "slot": slot})
             try:
                 store.record_original(file_id, ".jpg", f"item_{source}", original_name=name, size_bytes=size)
             except Exception:
@@ -137,7 +145,7 @@ def _classify(item: dict, new_ids: set[str]) -> dict:
     try:
         if not known:
             raise ValueError("원본이 하나도 없다")
-        out = detector.group_objects([img for _, img in known])
+        out = detector.group_objects([img for _, img in known], [p.get("slot") for p, _ in known])
     except Exception:
         logger.exception("물건 묶기 실패")
         for p in item["photos"]:
@@ -189,9 +197,11 @@ def _response(item: dict) -> ItemResponse:
 
 
 @router.post("/items", response_model=ItemResponse)
-def create_item(files: list[UploadFile] = File(...)):
-    # def = 스레드풀 (동영상 디코딩 · VLM 호출이 블로킹)
-    new = _ingest(files, settings.max_item_photos)
+def create_item(files: list[UploadFile] = File(default=[]), proof_files: list[UploadFile] = File(default=[])):
+    # def = 스레드풀 (동영상 디코딩 · VLM 호출이 블로킹). proof_files = 근거 칸 (보증서 · 정품 마크 · 영수증 …)
+    if not files and proof_files:
+        raise HTTPException(400, "상품 사진을 먼저 올려 주세요 — 근거 사진은 상품에 붙어요")
+    new = _ingest(files, settings.max_item_photos, proof_files)
     item = {"item_id": uuid.uuid4().hex, "created": datetime.now().isoformat(timespec="seconds"), "photos": new}
     item = _classify(item, {p["file_id"] for p in new})
     _save(item)
@@ -199,12 +209,13 @@ def create_item(files: list[UploadFile] = File(...)):
 
 
 @router.post("/items/{item_id}/files", response_model=ItemResponse)
-def add_files(item_id: str = Path(pattern=ITEM_ID), files: list[UploadFile] = File(...)):
+def add_files(item_id: str = Path(pattern=ITEM_ID), files: list[UploadFile] = File(default=[]),
+              proof_files: list[UploadFile] = File(default=[])):
     with _lock(item_id):
         item = _load(item_id)
         if item is None:
             raise HTTPException(404, "물건을 찾을 수 없습니다")
-        new = _ingest(files, settings.max_item_photos - len(item["photos"]))
+        new = _ingest(files, settings.max_item_photos - len(item["photos"]), proof_files)
         item["photos"] += new
         item = _classify(item, {p["file_id"] for p in new})
         _save(item)

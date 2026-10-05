@@ -42,11 +42,11 @@ backend/storage/inbox/
 llm-wiki/
 
 # 진짜 하자 평가 사진 (외부 매물·개인 사진일 수 있어 git 에서 제외)
-backend/storage/real_defects/
 
 # eval 사진·실행 결과 (중고 거래 게시물 = 남의 사진) — 정답(dataset.json)·채점(reviews/)만 올린다
 backend/eval/data/images/
 backend/eval/data/refs/
+backend/eval/data/real_defects/
 phone_img/
 backend/eval/results/runs/
 backend/eval/results/archive/
