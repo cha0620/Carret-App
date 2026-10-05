@@ -5,7 +5,8 @@ VLM(detector.group_objects)은 묶음 · 각도 · 설명을 제안만 한다. �
 헷갈리니 사용자 확인을 거친다 (study 10-04 §5).
 
 물건 하나: {"id", "kind", "proof_type", "proof_for", "name", "label", "desc", "category", "subtype", "for_sale"}
-  kind     product (팔거나 보여 주는 물건) | proof (설명서 · 보증서 · 회로 · 상태 화면 — 상품을 보증하는 사진)
+  kind     product (팔거나 보여 주는 물건) | proof (설명서 · 보증서 · 정품 마크 · 회로 · 상태 화면 — 상품을 보증하는 사진)
+           업로드 칸(사진의 slot)이 있으면 칸이 정한다 — AI 는 묶음 · 각도 · 근거 종류만 (10-05)
   name     짧은 영어 명사 (프롬프트용), label · desc 는 사용자에게 보이는 한국어
   subtype  종류보다 좁은 물건 (coverage.SUBTYPES — 지금은 laptop 만), 아니면 None
 사진 하나에는 "object"(물건 id 또는 None) · "view" · "state" · "occluded" · "blurry" · "item_visible" 이 붙는다.
@@ -17,8 +18,8 @@ from app.prompts.presets import prompt_safe
 from app.services import compositions, coverage
 
 KINDS = ("product", "proof")
-PROOF_TYPES = {"document": "설명서 · 보증서 · 영수증", "internals": "내부 · 회로",
-               "screen": "작동 · 상태 화면", "other": "그 밖의 근거"}
+PROOF_TYPES = {"document": "설명서 · 보증서 · 영수증", "mark": "정품 마크 · 시리얼",
+               "internals": "내부 · 회로", "screen": "작동 · 상태 화면", "other": "그 밖의 근거"}
 MAX_OBJECTS = 20
 MAX_COUNT = 99
 LABEL_MAX, DESC_MAX = 40, 200
@@ -27,7 +28,8 @@ _ID = re.compile(r"o[0-9]{1,3}")
 # label · desc 는 화면에만 쓴다 (프롬프트에 넣지 않는다)
 CATEGORY_NOUN = {"shoes": "shoes", "clothing": "clothing item", "bag": "bag", "electronics": "electronic device",
                  "vehicle": "vehicle", "other": "item"}
-PROOF_NOUN = {"document": "document", "internals": "internal parts", "screen": "screen", "other": "photo"}
+PROOF_NOUN = {"document": "document", "mark": "authenticity mark", "internals": "internal parts", "screen": "screen",
+              "other": "photo"}
 
 
 def _text(v, limit: int) -> str:
@@ -95,7 +97,53 @@ def _fix_proof_links(objects: list[dict]) -> None:
             o["proof_for"] = None
 
 
-def normalize(data, n: int) -> dict:
+def _enforce_slots(objects: list[dict], photos: list[dict], slots: list[str]) -> None:
+    """종류는 판매자가 올린 칸이 정한다 (10-05). 한 물건의 사진이 모두 한 칸이면 그 칸 종류로 바꾸고,
+    칸이 섞였으면 다른 칸 사진을 그 칸 종류의 새 물건으로 떼어 낸다 (AI 물건 하나당 하나).
+    slot 이 None 인 사진(칸이 생기기 전에 올린 옛 사진)은 AI 판단 그대로."""
+    by_obj: dict[str, set] = {}
+    for p, s in zip(photos, slots):
+        if p["object"] and s:
+            by_obj.setdefault(p["object"], set()).add(s)
+    split: dict[tuple, str] = {}
+    for o in list(objects):
+        got = by_obj.get(o["id"], set())
+        if len(got) == 1:
+            want = next(iter(got))
+            if o["kind"] != want:
+                o.update(_as_kind(o, want))
+        elif len(got) > 1:
+            for want in got - {o["kind"]}:
+                if len(objects) >= MAX_OBJECTS:
+                    break
+                nid = f"o{len(objects) + 1}"
+                while any(x["id"] == nid for x in objects):
+                    nid = f"o{int(nid[1:]) + 1}"
+                objects.append({**o, **_as_kind(o, want), "id": nid})
+                split[(o["id"], want)] = nid
+    kinds = {o["id"]: o["kind"] for o in objects}
+    for p, s in zip(photos, slots):
+        if s and p["object"] and kinds.get(p["object"]) != s:
+            p["object"] = split.get((p["object"], s), p["object"])   # 물건 수 상한이면 떼지 않고 그대로
+        if kinds.get(p["object"]) != "product":
+            p["view"] = None
+    for o in objects:
+        if o["kind"] == "proof" and o.get("proof_for") is None:
+            products = [x["id"] for x in objects if x["kind"] == "product" and x["for_sale"]]
+            if len(products) == 1:
+                o["proof_for"] = products[0]       # 파는 물건이 하나면 근거는 그 물건 것
+
+
+def _as_kind(o: dict, kind: str) -> dict:
+    """정리된 물건을 다른 종류로 — 이름 · 설명은 두고 종류별 필드만 다시."""
+    raw = {k: v for k, v in o.items() if k not in ("id", "kind")}
+    if kind == "proof" and o["kind"] != "proof":
+        # 상품 이름("흰색 운동화")이 근거에 붙지 않게 — 종류에서 정한 말로, 사용자가 화면에서 고친다
+        raw.update(name=PROOF_NOUN["other"], label="근거 사진", desc="")
+    return {k: v for k, v in _clean_object({**raw, "kind": kind}, o["id"]).items() if k != "id"}
+
+
+def normalize(data, n: int, slots: list[str] | None = None) -> dict:
     """VLM 응답 → {"objects": [...], "photos": [n 개, 입력 순서]}. 물건 id 는 o1, o2 … 로 다시 붙인다.
     물건 목록이 비면 모든 사진을 물건 하나로 (예전 한 물건 가정과 같은 결과)."""
     if isinstance(data, list) and data and isinstance(data[0], dict):
@@ -131,7 +179,10 @@ def normalize(data, n: int) -> dict:
         photos.append({"object": oid, "view": view, "state": p.get("state"), **_photo_flags(p)})
     used = {p["object"] for p in photos}
     if objects and not used - {None}:      # 물건은 냈는데 사진을 하나도 안 붙였다 — 묶음 없는 응답과 같게
-        return normalize({k: v for k, v in data.items() if k != "objects"}, n)
+        return normalize({k: v for k, v in data.items() if k != "objects"}, n, slots)
+    if slots and len(slots) == n and any(slots):
+        _enforce_slots(objects, photos, slots)
+        used = {p["object"] for p in photos}
     objects = [o for o in objects if o["id"] in used]       # 사진이 하나도 없는 물건은 버린다
     _fix_proof_links(objects)
     _fix_states(objects, photos)
@@ -162,19 +213,35 @@ def apply(item: dict, out: dict, new_ids: set[str]) -> None:
     objects = item.setdefault("objects", [])
     used = {o["id"] for o in objects}
     added_proof: dict[str, str] = {}                         # 새로 더한 내 물건 id → AI 가 준 proof_for (AI id)
+    made: dict[tuple, str] = {}                              # (AI 물건, 칸) → 칸이 달라 새로 만든 내 물건
     for p, v in zip(photos, out["photos"]):
         if p["file_id"] not in new_ids:
             continue
         a = v["object"]
-        if a and a not in to_mine and len(objects) < MAX_OBJECTS:   # 기존 사진과 안 묶인 AI 물건 → 새 물건
-            nid = next(f"o{k}" for k in range(1, 10**4) if f"o{k}" not in used)
-            used.add(nid)
-            objects.append({**ai[a], "id": nid, "proof_for": None})
-            if ai[a].get("proof_for"):
-                added_proof[nid] = ai[a]["proof_for"]
-            to_mine[a] = nid
+        slot = p.get("slot")
         mine = to_mine.get(a) if a else None
         kind = next((o["kind"] for o in objects if o["id"] == mine), None)
+        # 기존 사진과 안 묶인 AI 물건 → 새 물건. 묶였어도 내 물건의 종류가 이 사진의 칸과 다르면(사용자가
+        # 근거 사진을 상품으로 옮겨 둔 경우 등) 칸 종류의 새 물건으로 — 칸이 종류를 정한다 (10-05)
+        clash = bool(a and slot and mine and kind != slot)
+        if a and (a not in to_mine or clash) and len(objects) < MAX_OBJECTS:
+            if clash and (a, slot) in made:
+                mine = made[(a, slot)]
+            else:
+                nid = next(f"o{k}" for k in range(1, 10**4) if f"o{k}" not in used)
+                used.add(nid)
+                new = {**ai[a], "id": nid, "proof_for": None}
+                if slot and new["kind"] != slot:
+                    new.update(_as_kind(new, slot))
+                objects.append(new)
+                if ai[a].get("proof_for") and new["kind"] == "proof":
+                    added_proof[nid] = ai[a]["proof_for"]
+                if clash:
+                    made[(a, slot)] = nid
+                else:
+                    to_mine[a] = nid
+                mine = nid
+            kind = next(o["kind"] for o in objects if o["id"] == mine)
         p.update(v, object=mine, view=v["view"] if kind == "product" else None)
         item["needs_review"] = True                          # 고친 뒤에 AI 가 붙인 사진 — 다시 확인받는다
     for o in objects:                                        # AI id 와 내 id 가 둘 다 o1, o2 … 라 섞지 않고 to_mine 으로만

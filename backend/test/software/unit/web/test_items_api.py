@@ -39,11 +39,13 @@ def views(monkeypatch):
     rec["calls"] 에는 매 호출의 이미지 목록."""
     rec = {"calls": [], "category": "other", "item": "mug", "photos": None, "fail": False}
 
-    def fake(images):
+    def fake(images, slots=None):
         rec["calls"].append(list(images))
+        rec.setdefault("slots", []).append(slots)
         if rec["fail"]:
             raise RuntimeError("VLM 장애")
         if rec.get("raw") is not None:                     # 묶음 응답을 그대로 (여러 물건 시험)
+            # 칸 강제(slots)는 빼고 AI 묶음만 — 이 응답들은 근거를 상품 칸으로 올린 셈이라. 칸 강제는 test_listing 이 본다
             return listing.normalize(rec["raw"], len(images))
         photos = rec["photos"] or [{"view": None, "occluded": False, "blurry": False,
                                     "item_visible": True}] * len(images)
@@ -274,9 +276,9 @@ def test_add_files_concurrent_requests_keep_all_photos(client, views, monkeypatc
     from app.services.ai import detector
     fake = detector.group_objects          # views 픽스처의 가짜 (10-04 부터 라우트는 group_objects 를 부른다)
 
-    def slow(images):
+    def slow(images, slots=None):
         time.sleep(0.2)                     # 분류 중에 다른 요청이 같은 묶음을 읽도록 틈을 둔다
-        return fake(images)
+        return fake(images, slots)
     monkeypatch.setattr(detector, "group_objects", slow)
     results = []
 
@@ -612,3 +614,36 @@ def test_arrange_real_compositor_end_to_end(client, views, monkeypatch, isolated
     name = r.json()["result_url"].rsplit("/", 1)[1]
     with Image.open(isolated_storage / "result" / name) as img:
         assert img.format == "JPEG" and img.size == (compositor.CANVAS, compositor.CANVAS)
+
+
+# ═════════════════════════ 상품 칸 · 근거 칸 (10-05) ═════════════════════════
+def _proof(*named):
+    return [("proof_files", (name, data, "application/octet-stream")) for name, data in named]
+
+
+def test_create_item_proof_files_saved_with_slot(client, views, isolated_storage):
+    r = client.post("/api/items", files=_files(("a.png", _png())) + _proof(("w.png", _png())))
+    assert r.status_code == 200
+    assert [p["slot"] for p in r.json()["photos"]] == ["product", "proof"]
+    assert views["slots"][-1] == ["product", "proof"]
+
+
+def test_create_item_proof_video_rejected(client, views, frames, isolated_storage):
+    r = client.post("/api/items", files=_files(("a.png", _png())) + _proof(("v.mp4", b"v")))
+    assert r.status_code == 400
+    assert views["calls"] == [] and frames["calls"] == []
+    assert _originals(isolated_storage) == []
+
+
+def test_create_item_proof_only_rejected(client, views, isolated_storage):
+    """상품 사진 없이 근거만 — 붙을 상품이 없으니 400, 저장 · 분류 없음."""
+    r = client.post("/api/items", files=_proof(("w.png", _png())))
+    assert r.status_code == 400 and "상품 사진을 먼저" in r.json()["detail"]
+    assert views["calls"] == [] and _originals(isolated_storage) == []
+
+
+def test_add_files_proof_only_ok(client, views, isolated_storage):
+    first = client.post("/api/items", files=_files(("a.png", _png()))).json()
+    r = client.post(f"/api/items/{first['item_id']}/files", files=_proof(("w.png", _png())))
+    assert r.status_code == 200
+    assert [p["slot"] for p in r.json()["photos"]] == ["product", "proof"]

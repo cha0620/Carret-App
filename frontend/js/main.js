@@ -17,6 +17,46 @@ const feedbackSubmitBtn = document.getElementById('feedback-submit');
 let currentRating = 0;
 let resetZoomScale = null;   // initZoom() 이 채움 — render.js 의 resetZoom() 에서 호출
 
+// ---- 업로드: 근거 칸 (보증서 · 정품 마크 · 영수증) ----
+// 물건이 이미 있으면 바로 더하고, 없으면 모아 뒀다가 상품 사진과 같이 보낸다
+const proofZone = document.getElementById('proof-zone');
+const proofInput = document.getElementById('proof-file');
+const proofPendingEl = document.getElementById('proof-pending');
+let pendingProof = [];
+
+function setPendingProof(files) {
+  pendingProof = files;
+  proofPendingEl.replaceChildren();
+  if (!files.length) return;
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.className = 'proof-cancel';
+  cancel.textContent = '취소';
+  cancel.onclick = e => { e.stopPropagation(); setPendingProof([]); };   // 칸을 눌러 파일 창이 열리지 않게
+  proofPendingEl.append(`근거 사진 ${files.length}장 — 상품 사진을 올리면 같이 보내요 `, cancel);
+}
+
+function handleProof(files) {
+  if (!files.length || busy) return;
+  if (item) {
+    if (draftDirty) { statusEl.textContent = '고친 물건 묶음을 먼저 저장해 주세요'; return; }
+    handleFiles([], true, files);
+  } else {
+    setPendingProof([...pendingProof, ...files]);
+  }
+}
+
+proofZone.onclick = () => { if (!busy) proofInput.click(); };
+proofZone.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); proofZone.click(); } };
+proofInput.onchange = () => { handleProof([...proofInput.files]); proofInput.value = ''; };
+proofZone.ondragover  = e => { e.preventDefault(); proofZone.classList.add('over'); };
+proofZone.ondragleave = () => proofZone.classList.remove('over');
+proofZone.ondrop = e => {
+  e.preventDefault();
+  proofZone.classList.remove('over');
+  handleProof([...e.dataTransfer.files]);
+};
+
 // ---- 업로드: 파일 ----
 dropzone.onclick = () => { if (!busy) fileInput.click(); };
 fileInput.onchange = () => handleFiles([...fileInput.files]);
@@ -44,7 +84,7 @@ let uploadToken = 0;             // 늦게 도착한 업로드 응답을 버리�
 
 function setBusy(on) {
   busy = on;
-  for (const el of [dropzone, addBtn, urlBtn]) {
+  for (const el of [dropzone, proofZone, addBtn, urlBtn]) {
     el.classList.toggle('disabled', on);
     if ('disabled' in el) el.disabled = on;
   }
@@ -399,9 +439,10 @@ function firstGoodPhoto(it) {
   return mine.find(p => !bad.has(p.file_id)) || mine[0] || it.photos[0];
 }
 
-async function handleFiles(files, append = false) {
+async function handleFiles(files, append = false, proof = null) {
+  if (!append && proof === null) proof = pendingProof;   // 먼저 골라 둔 근거 사진은 새 물건과 같이
   files = files.filter(Boolean);
-  if (!files.length || busy) return;
+  if ((!files.length && !(proof && proof.length)) || busy) return;
   if (!append && draftDirty && !confirm('고친 물건 묶음을 저장하지 않았어요. 새 사진으로 시작할까요?')) return;
   const token = ++uploadToken;
   const hasVideo = files.some(f => f.type.startsWith('video/'));
@@ -413,8 +454,9 @@ async function handleFiles(files, append = false) {
   urlInput.value = '';
   setBusy(true);
   try {
-    const res = await uploadItem(files, append && item ? item.item_id : null);
+    const res = await uploadItem(files, append && item ? item.item_id : null, proof || []);
     if (token !== uploadToken) return;            // 그사이 다른 업로드가 시작됨
+    if (!append) setPendingProof([]);
     item = res;
     draftFromItem(item);
     objMsg = '';
@@ -454,6 +496,7 @@ urlBtn.onclick = async () => {
   statusEl.textContent = 'URL 다운로드 중...';
   try {
     const data = await uploadUrl(url);
+    setPendingProof([]);         // 한 장 업로드는 물건 묶음이 아니라 근거를 붙일 곳이 없다
     fileId = data.file_id;
     item = null;
     composition = null;

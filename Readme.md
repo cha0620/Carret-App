@@ -430,6 +430,10 @@ make docs    # browse the repo's .md files (http://localhost:8090, renders merma
   and the result together and gets mark preservation and new text in one VLM call instead of two parallel ones
 - **Confidence on judgment prompts**: verify, added_text and check_photo also return `confidence` (0–1). It is stored
   in inspect to compare with human grading; the gate does not use it yet
+- **Separate upload section for proof photos**: warranty cards, authenticity marks, serials and receipts go in their
+  own section. The section decides product vs. proof (the VLM only groups photos and suggests the proof type); a new
+  proof type `mark` covers logo / serial / hologram close-ups. Proof photos stay attached to the listing and are not
+  used for generation or checks
 
 **2026-10-01**
 - **Workflow redesigned around multi-angle upload**: photos or a video → angle labels (one low-res VLM call) → missing

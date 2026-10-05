@@ -67,6 +67,40 @@ def test_normalize_objects_but_no_photo_attached_falls_back_to_one():
     assert [(p["object"], p["view"]) for p in out["photos"]] == [("o1", "front"), ("o1", "back")]
 
 
+def test_normalize_slot_changes_kind_when_all_photos_in_one_box():
+    """AI 가 상품이라 했어도 사진이 모두 근거 칸이면 근거 — 파는 상품이 하나면 proof_for 는 그 상품 (10-05)."""
+    out = listing.normalize({"objects": [_obj("A"), _obj("B")],
+                             "photos": [_ph(0, "A", "front"), _ph(1, "B", "front")]}, 2, ["product", "proof"])
+    assert [o["kind"] for o in out["objects"]] == ["product", "proof"]
+    assert out["objects"][1]["proof_for"] == "o1"
+    assert out["photos"][1]["view"] is None
+    b = out["objects"][1]                                  # 상품 이름이 근거에 붙지 않는다
+    assert (b["label"], b["name"], b["desc"]) == ("근거 사진", "photo", "")
+
+
+def test_normalize_mixed_slots_split_into_new_object():
+    out = listing.normalize({"objects": [_obj("A")],
+                             "photos": [_ph(0, "A", "front"), _ph(1, "A", "back")]}, 2, ["product", "proof"])
+    assert [(o["id"], o["kind"]) for o in out["objects"]] == [("o1", "product"), ("o2", "proof")]
+    assert [p["object"] for p in out["photos"]] == ["o1", "o2"]
+
+
+def test_normalize_mixed_slots_at_max_objects_stays_on_original(monkeypatch):
+    """물건 수 상한이면 떼어 내지 않고 원래 물건에 남긴다 — 사진 object 가 None 이 되지 않는다."""
+    monkeypatch.setattr(listing, "MAX_OBJECTS", 1)
+    out = listing.normalize({"objects": [_obj("A")],
+                             "photos": [_ph(0, "A", "front"), _ph(1, "A", "back")]}, 2, ["product", "proof"])
+    assert [o["id"] for o in out["objects"]] == ["o1"]
+    assert [p["object"] for p in out["photos"]] == ["o1", "o1"]
+
+
+def test_normalize_slot_none_keeps_ai_kind():
+    out = listing.normalize({"objects": [_obj("A"), _obj("B", kind="proof")],
+                             "photos": [_ph(0, "A", "front"), _ph(1, "B")]}, 2, [None, None])
+    assert [o["kind"] for o in out["objects"]] == ["product", "proof"]
+    assert out["objects"][1]["proof_for"] is None
+
+
 @pytest.mark.parametrize("field", ["objects", "photos"])
 def test_normalize_non_iterable_field_raises(field):
     """objects · photos 가 숫자면 TypeError — 호출부(_classify)가 모든 예외를 "묶지 못함"으로 처리한다."""
@@ -137,6 +171,17 @@ def test_apply_edited_new_ai_proof_links_to_my_product():
     added = item["objects"][1]
     assert added["id"] == "o1" and added["kind"] == "proof" and added["proof_for"] == "o5"
     assert item["photos"][1]["object"] == "o1" and item["photos"][1]["view"] is None
+
+
+def test_apply_edited_slot_clash_makes_new_object_of_slot_kind():
+    """AI 가 새 근거 칸 사진 2장을 내 상품(o1)과 묶어도 칸이 다르니 근거 물건 하나를 새로 만들어 모은다."""
+    item = _item([_mine("o1")], ["o1", None, None], edited=True)
+    for i in (1, 2):
+        item["photos"][i].update(file_id=f"new{i}", slot="proof")
+    listing.apply(item, _out([_mine("o1")], [_aph("o1"), _aph("o1", "back"), _aph("o1", "left")]), {"new1", "new2"})
+    assert [(o["id"], o["kind"]) for o in item["objects"]] == [("o1", "product"), ("o2", "proof")]
+    assert [p["object"] for p in item["photos"]] == ["o1", "o2", "o2"]
+    assert item["photos"][1]["view"] is None
 
 
 # ═════════════════════════ edit ═════════════════════════

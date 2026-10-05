@@ -149,6 +149,8 @@ class ItemPhoto(BaseModel):
     file_id: str
     url: str
     source: Literal["photo", "video"] = Field(description="올린 사진 | 동영상에서 뽑은 장면")
+    slot: Literal["product", "proof"] | None = Field(
+        default=None, description="올린 칸 — 상품 사진 | 근거(보증서 · 정품 마크 …). 칸이 생기기 전 사진은 None")
     view: str | None = Field(default=None, description="각도 (coverage.VIEWS) — 모르면 None")
     view_label: str | None = None
     state: str | None = Field(default=None, description="놓인 모양 (coverage.STATES — 노트북 open | closed), 아니면 None")
@@ -184,7 +186,7 @@ class ItemObject(BaseModel):
     """사진 묶음 속 물건 하나 (10-04). AI 가 제안하고 사용자가 고친다."""
     id: str
     kind: Literal["product", "proof"] = Field(description="product 팔거나 보여 주는 물건 | proof 상품을 보증하는 사진")
-    proof_type: str | None = Field(default=None, description="proof 만: document | internals | screen | other")
+    proof_type: str | None = Field(default=None, description="proof 만: document | mark | internals | screen | other")
     proof_type_label: str | None = None
     proof_for: str | None = Field(default=None, description="proof 만: 어느 상품을 보증하나 (id)")
     name: str = Field(description="짧은 영어 명사 (프롬프트용)")
