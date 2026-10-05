@@ -20,12 +20,12 @@
                   (배경 교체·원본 그대로는 물건 픽셀이 원본이라 부르지 않는다)
                   (하자는 목록으로 확인하지 않는다 — 수준(wear_level)으로 plan 에서만 본다)
   4) finalize   : bubbles + 로깅
-  (그래프 밖) judge_and_save : 품질 성적표 — 그래프가 끝난 뒤 한 곳에서만 채점.
+  (그래프 밖) judge_and_save : 품질 성적표 — eval · dev 에서만 (10-05 운영에서 뺌: 결정에 안 쓰고
+       사람 판정과 11/17 만 맞아 화면 점수가 오히려 헷갈림 — study 10-05).
        item_signals_and_save : 누끼 비교(item_dino·item_patch, 관측용) — 예전엔 validate_result 가
        기다렸는데 누끼(rembg CPU)가 3~43초로 생성 경로 시간의 가장 큰 덩어리였다 (09-29 Langfuse).
        결과를 바꾸지 않는 값이라 그래프 밖으로 뺐다.
-       둘 다 transform 라우트는 응답 뒤 백그라운드, 그 외(run_transform 기본값 ·
-       run_transform_with_result)는 그래프 직후 바로
+       누끼 비교는 transform 라우트에선 응답 뒤 백그라운드, 그 외는 그래프 직후 바로.
 """
 
 import contextvars
@@ -779,12 +779,11 @@ def judge_and_save(file_id: str, preset_key: str, *, trace_id: str | None = None
                    parent_span_id: str | None = None) -> None:
     """품질 성적표 채점 → 저장 → 축별 점수 부착. 채점 구현은 여기 하나뿐이다.
 
-    그래프 밖에서 부른다 — 채점 결과를 기다려야 하는 단계가 그래프에 없고
-    (judge 는 결정에 안 쓰이는 관측 신호), 호출부마다 "언제" 채점할지가 달라서:
-      - transform 라우트: 응답을 보낸 뒤 BackgroundTasks 로 (사용자가 VLM 왕복을 안 기다림).
-        요청 컨텍스트가 끝났으니 trace_id/parent_span_id 로 같은 트레이스에 이어 붙인다.
-      - run_transform 기본값(ingest 등) · run_transform_with_result(dev): 그래프 직후
-        바로 (현재 트레이스에 자동 중첩).
+    그래프 밖에서 부른다 — 채점 결과를 기다려야 하는 단계가 그래프에 없다
+    (judge 는 결정에 안 쓰이는 관측 신호). 10-05 부터 운영(transform 라우트)은 부르지 않고
+    eval · dev 만 그래프 직후 바로 부른다: run_transform(score_quality=True) ·
+    run_transform_with_result (현재 트레이스에 자동 중첩). trace_id/parent_span_id 는
+    요청 컨텍스트 밖(백그라운드)에서 부를 때 같은 트레이스에 이어 붙이는 용도.
     원본·결과는 storage 에서 읽는다 — 사용자에게 서빙되는 저장본(정규화 후)을 채점
     (예전 그래프 노드는 fal 이 준 정규화 전 바이트를 채점 — 과거 점수와 소폭 차이 가능).
     채점 중에 같은 쌍이 다시 변환되면(결과 이미지가 바뀜) 옛 결과 점수는 버린다.
@@ -826,8 +825,8 @@ ITEM_SIGNAL_MODES = ("generate", "composite_failed")   # 결과가 생성본일 
 
 def item_signals_and_save(file_id: str, preset_key: str, *, trace_id: str | None = None,
                           parent_span_id: str | None = None) -> None:
-    """누끼 비교(item_dino·item_patch) → inspect JSON 에 채운다. judge_and_save 와 같은 자리에서
-    부른다 (라우트는 응답 뒤, 그 외는 그래프 직후). 저장본(정규화 후)을 오린다 — 예전 그래프 안
+    """누끼 비교(item_dino·item_patch) → inspect JSON 에 채운다. transform 라우트는 응답 뒤
+    백그라운드로, 그 외는 그래프 직후 부른다. 저장본(정규화 후)을 오린다 — 예전 그래프 안
     계산은 fal 이 준 정규화 전 바이트였다 (값이 소폭 다를 수 있음).
     계산 중에 같은 쌍이 다시 변환되면(결과 이미지·inspect 가 바뀜) 옛 값을 쓰지 않는다. 실패는 모두 삼킨다."""
     name = f"{file_id}_{preset_key}"
@@ -972,12 +971,12 @@ GRAPH = build()
 RECURSION_LIMIT = 80
 
 
-def run_transform(file_id: str, preset_key: str, *, defer_judge: bool = False,
-                  note: str = "", composition: str | None = None, sell: list | None = None,
-                  answer_count: int | None = None) -> dict:
-    """defer_judge=True: 채점하지 않고 결과에 judge_pending/trace_id 를 실어 보낸다 —
-    호출부(transform 라우트)가 응답 뒤 judge_and_save() 를 돌린다.
-    기본값(False)은 그래프 직후 여기서 바로 채점 (ingest 등 배치 호출부)."""
+def run_transform(file_id: str, preset_key: str, *, defer_signals: bool = False,
+                  score_quality: bool = False, note: str = "", composition: str | None = None,
+                  sell: list | None = None, answer_count: int | None = None) -> dict:
+    """defer_signals=True: 누끼 비교를 하지 않고 결과에 item_signals_pending/trace_id 를 실어 보낸다 —
+    호출부(transform 라우트)가 응답 뒤 item_signals_and_save() 를 돌린다.
+    score_quality=True: 그래프 직후 judge 성적표를 채점 (eval · dev 만 — 운영 경로는 안 부른다)."""
     t0 = time.time()
 
     # pass 모드 = 지름길 (그래프 안 탐)
@@ -998,20 +997,19 @@ def run_transform(file_id: str, preset_key: str, *, defer_judge: bool = False,
         with observe("transform", as_type="span",
                      input={"file_id": file_id, "preset_key": preset_key},
                      metadata={"pipeline_mode": settings.pipeline_mode}) as obs:
-            # 옛 성적표는 시작할 때 지운다 — 파일명이 file_id/preset 뿐이라 남겨 두면
-            # 새 결과에 옛 점수가 붙는다 (원본 그대로·채점 실패 때도)
+            # 옛 성적표(eval · dev 가 남긴 것)는 시작할 때 지운다 — 파일명이 file_id/preset 뿐이라
+            # 남겨 두면 새 결과에 옛 점수가 붙는다 (원본 그대로·채점 실패 때도)
             _clear_quality(f"{file_id}_{preset_key}.json")
             out = GRAPH.invoke({"file_id": file_id, "preset_key": preset_key, "style_note": note,
                                 "composition": composition, "sell": sell, "answer_count": answer_count},
                                {"recursion_limit": RECURSION_LIMIT})
-            # 그래프 도중(새 결과 저장 전)에 이전 요청의 백그라운드 채점이 옛 결과 점수를
-            # 저장했을 수 있다 — 새 결과가 저장된 뒤 한 번 더 지운다. 이후에 그 채점이
-            # 저장하려 하면 judge_and_save 의 재확인(결과 바뀜)이 스스로 지운다.
-            _clear_quality(f"{file_id}_{preset_key}.json")
+            # 채점할 때만: 그래프 도중에 같은 쌍을 돌던 다른 eval · dev 채점이 옛 점수를 저장했을 수
+            # 있다 — 새로 채점하기 전에 한 번 더 지운다 (운영은 성적표를 만들지 않아 삭제 왕복을 아낀다).
             # 원본을 내보내면(mode=original: inside_view · 오리기 실패한 문서·하자 heavy) 채점 안 함
-            judged = out.get("mode") != "original"
-            if judged and not defer_judge:
-                judge_and_save(file_id, preset_key)
+            if score_quality:
+                _clear_quality(f"{file_id}_{preset_key}.json")
+                if out.get("mode") != "original":
+                    judge_and_save(file_id, preset_key)
             item_pending = out.get("mode", "generate") in ITEM_SIGNAL_MODES
 
             result = {
@@ -1034,13 +1032,12 @@ def run_transform(file_id: str, preset_key: str, *, defer_judge: bool = False,
                 "watermark": out.get("watermark"),
                 "detect_failed": out.get("detect_failed", False),
                 "verify_failed": out.get("verify_failed", False),
-                "judge_pending": defer_judge and judged,
-                "item_signals_pending": defer_judge and item_pending,
+                "item_signals_pending": defer_signals and item_pending,
                 "trace_id": current_trace_id(),
                 "trace_span_id": getattr(obs, "id", None),
             }
 
-            if item_pending and not defer_judge:
+            if item_pending and not defer_signals:
                 _inline_item_signals(file_id, preset_key, result)
             if obs is not None:
                 obs.update(output={

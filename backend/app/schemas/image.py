@@ -17,12 +17,6 @@ class Bubble(BaseModel):
     x2: int = 0
     y2: int = 0
 
-class QualityReport(BaseModel):
-    fidelity: int = 0
-    realism: int = 0
-    trust: int = 0
-    analysis: str = ""
-
     
 # ===== 업로드 =====
 class UploadResponse(BaseModel):
@@ -81,7 +75,6 @@ class TransformRequest(BaseModel):
     def _clean_note(cls, v: str) -> str:
         from app.prompts.presets import clean_note
         return clean_note(v)
-    quality: QualityReport | None = None   # 🆕
     bubbles: list[Bubble] = []
     gate_passed: bool | None = None
 
@@ -92,16 +85,13 @@ class TransformResponse(BaseModel):
     result_path: str = Field(description="저장된 파일 경로")
     result_url: str = Field(description="브라우저에서 바로 보는 URL")
     prompt_used: str = Field(description="사용된 프롬프트 (실험 기록용)")
-    quality: QualityReport | None = None
-    bubbles: list[Bubble] = []        
+    bubbles: list[Bubble] = []
     gate_passed: bool | None = None
     item: str = "object"
     considered: list[str] = []
     composite_reason: str | None = Field(
         default=None, description="생성하지 않은 이유: detect_failed | inside_view | document | text_dense | "
                                   "text_heavy | wear_heavy | gate_failed | verify_failed")
-    judge_pending: bool = Field(default=False,
-                                description="성적표를 응답 뒤에 채점 중 — GET /api/quality/{file_id}/{preset} 폴링")
     verify_failed: bool = Field(default=False,
                                 description="결과 보존 검사(verify) 호출 실패 — 보존 여부를 검증하지 못함")
     detect_failed: bool = Field(default=False,

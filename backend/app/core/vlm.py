@@ -50,8 +50,11 @@ DEFAULT_THINKING: dict[str, str | int] = {
 #   헛하자(부엉이 찻잔 물결 테두리, 빈티지 마감 찬장)는 잡지 않았다 → 기본 모델(VLM_MODEL)을 3.8-flash 로.
 #   judge 도 3.8 로 바뀌어 성적표 점수의 기준선이 이날부터 달라진다 (이전 점수와 직접 비교 금지).
 # 주의: 3.8-flash 는 thinking_level "minimal" 을 400 으로 거부한다 — 모델을 바꿀 땐 DEFAULT_THINKING 도 확인.
+# 2026-10-05 비교(같은 입력, 3.8-flash 대 lite): objects 묶음 12개 개수·묶기 둘 다 12/12 → lite.
+#   judge 는 lite 가 fidelity +0.9 후하고 사람 실패 판정에도 3.4점, auto_feedback 은 lite 가 칭찬만 → 유지.
 DEFAULT_MODELS: dict[str, str] = {
     "check_photo": "gemini-3.5-flash-lite",
+    "objects": "gemini-3.5-flash-lite",
 }
 
 

@@ -300,11 +300,12 @@ def test_run_transform_graph_exception_flushes_and_leaves_no_stale_report(monkey
 # ══ 옛 성적표 ═════════════════════════════════════════════════════
 @pytest.mark.parametrize("mode", ["generate", "original"])
 def test_stale_report_written_during_graph_is_cleared(monkeypatch, mode):
-    """이전 요청의 백그라운드 채점이 그래프 도중에 옛 점수를 저장해도 남지 않는다 — 그래프 직후 한 번 더 지운다."""
+    """채점 경로(eval · dev): 다른 채점이 그래프 도중에 옛 점수를 저장해도 남지 않는다 — 그래프 직후 한 번 더 지운다."""
+    monkeypatch.setattr(pipeline_mod, "judge_and_save", lambda *a, **k: None)
     monkeypatch.setattr(pipeline_mod, "GRAPH", FakeGraph(
         _graph_out(mode=mode, result_name="frt_p.jpg"),
         before=lambda: storage.save("quality", "frt_p.json", b'{"stale": true}')))
-    pipeline_mod.run_transform("frt", "p", defer_judge=True)
+    pipeline_mod.run_transform("frt", "p", score_quality=True)
     assert storage.load("quality", "frt_p.json") is None
 
 

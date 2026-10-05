@@ -1,6 +1,6 @@
 ---
 name: eval-report
-description: Carret 파이프라인 수치 보기 — 쌓인 inspect JSON·성적표를 모아 composite 비율, detect/verify 실패율, 가드 실패, DINO·item_dino 분포, judge 점수를 표로 요약한다. "eval 돌려줘", "숫자 보자", "임계값 정하자", "가드 오차단률" 같은 요청에 쓴다. 비용이 드는 실제 eval 은 사용자 확인 후에만.
+description: Carret 파이프라인 수치 보기 — 쌓인 inspect JSON·성적표를 모아 composite 비율, detect(analyze)/verify 실패율, 가드 실패, DINO·item_dino 분포, judge 점수를 표로 요약한다. "eval 돌려줘", "숫자 보자", "임계값 정하자", "가드 오차단률" 같은 요청에 쓴다. 비용이 드는 실제 eval 은 사용자 확인 후에만.
 ---
 
 # eval-report
@@ -15,6 +15,7 @@ python .claude/skills/eval-report/inspect_stats.py --preset studio_white
 ```
 
 - 입력: `backend/storage/quality/*_inspect.json` (+ 같은 이름의 성적표 `.json`)
+- 성적표(judge)는 10-05 부터 eval · dev 실행분에만 있다 — 운영 결과면 judge 칸이 비는 게 정상이다.
 - `STORAGE_BACKEND=s3` 면 로컬에 없다 — 사용자에게 알리고 dev 서버의 `GET /dev/results` 를 대신 쓴다.
 - 표본이 적으면(n < 20) 결론 대신 "표본 부족"이라고 쓴다.
 
@@ -30,7 +31,8 @@ python .claude/skills/eval-report/inspect_stats.py --preset studio_white
 
 | 명령 | 재는 것 |
 |---|---|
-| `make eval` (`pytest backend/test -m eval`) | detect item_acc / recall / precision (GT = `backend/test/eval/dataset.json`) |
+| `make eval` (`cd backend && python eval/run.py --analyze-only`) | 분류 정확도 — photo_type · wear_level · text_level (정답 = `backend/eval/data/dataset.json`) |
+| `python eval/run.py` (backend 에서) | 전체 파이프라인 (생성 포함) → `eval/results/runs/<run_id>/` · 사람 채점은 `eval/README.md` |
 | dev 서버 `POST /dev/run-inbox` | inbox 원본을 실제 파이프라인으로 → inspect JSON 이 쌓임 → 1번 다시 |
 
 ## 출력 형식

@@ -153,7 +153,8 @@ def _full_row(e: dict, data: bytes, rep: int, preset: str, files_dir: Path, comp
     store.record_original(fid, ext, "eval", original_name=e["file"], size_bytes=len(data))
     t0 = time.time()
     # 팔 물건을 고르는 화면이 없다 — 정답 개수(dataset.json item_count)가 있으면 그대로 (10-03)
-    out = pipeline.run_transform(fid, preset, composition=composition, answer_count=e.get("item_count"))
+    out = pipeline.run_transform(fid, preset, score_quality=True, composition=composition,
+                                answer_count=e.get("item_count"))
     elapsed = time.time() - t0
     name = f"{fid}_{preset}"
     inspect = json.loads(storage.load("quality", f"{name}_inspect.json") or b"{}")

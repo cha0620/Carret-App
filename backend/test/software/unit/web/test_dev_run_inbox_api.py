@@ -86,11 +86,11 @@ def test_failing_item_reports_error_row_and_stays_in_inbox(client, feedback_db, 
 
     orig_run_transform = pipeline.run_transform
 
-    def flaky_run_transform(file_id, preset_key):
+    def flaky_run_transform(file_id, preset_key, **kw):
         if not hasattr(flaky_run_transform, "called"):
             flaky_run_transform.called = True
             raise RuntimeError("boom")
-        return orig_run_transform(file_id, preset_key)
+        return orig_run_transform(file_id, preset_key, **kw)
 
     monkeypatch.setattr(pipeline, "run_transform", flaky_run_transform)
 
