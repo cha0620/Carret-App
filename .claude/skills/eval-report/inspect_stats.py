@@ -1,12 +1,14 @@
 """storage/quality 의 inspect JSON + 성적표를 모아 수치 요약 (무료, API 호출 없음).
 
 사용: python .claude/skills/eval-report/inspect_stats.py [--dir backend/storage/quality] [--preset studio_white]
+     python .claude/skills/eval-report/inspect_stats.py --url http://localhost:8000   # STORAGE_BACKEND=s3 일 때
 """
 import argparse
 import json
 import statistics
 from collections import Counter
 from pathlib import Path
+from urllib.request import urlopen
 
 
 def _dist(xs):
@@ -18,22 +20,51 @@ def _dist(xs):
             f"p75={q[-1]:.3f} max={xs[-1]:.3f}")
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--dir", default="backend/storage/quality")
-    ap.add_argument("--preset")
-    a = ap.parse_args()
-    root = Path(a.dir)
+def _rows_from_dir(root: Path, preset_filter):
     rows = []
     for p in sorted(root.glob("*_inspect.json")):
         stem = p.name[: -len("_inspect.json")]
         file_id, _, preset = stem.partition("_")
-        if a.preset and preset != a.preset:
+        if preset_filter and preset != preset_filter:
             continue
         ins = json.loads(p.read_text(encoding="utf-8"))
         judge_p = root / f"{stem}.json"
         judge = json.loads(judge_p.read_text(encoding="utf-8")) if judge_p.exists() else None
         rows.append((file_id, preset, ins, judge))
+    return rows
+
+
+def _rows_from_url(base: str, preset_filter, page=100):
+    """dev 서버 GET /dev/results 를 페이지로 받아 같은 모양으로 (storage 백엔드 무관).
+    페이지 사이에 새 결과가 생기면 목록이 밀려 같은 항목이 또 오니 (file_id, preset) 로 거른다."""
+    if not base.startswith(("http://", "https://")):
+        raise SystemExit("--url 은 http(s) 주소")
+    rows, seen, offset = [], set(), 0
+    while True:
+        try:
+            with urlopen(f"{base.rstrip('/')}/dev/results?offset={offset}&limit={page}", timeout=60) as r:
+                body = json.load(r)
+        except OSError as e:
+            raise SystemExit(f"dev 서버 읽기 실패 (offset={offset}): {e}")
+        for it in body["items"]:
+            key = (it["file_id"], it["preset"])
+            if key in seen or not it.get("inspect") or (preset_filter and it["preset"] != preset_filter):
+                continue
+            seen.add(key)
+            rows.append((it["file_id"], it["preset"], it["inspect"], it.get("judge")))
+        offset += page
+        if not body["items"] or offset >= body["total"]:
+            return rows
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dir", default="backend/storage/quality")
+    ap.add_argument("--url", help="dev 서버 주소 — 주면 --dir 대신 GET /dev/results 를 읽는다")
+    ap.add_argument("--preset")
+    a = ap.parse_args()
+    root = a.url or Path(a.dir)
+    rows = _rows_from_url(a.url, a.preset) if a.url else _rows_from_dir(root, a.preset)
 
     n = len(rows)
     print(f"# inspect 요약 ({n}건, {root})\n")

@@ -424,6 +424,8 @@ make docs    # browse the repo's .md files (http://localhost:8090, renders merma
 ## 📝 Recent Changes
 
 **2026-10-05**
+- **Paged dev results**: `GET /dev/results?offset&limit` (returns `total`). The dev page fetches 50 at a time
+  (deduped by key, re-rendered only on first page and at the end); the eval-report script reads S3-backed results via `--url`
 - **Mark bubbles removed**: the result no longer draws boxes and bubbles over preserved marks. verify stops asking
   for coordinates, so its answer is shorter. Old rows keep their `bubbles` column, new rows leave it empty
 - **One call for the post-generation check (experiment, off by default)**: `VERIFY_COMBINED=true` sends the original

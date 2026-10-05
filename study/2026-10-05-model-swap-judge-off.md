@@ -119,8 +119,8 @@
 | tester | S3 list · 병합 · S3 모드 업로드가 로컬에 안 쓰임 · dev results 목록 · quality 404 · 깨진 이미지 400 · 이름 제한 — 7개 추가 | 686 통과 |
 
 - [x] 로컬 storage 비우기 — S3 에 없는 파일을 올릴지 사용자 확인 뒤 → §8
-- [ ] dev results 페이지 단위 조회 (결과가 쌓이면 느려짐)
-- [ ] eval-report 스킬을 S3 / `GET /dev/results` 기준으로
+- [x] dev results 페이지 단위 조회 (§10)
+- [x] eval-report 스킬을 S3 / `GET /dev/results` 기준으로 (§10)
 
 ## 7. 생성 뒤 검사 한 호출 · 확신도 · 말풍선 삭제
 
@@ -202,7 +202,7 @@
 
 - [ ] objects 프롬프트 Langfuse 재등록 — 배포 뒤 (옛 서버는 칸 표시를 모른다)
 - [ ] `storage/result/_review/` 처리 (사용자 확인)
-- [ ] 묶음 테스트(`SHOES_AND_CARD`)가 근거를 아직 상품 칸으로 올린다 — `proof_files` 로 옮길지
+- [x] 묶음 테스트(`SHOES_AND_CARD`) — 옛 경로 회귀 테스트로 남김 (§10)
 
 ## 9. 머지 정리 · eval 데이터 11개 · 여러 물건 같이/따로
 
@@ -237,3 +237,25 @@
 
 - [ ] 따로 만들기 물건 수 상한 · 중간 취소 (사용자 결정)
 - [ ] 쌓인 PR 은 위 PR base 를 main 으로 바꾼 뒤 머지
+
+## 10. dev 결과 페이지 단위 조회 · eval-report 를 `/dev/results` 로
+
+- 문제: 결과가 쌓이면 `GET /dev/results` 가 항목마다 DB · json 을 다 읽어 느림. S3 면 eval-report 스크립트가 읽을 데가 없음
+- 한 것:
+  - 서버: `offset` · `limit`(1~500, 없으면 전부 — 옛 호출 그대로) · 응답에 `total` · `offset`. 정렬은 전체, 읽기는 이 페이지만
+  - 화면: 50개씩 이어 받기. 첫 페이지에서 바로 그리고 끝에서 한 번 더, 중간엔 요약에 "받는 중 n/total"
+  - `inspect_stats.py --url http://…` — dev 서버를 100개씩 읽는다 (storage 백엔드 무관). 실서버 58건 중 inspect 55건 확인
+  - `SHOES_AND_CARD` 는 옮기지 않음 — 칸 없는 옛 사진 경로의 회귀 테스트, 근거 칸 경로는 따로 테스트가 있다 (주석)
+
+| 누가 | 잡은 것 | 처리 |
+|---|---|---|
+| reviewer | 페이지 사이 새 결과로 목록이 밀려 중복 · 집계 부풀림 | 화면 · 스크립트에서 `(file_id, preset)` 로 거름 |
+| reviewer | 페이지마다 다시 그려 쓰던 피드백이 날아감 | 첫 페이지 · 끝에서만 그림 |
+| reviewer | 중간 실패를 조용히 삼킴 | "⚠ n/total 만 받음" 표시 |
+| reviewer | 다시 불러오기 때 `rsShown` 이 남음 | 되돌림 |
+| reviewer | 스크립트 오류 처리 · `total` 없으면 조용히 끝 · `file://` | 한 줄 오류 · `body["total"]` · http(s) 만 |
+| reviewer | 페이지마다 storage 전체 LIST (S3 비용 O(N²/limit)) · 지워진 결과는 누락 가능 | 남김 — 커서 · 목록 캐시는 결과가 수천 건일 때 |
+| reviewer | limit 기본 무제한 | 남김 — 옛 호출 호환, dev 라우트 |
+| tester | offset 만 · limit 501 → 422 · 페이지 순서 · 잘못된 값 | 709 통과 |
+
+- [ ] `/dev/results` 커서(before=mtime) 또는 목록 캐시 — 결과가 수천 건이 되면
