@@ -169,6 +169,114 @@ def _text(v) -> str:
     return "" if v is None else prompt_safe(v)
 
 
+# 물건 역할 (10-05): 본품 | 본구성품(빠지면 본품이 완전하지 않음) | 부가품(없어도 같은 상품 — 충전기 · 케이스 · 상자)
+ROLES = ("main", "component", "accessory")
+
+
+def components(images: list[bytes]) -> dict:
+    """게시글 구성품 (10-09, lite 1회) — 기준(0) + 참고 사진을 같이 본다.
+    반환: {"objects": [{what, name_ko?, box, for_sale, role, photo}], "contents_hidden": bool}.
+    세트는 부품까지 쪼개고, 같은 부품은 한 번만. 응답이 깨지면 예외 (호출부가 전체 분석 결과로 대신)."""
+    client = get_client()
+    prompt = P.components_prompt(len(images))
+    parts = []
+    for i, img in enumerate(images):
+        parts += [f"Photo {i}{' (base)' if i == 0 else ''}:", image_part(img, "image/jpeg", "components")]
+    with observe("components", as_type="generation", model=vlm_model("components"), input=prompt) as obs:
+        resp = client.models.generate_content(
+            model=vlm_model("components"),
+            contents=[*parts, prompt],
+            config=types.GenerateContentConfig(temperature=0, response_mime_type="application/json",
+                                               thinking_config=thinking("components")),
+        )
+        try:
+            data = json.loads(resp.text)
+        except json.JSONDecodeError:
+            data = {}
+        if obs is not None:
+            obs.update(output=data, usage_details=_usage(resp))
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        data = data[0]
+    raw = data.get("pieces") if isinstance(data, dict) else None
+    if not isinstance(raw, list):
+        raise ValueError(f"components: 응답에 pieces 목록 없음: {str(data)[:200]}")
+    objs = []
+    for o in raw:
+        parsed = _parse_objects([o], limit=1)
+        if not parsed:
+            continue
+        ph = o.get("photo") if isinstance(o, dict) else None
+        parsed[0]["photo"] = ph if isinstance(ph, int) and not isinstance(ph, bool) and 0 <= ph < len(images) else 0
+        objs.append(parsed[0])
+        if len(objs) >= MAX_PIECES:
+            break
+    return {"objects": objs, "contents_hidden": bool(data.get("contents_hidden") is True)}
+
+
+def layout_plan(answer: bytes, photos: list[bytes], pieces: list[tuple[str, int]]) -> str:
+    """세트 배치 문장 (10-09, VLM 1회) — 정답 사진의 배치를 판매자 구성품에 맞춘다. 좌표 · 이름 없이 한두 문장.
+    정답 사진은 이 판단에만 쓰고 생성에는 넣지 않는다 (물건을 베낀다 — 사용자 규칙). 깨지면 예외."""
+    client = get_client()
+    prompt = P.layout_plan_prompt(pieces)
+    parts = ["ANSWER photo (arrangement only):", image_part(answer, "image/jpeg", "layout_plan")]
+    for i, b in enumerate(photos):
+        parts += [f"Seller photo {i + 1}:", image_part(b, "image/jpeg", "layout_plan")]
+    with observe("layout_plan", as_type="generation", model=vlm_model("layout_plan"), input=prompt) as obs:
+        resp = client.models.generate_content(
+            model=vlm_model("layout_plan"),
+            contents=[*parts, prompt],
+            config=types.GenerateContentConfig(temperature=0, response_mime_type="application/json",
+                                               thinking_config=thinking("layout_plan")),
+        )
+        try:
+            data = json.loads(resp.text)
+        except json.JSONDecodeError:
+            data = {}
+        if obs is not None:
+            obs.update(output=data, usage_details=_usage(resp))
+    text = _text(data.get("layout")) if isinstance(data, dict) else None
+    if not text:
+        raise ValueError(f"layout_plan: 응답에 layout 없음: {str(data)[:200]}")
+    return text[:400]
+
+
+def photo_review(images: list[bytes], answer: bytes | None = None, needs: list[str] | None = None) -> dict:
+    """사진마다 무엇이 보이나 + 더 필요한 사진 (10-09, VLM 1회) — 규칙 각도 라벨 · 필수 면 경고를 대신한다.
+    반환: {"photos": [str (사진 순서)], "missing": [{"what", "hint"}], "base": int, "with": [int]} — base · with 는
+    기준 사진 · 같이 넣을 사진 추천 (규칙 각도로 고르던 것을 대신). 깨지면 예외 (호출부가 규칙 경고로)."""
+    client = get_client()
+    prompt = P.photo_review_prompt(len(images), answer is not None, needs)
+    parts = []
+    for i, b in enumerate(images):
+        parts += [f"Seller photo {i}:", image_part(b, "image/jpeg", "photo_review")]
+    if answer is not None:
+        parts += ["ANSWER photo:", image_part(answer, "image/jpeg", "photo_review")]
+    with observe("photo_review", as_type="generation", model=vlm_model("photo_review"), input=prompt) as obs:
+        resp = client.models.generate_content(
+            model=vlm_model("photo_review"), contents=[*parts, prompt],
+            config=types.GenerateContentConfig(temperature=0, response_mime_type="application/json",
+                                               thinking_config=thinking("photo_review")))
+        try:
+            data = json.loads(resp.text)
+        except json.JSONDecodeError:
+            data = {}
+        if obs is not None:
+            obs.update(output=data, usage_details=_usage(resp))
+    if not isinstance(data, dict) or not isinstance(data.get("photos"), list):
+        raise ValueError(f"photo_review: 응답에 photos 없음: {str(data)[:200]}")
+    shows = [""] * len(images)
+    for p in data["photos"]:
+        if isinstance(p, dict) and isinstance(p.get("index"), int) and 0 <= p["index"] < len(images):
+            shows[p["index"]] = (_text(p.get("shows")) or "")[:40]
+    missing = [{"what": (_text(m.get("what")) or "")[:40], "hint": (_text(m.get("hint")) or "")[:120]}
+               for m in data.get("missing") or [] if isinstance(m, dict) and _text(m.get("what"))][:4]
+    n = len(images)
+    base = data.get("base") if isinstance(data.get("base"), int) and 0 <= data.get("base") < n else 0
+    with_ = [i for i in (data.get("with") or []) if isinstance(i, int) and not isinstance(i, bool)
+             and 0 <= i < n and i != base]
+    return {"photos": shows, "missing": missing, "base": base, "with": list(dict.fromkeys(with_))[:2]}
+
+
 def analyze(image_bytes: bytes) -> dict:
     """파이프라인 첫 단계 (VLM 1회) — 예전 classify + detect 를 합친 것.
 
@@ -187,7 +295,10 @@ def analyze(image_bytes: bytes) -> dict:
     if not isinstance(data, dict) or not isinstance(data.get("marks"), list):
         raise ValueError(f"analyze: 응답에 marks 목록 없음: {str(data)[:200]}")
     anchors = [{"category": "print", "what": _text(m.get("what")),
-                "where": _text(m.get("where"))}
+                "where": _text(m.get("where")),
+                # 10-05: 어느 물건 위 · 크기 — 모르는 값은 본품 · 큰 마크(엄격한 쪽, 예전 동작)
+                "on": m.get("on") if m.get("on") in ROLES else "main",
+                "size": "small" if m.get("size") == "small" else "large"}
                for m in data["marks"] if isinstance(m, dict)]
     anchors = [a for a in anchors if a["what"]]
     level = _level(data, "text_level", TEXT_LEVELS, "simple")
@@ -217,7 +328,10 @@ def analyze(image_bytes: bytes) -> dict:
 MAX_OBJECTS = 12
 
 
-def _parse_objects(raw) -> list[dict]:
+MAX_PIECES = 20   # 게시글 구성품 (보드게임 · 레고는 12개를 넘는다, 10-09)
+
+
+def _parse_objects(raw, limit: int | None = None) -> list[dict]:
     """objects → [{"what", "box", "for_sale"}] — 사용자가 팔 물건을 고르는 목록 (10-03).
     이름이나 박스가 이상한 항목은 뺀다 (고를 수 없는 칸이 화면에 나오지 않게). 없으면 빈 목록."""
     out = []
@@ -226,8 +340,13 @@ def _parse_objects(raw) -> list[dict]:
             continue
         what, box = _text(o.get("what")), _from_box_2d({"box_2d": o.get("box_2d")})
         if what and _has_box(box):
-            out.append({"what": what, "box": _box(box), "for_sale": o.get("for_sale") not in (False, 0, "false", "False")})
-        if len(out) >= MAX_OBJECTS:
+            obj = {"what": what, "box": _box(box), "for_sale": o.get("for_sale") not in (False, 0, "false", "False"),
+                   "role": o.get("role") if o.get("role") in ROLES else "main"}
+            name_ko = (_text(o.get("name_ko")) or "")[:20]
+            if name_ko:
+                obj["name_ko"] = name_ko   # 화면의 구성품 이름 (10-09) — 없으면 화면이 what 으로
+            out.append(obj)
+        if len(out) >= (limit or MAX_OBJECTS):
             break
     return out
 
@@ -360,14 +479,23 @@ def _has_box(c: dict) -> bool:
     return c["x1"] != c["x2"] and c["y1"] != c["y2"]
 
 
-def _call_pair(original: bytes, result: bytes, prompt: str, name: str):
-    """원본 · 생성본 두 장 비교 호출 (temp 0 + JSON). 파싱 실패는 예외 — 호출부가 "확인 못 함"으로."""
+OTHER_VIEWS_NOTE = ("\n\nThe photos marked \"other angle\" show the SAME original item from other angles. "
+                    "Anything visible in them counts as already in photo 1.")
+
+
+def _call_pair(original: bytes, result: bytes, prompt: str, name: str, others: list[bytes] | None = None):
+    """원본 · 생성본 두 장 비교 호출 (temp 0 + JSON). 파싱 실패는 예외 — 호출부가 "확인 못 함"으로.
+    others: 같은 물건의 다른 각도 원본 (multi_view) — 거기 보이는 글자는 "원래 있던 것"으로."""
     client = get_client()
+    extra = []
+    for i, b in enumerate(others or [], 1):
+        extra += [f"Photo 1 — other angle {i} (same original item):", image_part(b, "image/jpeg", name)]
     with observe(name, as_type="generation", model=vlm_model(name), input=prompt) as obs:
         resp = client.models.generate_content(
             model=vlm_model(name),
-            contents=["Photo 1 (original):", image_part(original, "image/jpeg", name),
-                      "Photo 2 (redrawn):", image_part(result, "image/jpeg", name), prompt],
+            contents=["Photo 1 (original):", image_part(original, "image/jpeg", name), *extra,
+                      "Photo 2 (redrawn):", image_part(result, "image/jpeg", name),
+                      prompt + (OTHER_VIEWS_NOTE if others else "")],
             config=types.GenerateContentConfig(temperature=0, response_mime_type="application/json",
                                                thinking_config=thinking(name)),
         )
@@ -388,10 +516,11 @@ def _parse_added(raw) -> list[dict]:
     return out
 
 
-def added_text(original: bytes, result: bytes) -> list[dict]:
+def added_text(original: bytes, result: bytes, others: list[bytes] | None = None) -> list[dict]:
     """원본에 없던 글자 · 로고가 생성본에 생겼나 (10-03, VLM 1회 · 두 장 비교).
     반환: [{"what", "where"}] — 없으면 빈 목록. 응답이 깨지면 예외 (호출부가 "확인 못 함"으로)."""
-    data = _call_pair(original, result, P.added_text_prompt(), "added_text")
+    data = (_call_pair(original, result, P.added_text_prompt(), "added_text", others) if others
+            else _call_pair(original, result, P.added_text_prompt(), "added_text"))
     if not isinstance(data, dict) or not isinstance(data.get("added"), list):
         raise ValueError(f"added_text: 응답에 added 목록 없음: {str(data)[:200]}")
     return _parse_added(data["added"])
@@ -406,3 +535,31 @@ def verify_combined(original: bytes, result: bytes, anchors: list, item: str = "
     checks = [_clean_check(c) for c in data["checks"] if isinstance(c, dict) and _valid_check(c)]
     added = _parse_added(data["added"]) if isinstance(data.get("added"), list) else None
     return checks, added
+
+
+def count_pieces(original: bytes, result: bytes, kinds: list[str]) -> list[int]:
+    """생성본에 보이는 구성품 종류별 개수 (10-09, VLM 1회 · 두 장). kinds 순서대로 정수 목록.
+    응답이 깨지면 예외 — 호출부가 "확인 못 함 = 막지 않음"으로."""
+    data = _call_pair(original, result, P.count_pieces_prompt(kinds), "count_pieces")
+    counts = data.get("counts") if isinstance(data, dict) else None
+    if not isinstance(counts, list) or len(counts) != len(kinds):
+        raise ValueError(f"count_pieces: 응답 형식이 다름: {str(data)[:200]}")
+    out = []
+    for c in counts:
+        n = c.get("count") if isinstance(c, dict) else None
+        if not isinstance(n, int) or isinstance(n, bool) or n < 0:
+            raise ValueError(f"count_pieces: 개수가 정수가 아님: {c}")
+        out.append(n)
+    return out
+
+
+def prep_check(image_bytes: bytes, things: list[str]) -> list[str]:
+    """정답 사진의 준비물(자유 문장) 중 이 사진에 안 보이는 것 (10-05, VLM 1회). 빈 목록이면 다 있다.
+    응답이 깨지면 예외 — 호출부가 "확인 못 함 = 이 정답은 안 씀"으로 (틀린 선 그림보다 없는 게 낫다)."""
+    data = _call(image_bytes, P.prep_check_prompt(things), "prep_check")
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        data = data[0]
+    checks = data.get("checks") if isinstance(data, dict) else None
+    if not isinstance(checks, list) or len(checks) != len(things):
+        raise ValueError(f"prep_check: 응답 형식이 다름: {str(data)[:200]}")
+    return [t for t, c in zip(things, checks) if not (isinstance(c, dict) and c.get("visible") is True)]

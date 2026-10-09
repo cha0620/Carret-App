@@ -41,14 +41,39 @@
 
     <div id="item-box" class="item-box hidden">
       <p id="item-summary" class="item-summary"></p>
-      <div id="obj-wrap" class="obj-wrap hidden">
-        <p class="step-label">사진 속 물건 확인 <span class="step-sub">— AI 가 나눈 거예요. 틀리면 고쳐 주세요</span></p>
+
+      <!-- ① 내 사진: ★기준 1장 + 같이 넣기 2장, 사진마다 AI 가 본 내용 (10-09) -->
+      <section class="step">
+        <p class="step-label"><span class="step-no">1</span>내 사진</p>
+        <p class="step-help">누른 사진이 <b>★기준</b>이에요 — 이 사진을 고쳐서 대표사진을 만들어요. <b>＋ 같이 넣기</b>는 구성품 · 생김새 참고로 2장까지.</p>
+        <div id="item-photos" class="item-photos" role="radiogroup" aria-label="사진"></div>
+        <div id="item-missing" class="item-missing hidden"></div>
+      </section>
+
+      <!-- ② 사진에 보이는 물건: 본품 · 구성품 · 부가품 · 안 팔아요 (AI 추천이 기본) -->
+      <section id="sell-wrap" class="step sell-wrap hidden">
+        <p class="step-label"><span class="step-no">2</span>사진에 보이는 물건</p>
+        <p class="step-help">AI 추천이 골라져 있어요. <b>본품 · 구성품</b>은 대표사진에 같이, <b>부가품</b>은 같이 팔지만 사진에선 빼요.</p>
+        <div id="sell-objects" class="sell-objects" role="group" aria-label="사진에 보이는 물건"></div>
+      </section>
+
+      <!-- ③ 정답 구도: 품목에 맞는 정답이 기본 -->
+      <section id="ref-wrap" class="step hidden">
+        <p class="step-label"><span class="step-no">3</span>정답 구도</p>
+        <p class="step-help">이렇게 찍은 것처럼 만들어요. 품목에 맞는 정답이 먼저 골라져 있어요.</p>
+        <div id="ref-list" class="ref-list" role="radiogroup" aria-label="정답 구도"></div>
+      </section>
+
+      <!-- ④ 상품 설명: 이름 · 설명만 (사진 속 물건 확인은 없앴다, 10-09) -->
+      <section id="obj-wrap" class="step obj-wrap hidden">
+        <p class="step-label"><span class="step-no">4</span>상품 설명</p>
         <div id="obj-list" class="obj-list"></div>
         <div class="obj-actions">
-          <button id="obj-save" type="button" class="btn btn-ghost">이대로 맞아요</button>
+          <button id="obj-save" type="button" class="btn btn-ghost btn-sm">저장됨 ✓</button>
           <span id="obj-status" class="obj-status"></span>
         </div>
-      </div>
+      </section>
+
       <div id="target-wrap" class="hidden">
         <p class="step-label">대표컷 만들 물건 <span class="step-sub">— 물건마다 따로 만들어요</span></p>
         <div id="targets" class="targets" role="radiogroup" aria-label="대표컷 만들 물건"></div>
@@ -57,13 +82,6 @@
         <p id="comp-title" class="step-label">예시 구도 고르기</p>
         <div id="item-comps" class="item-comps" role="radiogroup" aria-label="구도"></div>
       </div>
-      <p class="step-label">내 사진 <span class="step-sub">— 구도에 맞는 사진이 자동으로 골라져요. 직접 눌러도 돼요</span></p>
-      <div id="sell-wrap" class="sell-wrap hidden">
-        <p class="sell-title">이 사진에서 남길 물건 <span class="muted">— 안 고른 건 지워요 (원본 사진의 번호)</span></p>
-        <div id="sell-objects" class="sell-objects" role="group" aria-label="팔 물건"></div>
-      </div>
-      <div id="item-photos" class="item-photos" role="radiogroup" aria-label="사진"></div>
-      <div id="item-missing" class="item-missing hidden"></div>
       <div id="arrange-wrap" class="arrange-wrap hidden">
         <p class="step-label">여러 물건을 한 장에 <span class="step-sub">— 사진마다 물건을 오려 그대로 놓아요 (다시 그리지 않아요)</span></p>
         <div id="arrange-objs" class="sell-objects" role="group" aria-label="놓을 물건"></div>
@@ -97,13 +115,16 @@
 
   <section class="result-grid">
     <div class="panel">
-      <h3>원본</h3>
+      <h3 id="before-title">원본</h3>
       <div class="image-frame">
         <div class="before-wrap">
           <img id="before" hidden>
           <div id="sell-boxes" class="sell-boxes"></div>
         </div>
       </div>
+      <!-- 생성에 같이 들어가는 사진 (기준 + 참고 최대 2장) · 대표사진에 담길 구성품 목록 (10-09) -->
+      <div id="before-extras" class="before-extras hidden"></div>
+      <div id="photo-contents" class="photo-contents hidden"></div>
     </div>
 
     <div class="panel">
@@ -124,6 +145,11 @@
       </div>
 
       <p id="gate-badge" hidden></p>
+
+      <div id="detail-wrap" class="hidden">
+        <p class="step-label">상세 사진 <span class="step-sub">— 인증서 · 영수증 같은 문서는 대표사진 말고 여기에 따로</span></p>
+        <div id="detail-photos" class="detail-photos"></div>
+      </div>
 
       <div id="feedback-box" class="feedback-card hidden">
         <p class="feedback-title">이 결과가 어땠나요?</p>

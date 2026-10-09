@@ -72,7 +72,15 @@ if settings.dev_tools:
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 if FRONTEND_DIR.exists():
     Path(settings.storage_dir).mkdir(parents=True, exist_ok=True)
-    app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+    class _FreshStatic(StaticFiles):
+        """화면 파일은 매번 새로 확인하게 (10-09) — 고친 JS 가 브라우저 캐시 때문에 안 보였다. ETag 로 안 바뀌면 304."""
+        async def get_response(self, path, scope):
+            resp = await super().get_response(path, scope)
+            if path == "" or path.endswith((".html", ".js", ".css")) or "." not in path.rsplit("/", 1)[-1]:
+                resp.headers["Cache-Control"] = "no-cache"   # 이미지 · 아이콘은 그대로 캐시 (10-09 리뷰)
+            return resp
+
+    app.mount("/", _FreshStatic(directory=FRONTEND_DIR, html=True), name="frontend")
 
 @app.middleware("http")
 async def log_requests(request, call_next):

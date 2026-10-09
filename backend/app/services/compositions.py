@@ -48,12 +48,14 @@ COMPOSITIONS: dict[str, list[dict]] = {
          "views": {"front", "front_34"},
          "prompt": _ref("a flat front apparel listing shot — the front of the top facing the camera, no hanger, hands or mannequin")},
     ],
-    # 앱 종류 목록에 시계 · 책 · 음반이 없어서 other 에 둔다 — other 물건이면 이 구도들이 다 후보로 나온다
-    "other": [
+    # 10-05: 시계 · 책/게임/음반 · 세트를 other 에서 나눴다 (예전엔 other 물건이면 이 구도가 다 후보로 나왔다)
+    "watch": [
         {"key": "watch_front34", "label": "시계 · 비스듬히",
          "desc": "다이얼이 보이게 비스듬히 세우고 줄은 뒤로 둥글게",
          "views": {"front", "front_34"},
          "prompt": _ref("a wristwatch listing shot — the dial toward the camera")},
+    ],
+    "media": [
         {"key": "book_cover34", "label": "책 · 표지 비스듬히",
          "desc": "앞표지와 책등이 함께 보이게 비스듬히 세운 한 권",
          "views": {"front", "front_34"},

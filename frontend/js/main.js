@@ -104,19 +104,30 @@ function canRun() {
 }
 
 function needsSave() {
-  return !!item && (draftDirty || !item.user_edited || !!item.needs_review);
+  return !!item && draftDirty;   // 설명을 고쳤을 때만 (묶음 확인 단계는 없앴다, 10-09)
 }
 
 let composition = null;          // 고른 정석 구도 키 (신발만 — 없으면 null)
 let sell = null;                 // 고른 팔 물건 번호 (analyze objects) — 목록이 없으면 null (분석 판단대로)
+let contentsHidden = false;      // 세트인데 안의 구성품이 어느 사진에도 안 보인다 (10-09)
 let analysisObjects = null;      // 분석이 준 사진 속 물건 (따로 만들 때 이름 표시용)
+let accessories = [];            // 부가품으로 고른 번호 — 같이 팔지만 대표사진에선 뺀다 (10-09)
 let sellDirty = false;           // 사용자가 기본 체크를 바꿨나 — 안 바꿨으면 서버에 보내지 않는다 (분석 판단대로)
 let analyzing = false;           // 미리 분석 중 — 끝나기 전에 변환하면 서버가 같은 사진을 두 번 분석한다
 let analyzeToken = 0;            // 사진을 바꾸면 늦게 온 분석 응답을 버린다
 
 function resetSell() {
   ++analyzeToken;
+  ++compToken;
+  fullPending = false;
+  compPending = false;
+  compApplied = false;
   sell = null;
+  accessories = [];
+  mains = [];
+  contentsHidden = false;
+  refFile = null;                // 새 사진이면 정답 구도도 처음부터 (10-09 리뷰)
+  refPicked = false;
   analysisObjects = null;
   sellDirty = false;
   analyzing = false;
@@ -125,11 +136,66 @@ function resetSell() {
   if (cancelAsk) cancelAsk();
 }
 
-async function loadSellObjects(fid) {
+// 사진을 고르는 순간 두 호출을 같이 보낸다 (10-09): 게시글 구성품(빠름 — 목록 · 담길 것을 먼저 보여 줌)과
+// 전체 분석(배경만 바꾸는 이유 안내 · 변환 준비). 둘은 토큰을 따로 둔다 — "같이 넣기"를 바꿔 구성품만 다시 받아도
+// 진행 중인 전체 분석은 끊지 않는다. 변환 버튼은 둘 다 끝나야 열린다 (10-09 리뷰)
+let compToken = 0;
+let fullPending = false;
+let compPending = false;
+let compApplied = false;
+
+function syncAnalyzing() {
+  analyzing = fullPending || compPending;
+  renderContents();
+  runBtn.disabled = busy || !canRun();
+}
+
+function applyObjects(objs, hidden = false) {
+  analysisObjects = objs;
+  contentsHidden = hidden;
+  // 기본값은 분석 판단 — 본품 · 구성품은 사진에, 부가품(상자 · 충전기)은 부가품으로 (서버 기본 동작과 같다)
+  sell = objs.filter(o => o.for_sale && o.role !== 'accessory').map(o => o.index);
+  accessories = objs.filter(o => o.for_sale && o.role === 'accessory').map(o => o.index);
+  if (!sell.length) { sell = objs.map(o => o.index); accessories = []; }
+  mains = objs.filter(o => sell.includes(o.index) && o.role === 'main').map(o => o.index);
+  if (!mains.length && sell.length) mains = [sell[0]];
+  sellDirty = false;
+  renderSell(objs.length ? objs : null);   // 보이는 물건은 하나여도 나열한다 (10-09 사용자)
+  if (draft) drawObjects();                      // 묶음 화면의 "구성품:" 줄도 (10-09)
+  renderRefs();
+  renderContents();
+}
+
+function loadComponents(fid) {
+  const ct = ++compToken;
+  compPending = true;
+  compApplied = false;
+  sell = null; accessories = []; mains = []; sellDirty = false; analysisObjects = null; contentsHidden = false;
+  renderSell(null);
+  syncAnalyzing();
+  return fetchComponents(fid, extraViewIds(), item && item.item_id)
+    .then(r => {
+      if (ct !== compToken || fid !== fileId) return;
+      compApplied = true;
+      applyObjects(r.objects || [], !!r.contents_hidden);
+    })
+    .catch(e => console.warn('구성품 목록 실패', e))   // 조용히 삼키지 않는다 — 10-09 빈 목록 버그가 안 보였다
+    .finally(() => {
+      if (ct !== compToken) return;
+      compPending = false;
+      syncAnalyzing();
+    });
+}
+
+async function loadSellObjects(fid, refreshOnly = false) {
+  if (refreshOnly) {             // 같이 넣을 사진만 바뀌었다 — 구성품 목록만 다시 (전체 분석은 그대로)
+    loadComponents(fid);
+    return;
+  }
   resetSell();
   const token = analyzeToken;
-  analyzing = true;
-  runBtn.disabled = true;
+  fullPending = true;
+  const quick = loadComponents(fid);
   try {
     const a = await analyzePhoto(fid);
     if (token !== analyzeToken || fid !== fileId) return;
@@ -139,21 +205,288 @@ async function loadSellObjects(fid) {
       multi_item: '물건이 여러 개라 배경만 바꿔요 (개수가 바뀌지 않게) — 한 개만 팔면 아래에서 하나만 고르세요',
     };
     if (NOTE[a.reason] && !busy) statusEl.textContent = NOTE[a.reason];
-    const objs = a.objects || [];
-    analysisObjects = objs;
-    if (objs.length < 2) return;            // 하나뿐이면 고를 게 없다
-    sell = objs.filter(o => o.for_sale).map(o => o.index);
-    if (!sell.length) sell = objs.map(o => o.index);
-    renderSell(objs);
+    await quick;
+    // 빠른 목록이 실패했을 때만 분석 목록으로 (서버가 분석 objects 를 구성품 목록으로 맞춰 주므로 번호가 같다)
+    if (!compApplied && !compPending && fid === fileId) applyObjects(a.objects || [], !!a.contents_hidden);
   } catch (_) { /* 분석 실패 — 고르기 없이 변환 (서버가 판단) */ }
   finally {
     if (token === analyzeToken) {
-      analyzing = false;
-      runBtn.disabled = busy || !canRun();
+      fullPending = false;
+      syncAnalyzing();
     }
   }
 }
 
+// 구성품 종류 — 서버 set_pieces 와 같은 규칙 (끝 번호를 뗀 이름). 본품(main)은 따로 한 줄
+function kindOf(o) {
+  return o.role === 'main' || !o.role ? `main:${o.what}` : o.what.trim().toLowerCase().replace(/[\s#]*\d+$/, '');
+}
+
+// 화면 이름 — 분석의 한국어 이름(name_ko), 옛 분석이면 영어 이름에서 끝 번호만 뗀다 (10-09)
+function nameOf(o) {
+  return (o.name_ko || o.what).trim().replace(/[\s#]*\d+$/, '');
+}
+
+// ---- 정답 구도 고르기 · 같이 넣을 사진 (10-09) ----
+let refs = null;                 // GET /api/refs — 선 그림이 있는 정답 구도
+let refFile = null;              // 고른 정답 (null = 고르지 않음)
+let refPicked = false;           // 판매자가 직접 골랐나 — 아니면 품목에 맞는 정답이 기본 (10-09 사용자)
+
+// 품목에 맞는 정답 — 물건 이름(묶음 · 분석의 본품)에 정답의 품목 낱말이 있으면 그것, 없으면 같은 종류의 첫 정답
+function defaultRef(list) {
+  const o = currentObject();
+  const main = (analysisObjects || []).find(x => x.role === 'main') || {};
+  const text = [o && o.label, item && item.item, main.what, main.name_ko].filter(Boolean).join(' ').toLowerCase();
+  const hit = list.find(r => (r.items || []).some(k => text.includes(String(k).toLowerCase())));
+  if (hit) return hit.file;
+  const same = o && o.category ? list.find(r => r.category === o.category) : null;
+  return same ? same.file : null;
+}
+
+function currentObject() {
+  const p = draft && draft.photos.find(x => x.file_id === fileId);
+  return p && p.object ? objOf(p.object) : null;
+}
+
+let review = null;               // AI 사진 검토 {object_id, ref_file, photos:[{file_id, shows}], missing:[{what, hint}]} (10-09)
+let reviewKey = '';
+let withUser = false;            // "같이 넣기"를 판매자가 직접 바꿨나 — 아니면 AI 추천 + 빈자리는 자동으로 채운다
+let basePicked = false;          // 판매자가 기준 사진을 직접 눌렀나 — 아니면 AI 추천으로 바꿔 준다 (10-09)
+let withIds = null;              // 판매자가 고른 "같이 넣기" 사진 (null = 자동: 각도가 다른 것 2장) (10-09)
+let refsToken = 0;
+async function renderRefs() {
+  const wrap = document.getElementById('ref-wrap');
+  const list = document.getElementById('ref-list');
+  const token = ++refsToken;
+  if (refs === null) {
+    const got = await fetchRefs().catch(() => null);
+    if (got) refs = got;                       // 실패면 다음에 다시 받는다
+  }
+  if (token !== refsToken) return;             // 그사이 사진이 바뀌었다 — 늦은 그리기는 버린다
+  if (!refs) { wrap.classList.add('hidden'); return; }
+  const o = currentObject();
+  const mine = o && o.category ? refs.filter(r => r.category === o.category) : [];
+  const shown = mine.length ? mine : refs;      // 종류가 맞는 게 없으면 전부
+  if (refFile && !shown.some(r => r.file === refFile)) { refFile = null; refPicked = false; }
+  if (!refPicked) refFile = defaultRef(refs);   // 품목에 맞는 정답이 기본 — 이름이 맞으면 종류가 달라도 (보드게임 → 세트)
+  loadReview();   // 정답이 정해졌으니 그 기준으로 사진 검토
+  const shownAll = refFile && !shown.some(r => r.file === refFile) ? [refs.find(r => r.file === refFile), ...shown] : shown;
+  list.innerHTML = '';
+  wrap.querySelectorAll('.ref-note').forEach(x => x.remove());
+  wrap.classList.toggle('hidden', !fileId || !shown.length);
+  const card = (file, src, text) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'ref-card';
+    b.setAttribute('role', 'radio');
+    b.setAttribute('aria-checked', String(refFile === file));
+    if (src) {
+      const img = document.createElement('img');
+      img.src = src;
+      img.alt = '';
+      b.append(img);
+    }
+    const t = document.createElement('span');
+    t.textContent = text;
+    b.append(t);
+    b.onclick = () => { refFile = file; refPicked = true; renderRefs(); };
+    list.append(b);
+  };
+  for (const r of shownAll) card(r.file, r.sketch_url, r.note);
+  card(null, null, '고르지 않음');
+  // 세트(사진에 넣을 구성품이 여럿)는 정답 사진의 배치를 모델이 구성품에 맞춰 문장으로 바꿔 넣는다 (10-09)
+  if (sell && sell.length >= 2) {
+    const n = document.createElement('p');
+    n.className = 'ref-note';
+    n.textContent = '구성품이 여럿이라, 고른 정답 사진의 배치를 보고 모델이 이 구성품에 맞는 배치를 정해서 만들어요';
+    list.after(n);
+  }
+}
+
+// 상세 사진칸 — 이 물건의 근거 사진(인증서 · 영수증 같은 문서)은 생성에 넣지 않고 따로 보여 준다 (10-09 사용자)
+function renderDetailPhotos() {
+  const wrap = document.getElementById('detail-wrap');
+  const box = document.getElementById('detail-photos');
+  box.innerHTML = '';
+  const o = currentObject();
+  const proofs = o && item && draft ? draft.objects.filter(x => x.kind === 'proof' && x.proof_for === o.id).map(x => x.id) : [];
+  const url = new Map((item ? item.photos : []).map(p => [p.file_id, p.url]));
+  const photos = draft ? draft.photos.filter(p => proofs.includes(p.object) && url.get(p.file_id)) : [];
+  wrap.classList.toggle('hidden', !photos.length);
+  for (const p of photos) {
+    const img = document.createElement('img');
+    img.src = url.get(p.file_id);
+    img.alt = '';
+    box.append(img);
+  }
+}
+
+// AI 사진 검토 — 물건 · 정답이 바뀔 때만 부른다 (서버도 같은 조합이면 저장해 둔 걸 준다)
+async function loadReview() {
+  const o = currentObject();
+  if (!item || !o || o.kind !== 'product') return;
+  const key = `${item.item_id}|${o.id}|${refFile || ''}|${item.photos.length}`;
+  if (key === reviewKey) return;
+  reviewKey = key;
+  try {
+    const r = await fetchReview(item.item_id, o.id, refFile);
+    if (key !== reviewKey) return;
+    review = r;
+    // 기준 사진 · 같이 넣을 사진도 AI 추천으로 — 판매자가 이미 직접 고른 건 바꾸지 않는다 (10-09 사용자: 규칙 각도 대신)
+    // AI 가 추천을 비워 주면 "같이 넣지 않음"으로 받지 않는다 — 자동(같은 물건 다른 사진 2장)으로 둔다
+    const aiWith = (r.with_ids || []).filter(id => id !== fileId);
+    if (withIds === null && aiWith.length) withIds = aiWith;
+    if (!basePicked && r.base_file_id && r.base_file_id !== fileId) {
+      const p = item.photos.find(x => x.file_id === r.base_file_id);
+      if (p) { selectPhoto(p); return; }
+    }
+    drawItem();
+    drawObjects();
+    renderContents();
+  } catch (_) { /* 실패 — 규칙 라벨 · 경고 그대로 */ }
+}
+
+// 같은 물건의 다른 상품 사진 (근거 사진 제외) — 메인 포함 3장까지, 각도가 다른 것 먼저
+function extraViewIds() {
+  const o = currentObject();
+  if (!o || o.kind !== 'product' || !draft) return null;
+  const me = draft.photos.find(x => x.file_id === fileId);
+  if (!me) return null;
+  const rest = draft.photos.filter(x => x.object === o.id && x.file_id !== fileId);
+  if (withIds !== null) {
+    const ok = withIds.filter(id => draft.photos.some(x => x.file_id === id && x.object === o.id) && id !== fileId);
+    if (withUser) return ok.length ? ok.slice(0, 2) : null;   // 판매자가 고른 그대로
+    // AI 추천을 앞에 두고, 2장이 안 되면 같은 물건의 다른 사진으로 채운다 (기준 포함 3장을 다 쓰게)
+    const fill = [...ok, ...rest.map(x => x.file_id).filter(id => !ok.includes(id))].slice(0, 2);
+    return fill.length ? fill : null;
+  }
+  rest.sort((a, b) => (a.view === me.view) - (b.view === me.view));
+  const ids = rest.slice(0, 2).map(x => x.file_id);
+  return ids.length ? ids : null;
+}
+
+function canWith(p) {
+  const o = currentObject();
+  return !!(o && o.kind === 'product' && draft && draft.photos.some(x => x.file_id === p.file_id && x.object === o.id));
+}
+
+function toggleWith(p) {
+  if (busy) return;
+  const cur = extraViewIds() || [];
+  withUser = true;
+  if (cur.includes(p.file_id)) withIds = cur.filter(id => id !== p.file_id);
+  else if (cur.length >= 2) { statusEl.textContent = '같이 넣을 사진은 2장까지예요 (기준 사진 포함 3장)'; return; }
+  else withIds = [...cur, p.file_id];
+  drawItem();
+  loadSellObjects(fileId, true);   // 참고 사진에 찍힌 구성품까지 목록을 다시 (10-09)
+}
+
+// 원본 칸 — 생성에 들어가는 사진 전부(★대표 + 같이 넣기)와 대표사진에 담길 구성품을 한 줄에 하나씩 (10-09 사용자)
+function renderContents() {
+  const title = document.getElementById('before-title');
+  const strip = document.getElementById('before-extras');
+  const el = document.getElementById('photo-contents');
+  const extras = extraViewIds() || [];
+  const url = new Map((item ? item.photos : []).map(p => [p.file_id, p.url]));
+  title.textContent = fileId ? `원본 — 생성에 들어가는 사진 ${1 + extras.length}장 (★기준 + 참고 ${extras.length}장)` : '원본';
+  strip.innerHTML = '';
+  strip.classList.toggle('hidden', !extras.length);
+  for (const id of extras) {
+    if (!url.get(id)) continue;
+    const f = document.createElement('figure');
+    const img = document.createElement('img');
+    img.src = url.get(id);
+    img.alt = '';
+    const cap = document.createElement('figcaption');
+    cap.textContent = '참고';
+    f.append(img, cap);
+    strip.append(f);
+  }
+  el.innerHTML = '';
+  el.classList.toggle('hidden', !fileId);
+  if (!fileId) return;
+  const head = document.createElement('p');
+  head.className = 'contents-title';
+  head.textContent = '대표사진에 담길 것';
+  el.append(head);
+  const objs = (analysisObjects || []).filter(o => sell && sell.includes(o.index))
+    .map(o => ({ ...o, role: mains.includes(o.index) ? 'main' : 'component' }));
+  if (!objs.length) {
+    const p = document.createElement('p');
+    p.className = 'muted';
+    p.textContent = analyzing ? '분석 중…' : '분석이 끝나면 여기에 나와요';
+    el.append(p);
+    return;
+  }
+  const groups = new Map();
+  for (const o of objs) {
+    const k = kindOf(o);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(o);
+  }
+  const ul = document.createElement('ul');
+  for (const [k, ms] of groups) {
+    for (const [j, o] of ms.entries()) {
+      const li = document.createElement('li');
+      li.textContent = (k.startsWith('main:') ? '본품 · ' : '') + nameOf(o) + (ms.length > 1 ? ` ${j + 1}` : '')
+        + ((o.photo || 0) !== 0 ? ` — 참고 사진 ${o.photo}` : '');   // textContent — VLM 이름
+      ul.append(li);
+    }
+  }
+  el.append(ul);
+  if (contentsHidden) {
+    // 안 보이는 건 지어내지 않는다 — 목록에도 대표사진에도 넣지 않고, 펼친 사진을 달라고 한다 (10-09 사용자)
+    const w = document.createElement('p');
+    w.className = 'contents-hidden';
+    w.textContent = '⚠ 안의 구성품이 사진에 안 보여요 — 구성품을 펼쳐 찍은 사진을 기준이나 "같이 넣기"로 넣어 주세요';
+    el.append(w);
+  }
+  const acc = (analysisObjects || []).filter(o => accessories.includes(o.index));
+  if (acc.length) {
+    const p = document.createElement('p');
+    p.className = 'muted';
+    p.textContent = '부가품 (같이 팔지만 사진엔 안 나와요): ' + acc.map(nameOf).join(', ');
+    el.append(p);
+  }
+}
+
+// 묶음 화면의 물건 카드용 — "본품 레고 본체 · 미니피규어 1, 2, 3 · 설명서 1, 2 · 박스(부가품)" (10-09 사용자)
+// 지금 분석한 사진이 그 물건의 사진일 때만 (구성품은 사진 한 장의 분석에서 나온다)
+function componentSummary(objectId) {
+  if (!analysisObjects || !analysisObjects.length || !draft) return '';
+  const p = draft.photos.find(x => x.file_id === fileId);
+  if (!p || p.object !== objectId) return '';
+  const groups = new Map();
+  for (const o of analysisObjects.filter(o => o.for_sale)) {
+    const k = kindOf(o);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(o);
+  }
+  return [...groups].map(([k, ms]) => (k.startsWith('main:') ? '본품 ' : '') + nameOf(ms[0])
+    + (ms.length > 1 ? ' ' + ms.map((_, j) => j + 1).join(', ') : '')
+    + (ms[0].role === 'accessory' ? '(부가품)' : '')).join(' · ');
+}
+
+// 보이는 물건마다 네 가지 (10-09 사용자): 본품 · 구성품(대표사진에 같이) · 부가품(같이 팔지만 사진에선 뺌) · 안 팖.
+// AI 추천이 기본으로 골라져 있다
+const SELL_CHOICES = [['main', '본품'], ['component', '구성품'], ['accessory', '부가품'], ['none', '안 팔아요']];
+let mains = [];                  // 본품으로 고른 번호 (sell 안)
+
+function choiceOf(o) {
+  if (mains.includes(o.index)) return 'main';
+  if (sell.includes(o.index)) return 'component';
+  return accessories.includes(o.index) ? 'accessory' : 'none';
+}
+
+function setChoice(i, key) {
+  const drop = a => a.filter(x => x !== i);
+  sell = drop(sell); accessories = drop(accessories); mains = drop(mains);
+  if (key === 'main' || key === 'component') sell = [...sell, i].sort((x, y) => x - y);
+  if (key === 'main') mains = [...mains, i].sort((x, y) => x - y);
+  if (key === 'accessory') accessories = [...accessories, i].sort((x, y) => x - y);
+}
+
+// 보이는 물건을 한 줄에 하나씩 — "미니피규어 1 · 2 · 3"처럼 같은 종류는 번호로 (10-09 사용자)
 function renderSell(objs) {
   const wrap = document.getElementById('sell-wrap');
   const list = document.getElementById('sell-objects');
@@ -162,29 +495,58 @@ function renderSell(objs) {
   boxes.innerHTML = '';
   wrap.classList.toggle('hidden', !objs);
   if (!objs) return;
+  const byKind = new Map();
   for (const o of objs) {
-    const label = document.createElement('label');
-    label.className = 'sell-obj';
-    const box = document.createElement('input');
-    box.type = 'checkbox';
-    box.className = 'sell-check';
-    box.checked = sell.includes(o.index);
+    const k = nameOf(o);
+    if (!byKind.has(k)) byKind.set(k, []);
+    byKind.get(k).push(o);
+  }
+  const label = o => {
+    const same = byKind.get(nameOf(o));
+    return nameOf(o) + (same.length > 1 ? ` ${same.indexOf(o) + 1}` : '');
+  };
+  for (const o of objs) {
+    const row = document.createElement('div');
+    row.className = 'sell-obj';
+    const name = document.createElement('span');
+    name.textContent = label(o) + ((o.photo || 0) !== 0 ? ` (참고 사진 ${o.photo})` : '');   // textContent — VLM 이름
+    const group = document.createElement('span');
+    group.className = 'segmented sell-choices';
+    group.setAttribute('role', 'radiogroup');
+    group.setAttribute('aria-label', label(o));
+    const cur = choiceOf(o);
+    for (const [key, text] of SELL_CHOICES) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'sell-check';
+      b.textContent = text;
+      b.setAttribute('role', 'radio');
+      b.setAttribute('aria-checked', String(cur === key));
+      b.onclick = () => {
+        const prev = [sell, accessories, mains].map(a => [...a]);
+        setChoice(o.index, key);
+        if (!mains.length) {           // 본품은 하나 이상 남긴다
+          [sell, accessories, mains] = prev;
+          statusEl.textContent = '본품을 하나 이상 골라 주세요';
+          return;
+        }
+        sellDirty = true;
+        renderSell(objs);
+        renderRefs();
+        renderContents();
+      };
+      group.append(b);
+    }
+    row.append(name, group);
+    list.append(row);
+    if ((o.photo || 0) !== 0) continue;   // 참고 사진에서 보인 건 기준 사진 위에 박스를 그리지 않는다
     const mark = document.createElement('div');
-    box.onchange = () => {
-      const next = box.checked ? [...sell, o.index] : sell.filter(i => i !== o.index);
-      if (!next.length) { box.checked = true; return; }   // 하나 이상은 남긴다
-      sell = next.sort((a, b) => a - b);
-      sellDirty = true;
-      mark.classList.toggle('off', !box.checked);
-    };
-    label.append(box, document.createTextNode(` ${o.index + 1}. ${o.what}`));   // textContent — 이름은 VLM 답
-    list.append(label);
-    mark.className = 'sell-box' + (box.checked ? '' : ' off');
+    mark.className = 'sell-box' + (cur === 'main' || cur === 'component' ? '' : cur === 'accessory' ? ' acc' : ' off');
     mark.style.left = (o.box.x1 / 10) + '%';
     mark.style.top = (o.box.y1 / 10) + '%';
     mark.style.width = ((o.box.x2 - o.box.x1) / 10) + '%';
     mark.style.height = ((o.box.y2 - o.box.y1) / 10) + '%';
-    mark.textContent = String(o.index + 1);
+    mark.textContent = label(o);
     boxes.append(mark);
   }
 }
@@ -227,13 +589,18 @@ const objHandlers = {
   },
   setField(id, key, value) { objOf(id)[key] = value; changed(); },
   setView(fid, view) { draft.photos.find(p => p.file_id === fid).view = view; changed(); },
+  current() { return currentObject(); },   // 상품 설명 칸 — 지금 고른 상품 (10-09)
+  shows(fid) {   // AI 사진 검토의 "보이는 것" (10-09)
+    const x = review && review.photos.find(r => r.file_id === fid);
+    return x ? x.shows : '';
+  },
   move(fid, target) {
     const p = draft.photos.find(p => p.file_id === fid);
     const from = objOf(p.object);
     if (target === '__new') {
       let k = 1;
       while (objOf('o' + k)) k++;
-      draft.objects.push({ id: 'o' + k, kind: from ? from.kind : 'product', label: '새 물건', desc: '', count: 1,
+      draft.objects.push({ id: 'o' + k, kind: from ? from.kind : 'product', label: '', desc: '', count: 1,
         category: from && from.kind === 'product' ? from.category : 'other', for_sale: from ? from.for_sale : true,
         proof_type: from && from.kind === 'proof' ? from.proof_type : null, proof_for: null });
       target = 'o' + k;
@@ -249,10 +616,8 @@ function drawObjects() {
   renderObjects(item, draft, objHandlers, draftDirty);
   if (!item) return;
   objSaveBtn.disabled = busy || !needsSave();
-  objSaveBtn.textContent = draftDirty ? '고친 내용 저장'
-    : item.needs_review ? '새로 올린 사진도 맞아요' : (item.user_edited ? '확인됨 ✓' : '이대로 맞아요');
-  objStatus.textContent = objMsg || (draftDirty ? '저장해야 반영돼요'
-    : item.needs_review ? '더 올린 사진을 AI 가 나눴어요 — 확인해 주세요' : '');
+  objSaveBtn.textContent = draftDirty ? '설명 저장' : '저장됨 ✓';
+  objStatus.textContent = objMsg || (draftDirty ? '저장해야 반영돼요' : '');
 }
 
 objSaveBtn.onclick = async () => {
@@ -293,7 +658,14 @@ function drawItem() {
   const o = objectOfPhoto(fileId);
   document.getElementById('comp-title').textContent = o && sellingObjects(item).length > 1
     ? `예시 구도 고르기 — ${o.label}` : '예시 구도 고르기';
-  renderItem({ ...item, missing: o && o.kind === 'product' ? o.missing : item.missing }, fileId, p => selectPhoto(p));
+  // AI 사진 검토가 있으면 각도 라벨 · 빠진 면을 그걸로 (10-09 사용자: "위에서 본 사진" 같은 규칙 라벨이 애매)
+  const rv = review && o && review.object_id === o.id ? review : null;
+  const shows = new Map(rv ? rv.photos.map(x => [x.file_id, x.shows]) : []);
+  const view = rv
+    ? { ...item, photos: item.photos.map(p => shows.get(p.file_id) ? { ...p, view_label: shows.get(p.file_id), state_label: null } : p),
+        missing: rv.missing.map(m => ({ label: m.what, hint: m.hint })) }
+    : { ...item, missing: o && o.kind === 'product' ? o.missing : item.missing };
+  renderItem(view, fileId, p => { basePicked = true; selectPhoto(p); }, extraViewIds() || [], canWith, toggleWith);
   renderComps({ compositions: compsForPhoto(fileId) }, composition, pickComp);
   renderTargets(item, o ? o.id : null, pickTarget);
 }
@@ -412,6 +784,7 @@ function selectPhoto(p, comp) {
   if (busy) return;
   composition = comp !== undefined ? comp : compOfPhoto(p.file_id);
   fileId = p.file_id;
+  if (withIds) withIds = withIds.filter(id => id !== fileId);   // 기준이 된 사진은 같이 넣기에서 뺀다
   if (p.object) chosenPhoto[p.object] = p.file_id;
   beforeImg.hidden = false;
   beforeImg.src = p.url;
@@ -421,6 +794,9 @@ function selectPhoto(p, comp) {
   drawItem();
   drawObjects();
   drawArrange();
+  renderRefs();   // 정답 구도 — 물건 종류에 맞는 것 (10-09)
+  renderDetailPhotos();
+  renderContents();
   const role = photoRole(p.file_id);
   if (role === 'proof' || role === 'keep') {          // 변환하지 않는 사진 — 분석도 안 한다 (setBusy 가 canRun 으로 지킨다)
     resetSell();
@@ -451,7 +827,7 @@ async function handleFiles(files, append = false, proof = null) {
   if (!append && draftDirty && !confirm('고친 물건 묶음을 저장하지 않았어요. 새 사진으로 시작할까요?')) return;
   const token = ++uploadToken;
   const hasVideo = files.some(f => f.type.startsWith('video/'));
-  statusEl.textContent = hasVideo ? '동영상에서 장면 고르는 중... (조금 걸려요)' : '업로드하고 각도 확인 중...';
+  statusEl.textContent = hasVideo ? '동영상에서 장면 고르는 중... (조금 걸려요)' : '업로드하고 사진 확인 중...';
   if (!append) {
     fileId = null; item = null; composition = null; resetSell(); clearResults(); hideItem();
     afterImg.hidden = true; beforeImg.hidden = true;
@@ -463,6 +839,8 @@ async function handleFiles(files, append = false, proof = null) {
     if (token !== uploadToken) return;            // 그사이 다른 업로드가 시작됨
     if (!append) setPendingProof([]);
     item = res;
+    review = null; reviewKey = '';   // 사진이 바뀌었으니 AI 검토도 다시
+    if (!append) { withIds = null; withUser = false; basePicked = false; }   // 새 물건이면 같이 넣기 · 기준 사진도 AI 추천부터
     draftFromItem(item);
     objMsg = '';
     resetArrange(append);
@@ -581,7 +959,8 @@ async function runSeparate(fileId_, comp_, picked) {
     statusEl.textContent = `물건마다 따로 만드는 중... (${k + 1}/${picked.length})`;
     const label = names.get(i) || `물건 ${i + 1}`;
     try {
-      ok.push({ label, data: await requestTransform(fileId_, PRESET, comp_, [i], true) });
+      // 따로: 다른 사진은 다른 구성품이 섞여 넣지 않는다 (10-09 리뷰)
+      ok.push({ label, data: await requestTransform(fileId_, PRESET, comp_, [i], true, null, null, refFile, null) });
     } catch (e) {
       failed.push(label);
     }
@@ -600,9 +979,17 @@ runBtn.onclick = async () => {
   const fileId_ = fileId;        // 변환 중 사진을 바꿔도 이 결과 · 피드백은 이 사진에
   const comp_ = composition;
   const sell_ = sellDirty ? sell : null;   // 기본 체크 그대로면 보내지 않는다 — 분석 판단대로
+  const acc_ = sellDirty && accessories.length ? [...accessories] : null;
+  const mains_ = sellDirty && mains.length ? [...mains] : null;
   const picked = sell ? [...sell] : [];
   let how = 'together';
-  if (picked.length >= 2) {
+  // 본품 하나의 구성품(피규어 · 설명서)이면 따로 만들지 묻지 않는다 — 본품이 둘 이상일 때만 (10-09)
+  // role 이 없는 옛 분석이면 예전처럼 묻는다. 본품이 0개(VLM 이 본품을 구성품으로 봄)면 한 물건으로 본다
+  const objs_ = analysisObjects || [];
+  const hasRoles = objs_.some(o => o.role);
+  const mainsPicked = mains.length ? mains.filter(i => picked.includes(i))
+    : objs_.filter(o => picked.includes(o.index) && o.role === 'main').map(o => o.index);
+  if (picked.length >= 2 && (!hasRoles || mainsPicked.length >= 2)) {
     setBusy(true);                 // 묻는 동안 사진 · 팔 물건 고르기 · 변환 버튼을 잠근다 (질문 버튼만 살아 있다)
     how = await askMulti(picked.length);
     setBusy(false);
@@ -616,7 +1003,7 @@ runBtn.onclick = async () => {
   }
   statusEl.textContent = '변환 중... (몇 초 걸려요)';
   try {
-    const data = await requestTransform(fileId_, PRESET, comp_, sell_);
+    const data = await requestTransform(fileId_, PRESET, comp_, sell_, false, acc_, extraViewIds(), refFile, item && item.item_id, mains_);
     showResult(data);
 
     // 피드백: 우선 빈 박스 표시, 기존 피드백 있으면 채워넣기

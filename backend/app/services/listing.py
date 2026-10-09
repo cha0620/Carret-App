@@ -18,6 +18,7 @@ from app.prompts.presets import prompt_safe
 from app.services import compositions, coverage
 
 KINDS = ("product", "proof")
+ROLES = ("main", "component", "accessory")   # 10-05: 본품 | 본구성품 | 부가품 (부가품은 썸네일에서 뺀다)
 PROOF_TYPES = {"document": "설명서 · 보증서 · 영수증", "mark": "정품 마크 · 시리얼",
                "internals": "내부 · 회로", "screen": "작동 · 상태 화면", "other": "그 밖의 근거"}
 MAX_OBJECTS = 20
@@ -27,7 +28,7 @@ _ID = re.compile(r"o[0-9]{1,3}")
 # name 은 프롬프트에 들어갈 수 있는 값이라 사용자 입력을 넣지 않는다 — AI 가 준 영어 명사, 아니면 종류에서 정한 말.
 # label · desc 는 화면에만 쓴다 (프롬프트에 넣지 않는다)
 CATEGORY_NOUN = {"shoes": "shoes", "clothing": "clothing item", "bag": "bag", "electronics": "electronic device",
-                 "vehicle": "vehicle", "other": "item"}
+                 "vehicle": "vehicle", "watch": "watch", "media": "book or disc", "pack": "set", "other": "item"}
 PROOF_NOUN = {"document": "document", "mark": "authenticity mark", "internals": "internal parts", "screen": "screen",
               "other": "photo"}
 
@@ -71,12 +72,14 @@ def _clean_object(o: dict, oid: str) -> dict:
     if kind == "proof":
         pt = str(o.get("proof_type") or "").strip().lower()
         out.update(proof_type=pt if pt in PROOF_TYPES else "other", proof_for=o.get("proof_for"),
-                   category=None, for_sale=False, count=1)
+                   category=None, for_sale=False, count=1, role=None, part_of=None)
     else:
         category = coverage.norm_category(o.get("category"))
         out.update(proof_type=None, proof_for=None, category=category,
                    subtype=coverage.norm_subtype(o.get("subtype"), category),
-                   for_sale=not _false(o.get("for_sale")), count=_count(o.get("count")))
+                   for_sale=not _false(o.get("for_sale")), count=_count(o.get("count")),
+                   role=o.get("role") if o.get("role") in ROLES else "main",
+                   part_of=o.get("part_of") if o.get("role") in ("component", "accessory") else None)
     if kind == "proof":
         out["subtype"] = None
     return out
@@ -90,11 +93,14 @@ def _fix_states(objects: list[dict], photos: list[dict]) -> None:
 
 
 def _fix_proof_links(objects: list[dict]) -> None:
-    """근거 사진이 가리키는 물건이 없거나 상품이 아니면 None."""
+    """근거 사진이 가리키는 물건이 없거나 상품이 아니면 None. 본구성품 · 부가품의 part_of 는 본품만 가리킨다."""
     products = {o["id"] for o in objects if o["kind"] == "product"}
+    mains = {o["id"] for o in objects if o["kind"] == "product" and o.get("role", "main") == "main"}
     for o in objects:
         if o["kind"] == "proof" and o.get("proof_for") not in products:
             o["proof_for"] = None
+        if o.get("part_of") is not None and (o.get("part_of") not in mains or o["part_of"] == o["id"]):
+            o["part_of"] = None
 
 
 def _enforce_slots(objects: list[dict], photos: list[dict], slots: list[str]) -> None:
@@ -161,6 +167,8 @@ def normalize(data, n: int, slots: list[str] | None = None) -> dict:
     for o in objects:
         if o["kind"] == "proof" and o["proof_for"] is not None:
             o["proof_for"] = ids.get(_key(o["proof_for"]))
+        if o.get("part_of") is not None:
+            o["part_of"] = ids.get(_key(o["part_of"]))
 
     by_index = {}
     for p in data.get("photos") or []:
@@ -230,7 +238,7 @@ def apply(item: dict, out: dict, new_ids: set[str]) -> None:
             else:
                 nid = next(f"o{k}" for k in range(1, 10**4) if f"o{k}" not in used)
                 used.add(nid)
-                new = {**ai[a], "id": nid, "proof_for": None}
+                new = {**ai[a], "id": nid, "proof_for": None, "part_of": None}   # AI id 는 내 id 와 다르다
                 if slot and new["kind"] != slot:
                     new.update(_as_kind(new, slot))
                 objects.append(new)
@@ -287,7 +295,8 @@ def edit(item: dict, body: dict) -> list[str]:
                                               else PROOF_NOUN[o.get("proof_type") or "other"])
         # subtype 은 사용자가 고르지 않는다 — 종류가 그대로면 AI 값을 지키고, 바꾸면 버린다 (name 과 같은 이유)
         clean.append(_clean_object({**o, "name": name, "subtype": prev.get("subtype") if same else None,
-                                    "for_sale": o.get("for_sale") is True}, oid))
+                                    "for_sale": o.get("for_sale") is True,
+                                    "role": o.get("role") or prev.get("role")}, oid))
     ids = {o["id"] for o in clean}
 
     rows = body.get("photos")
@@ -369,8 +378,10 @@ def best_photo(row: dict, photos: list[dict]) -> str | None:
 
 
 def main_object(rows: list[dict]) -> dict | None:
-    """대표 물건 — 파는 상품 중 사진이 가장 많은 것 (같으면 앞의 것). 파는 게 없으면 상품 중에서."""
-    for pool in ([r for r in rows if r["kind"] == "product" and r["for_sale"]],
+    """대표 물건 — 파는 본품 중 사진이 가장 많은 것 (같으면 앞의 것). 본품이 없으면 파는 상품, 그것도 없으면 상품 중에서.
+    충전기 사진이 더 많아도 휴대폰이 대표다 (10-05 역할)."""
+    for pool in ([r for r in rows if r["kind"] == "product" and r["for_sale"] and r.get("role", "main") == "main"],
+                 [r for r in rows if r["kind"] == "product" and r["for_sale"]],
                  [r for r in rows if r["kind"] == "product"]):
         if pool:
             return max(pool, key=lambda r: (len(r["photo_ids"]), -rows.index(r)))

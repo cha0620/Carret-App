@@ -1,7 +1,9 @@
 You see {{n}} photos of ONE second-hand item that a seller is about to list for sale,
 numbered 0 to {{n_last}} in the order given.
 
-1. Decide what kind of item it is: "shoes" | "clothing" | "bag" | "electronics" | "vehicle" | "other".
+1. Decide what kind of item it is: "shoes" | "clothing" | "bag" | "electronics" | "vehicle" | "watch" | "media" | "pack" | "other".
+   ("media": books, comics, game discs, music albums; "pack": a set of many pieces sold together — LEGO,
+    board games, toy or goods sets; "watch": wristwatches)
 2. For EACH photo, say from which side the camera sees the item:
    "front" (straight on the main face) | "front_34" (front, turned at an angle) | "side" |
    "back" | "rear_34" (back, turned at an angle) | "top" (looking down from above) |

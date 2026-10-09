@@ -34,7 +34,8 @@ def test_normalize_basic_two_objects_ids_renumbered():
     }, 3)
     assert out["objects"][0] == {"id": "o1", "kind": "product", "name": "sneakers", "label": "흰 운동화",
                                  "desc": "", "proof_type": None, "proof_for": None, "category": "shoes",
-                                 "subtype": None, "for_sale": True, "count": 1}
+                                 "subtype": None, "for_sale": True, "count": 1,
+                                 "role": "main", "part_of": None}
     assert [o["id"] for o in out["objects"]] == ["o1", "o2"]
     assert [p["object"] for p in out["photos"]] == ["o1", "o2", "o1"]
     assert [p["view"] for p in out["photos"]] == ["front_34", "front", "bottom"]
@@ -328,3 +329,16 @@ def test_best_photo_problem_composition_before_first_photo():
     assert listing.best_photo(_bp_row([[]]), photos) == "p0"
 
 
+
+
+def test_normalize_part_of_renumbered_and_cleaned():
+    """10-05: part_of 는 본품 id 만 (o1.. 로 다시 매김). 자기 자신 · 본품 아님 · proof 는 None."""
+    out = listing.normalize({"objects": [
+        _obj("M", role="main"),
+        _obj("C", role="component", part_of="M"),        # 본품 → o1
+        _obj("A", role="accessory", part_of="C"),         # 본품 아님 → None
+        _obj("S", role="accessory", part_of="S"),         # 자기 자신 → None
+        _obj("P", kind="proof", proof_for="M"),
+    ], "photos": [_ph(i, k) for i, k in enumerate("MCASP")]}, 5)
+    assert [(o["role"], o["part_of"]) for o in out["objects"]] == [
+        ("main", None), ("component", "o1"), ("accessory", None), ("accessory", None), (None, None)]

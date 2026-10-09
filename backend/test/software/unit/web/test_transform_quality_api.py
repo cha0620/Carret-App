@@ -97,7 +97,7 @@ def test_transform_never_passes_answer_count(client, fake_pipeline):
     assert r.status_code == 200 and "answer_count" not in fake_pipeline["run"][0][2]
 
 
-@pytest.mark.parametrize("sell", [[], [-1], [12],])
+@pytest.mark.parametrize("sell", [[], [-1], [20],])   # 구성품 목록은 20개까지 (10-09)
 def test_transform_bad_sell_is_422(client, fake_pipeline, sell):
     r = client.post("/api/transform", json={"file_id": FID, "preset": "studio_white", "sell": sell})
     assert r.status_code == 422 and fake_pipeline["run"] == []

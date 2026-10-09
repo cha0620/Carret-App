@@ -14,19 +14,49 @@ logger = logging.getLogger("carret.generator")
 GEN_STEPS = 8   # flux-2 flash 는 8 이하 (eval/run.py 가 meta 에 남긴다)
 
 
-def _generate_ai(image_bytes: bytes, preset: dict, seed: int | None = None) -> bytes:
+MAX_IMAGES = 4   # flux-2 flash edit 는 앞의 4장만 쓴다
+
+
+# FLUX.2 는 부정 프롬프트를 지원하지 않지만 qwen 은 따로 받는다 (10-09)
+QWEN_NEGATIVE = ("added text, new labels, new tags, new logos, watermark, line drawing, sketch, "
+                 "extra objects, extra views, collage, hanger, mannequin, person")
+
+
+def _model_args(model: str) -> tuple[int, dict]:
+    """모델별 (최대 입력 장수, 추가 인자) — 10-08 모델 비교. flash 는 8스텝, 정식 flux-2 는 기본(28),
+    Nano Banana Pro 는 스텝 인자가 없고 14장까지 · 1K."""
+    if "nano-banana" in model:
+        return 14, {"resolution": "1K", "output_format": "jpeg", "num_images": 1}
+    if "qwen-image" in model:
+        # qwen-image-3/edit (10-09): 1~3장 · 순서를 "image 1, 2" 로 부른다 · 금지는 negative_prompt 로.
+        # 프롬프트 확장(LLM 이 다시 씀)은 기본 켜짐 → 끈다 (물건 보존 문장이 바뀌면 안 됨)
+        return 3, {"enable_prompt_expansion": False, "negative_prompt": QWEN_NEGATIVE,
+                   "num_images": 1, "output_format": "jpeg"}
+    if "flash" in model:
+        return MAX_IMAGES, {"num_inference_steps": GEN_STEPS}
+    return MAX_IMAGES, {}
+
+
+def _generate_ai(image_bytes: bytes, preset: dict, seed: int | None = None,
+                 style_ref: bytes | None = None, extra_views: list[bytes] | None = None) -> bytes:
     """생성 편집 모델: 프롬프트가 전체 편집을 지시 (마스크 불필요).
-    seed=None 이면 fal 기본(랜덤) — 출력 가드 재시도만 seed 를 명시해서 바꾼다."""
+    seed=None 이면 fal 기본(랜덤) — 출력 가드 재시도만 seed 를 명시해서 바꾼다.
+    style_ref 가 있으면 두 번째 이미지로 (스타일 참고 — 무엇을 따라 할지는 프롬프트가 정한다)."""
     os.environ.setdefault("FAL_KEY", reveal(settings.fal_key))
 
-    image_url = _upload(image_bytes)
+    # 순서: 주 사진 → 같은 물건 다른 각도 → 스타일 참고 (프롬프트가 이 순서로 가리킨다)
+    max_images, model_kw = _model_args(settings.fal_model)
+    extras = (extra_views or [])[:max_images - 1 - (1 if style_ref else 0)]
+    image_urls = ([_upload(image_bytes)] + [_upload(b) for b in extras]
+                  + ([_upload(style_ref)] if style_ref else []))
 
     arguments = {
-        "image_urls": [image_url],           # ← 리스트로! (참조 이미지 목록)
+        "image_urls": image_urls,            # ← 리스트로! (참조 이미지 목록, 첫 장이 원본)
         "prompt": preset["prompt"],
-        # num_inference_steps: 삭제 (기본값) 또는 8 이하
-        "num_inference_steps": GEN_STEPS,
+        **model_kw,
     }
+    if preset.get("no_negative"):
+        arguments.pop("negative_prompt", None)   # 최소 프롬프트 실험 (10-09)
     if seed is not None:
         arguments["seed"] = seed
 
