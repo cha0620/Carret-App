@@ -237,6 +237,7 @@ def get_preset(key: str, note: str = "") -> dict:
     return {
         "name": preset["name"],
         "prompt": with_secondhand_lock(body),
+        "background": body,   # 잠금 없이 배경 · 조명만 — 최소 · 세트 프롬프트가 끝에 붙인다 (10-09)
         "bg_color": preset["bg_color"],
     }
 

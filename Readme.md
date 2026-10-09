@@ -23,7 +23,7 @@ a photo buyers can trust matters more than a pretty one.
 | **Problem** | Generative edit models "fix" scratches even when you only ask them to swap the background. In secondhand listings, that turns the photo into a misleading one |
 | **Solution** | The model never redraws the composition: the seller picks it from their own shots, and missing sides are flagged at upload. Before generation, the photo is analyzed: heavily worn items, or items whose main text can't be kept, get only a background swap on the original pixels. Generated results are checked with a VLM checklist that logos and text are unchanged |
 | **Stack** | FastAPI · LangGraph · fal.ai (FLUX edit) · Gemini (VLM) · DINOv2 · OpenCV · SQLite · S3 · Langfuse · Vanilla JS |
-| **Quality** | 1644 unit tests that make no external API calls and run on every PR, plus an eval suite that calls the real APIs (runs on main or a PR label) |
+| **Quality** | 765 unit tests that make no external API calls and run on every PR, plus an eval suite that calls the real APIs (runs on main or a PR label) |
 
 ---
 
@@ -286,7 +286,7 @@ that still boot when `.env` contains unknown keys.
 
 **5. Built to be testable.**
 External calls live only in `services/ai/`, which makes them easy to mock.
-That's why 1644 unit tests finish in about 25 seconds with no network
+That's why 765 unit tests finish in about 25 seconds with no network
 (and `unit/conftest.py` blocks any accidental real VLM call). The
 dev replay (`run_transform_with_result`) skips only the generation step and
 **calls the production node functions directly**. The logic is never
@@ -422,6 +422,32 @@ make docs    # browse the repo's .md files (http://localhost:8090, renders merma
 ---
 
 ## 📝 Recent Changes
+
+**2026-10-09**
+- **Minimal generation prompt in the app**: long instructions, lists and "do not" lines pulled in generic shapes and text
+  (qwen coat 0/2 → minimal prompt passed on the first try). Single items use `MIN_PROMPT` plus the chosen mood; sets use a
+  kind/count JSON (`set_prompt`) with no coordinates or product names
+- **Sets**: only the main item and components the seller picked are counted (`set_pieces`); the result is recounted per kind and
+  fails if it differs (`count_gate`). The layout is written by a model from the reference photo (`layout_plan` — the reference
+  photo itself is never sent to the generator)
+- **Listing components** (`POST /api/components`, lite): one list from the base and reference photos, sets broken into parts.
+  Runs alongside the full analysis, so the list shows after ~2 s instead of 6–26 s. If a set's contents are not visible, it asks
+  for a photo with the parts laid out
+- **Rule-based angles → AI photo review** (`POST /api/items/{id}/review`): grouping no longer asks for angles. Each photo gets
+  "what it shows", plus missing photos and base/extra photo picks, judged against the reference's `needs`
+- **UI**: ① my photos (★base + up to 2 extras) → ② items in the photo (main / component / accessory / not for sale, AI default) →
+  ③ reference layout (matched to the item by default) → ④ product description. Proof documents go to a detail-photo strip
+- **Tools**: `eval/view_runs.py` (inputs, results and prompts on one page), `scripts/ui_check` (fake AI responses, screenshots,
+  transform request check)
+- Cost: VLM per item before transform about $0.008 → $0.012
+
+**2026-10-08**
+- **Reference layout as line drawing + sentence (experiment, off by default)**: `eval/run_posts.py --ref-text --ref-sketch`
+  sends the seller photos with the reference line drawing and a layout sentence (`layout` in `style_refs.json`).
+  The reference photo itself is not sent, because the model copies its item
+- **Cleaned-up generation prompt (experiment)**: `--clean-prompt` replaces the prompt with `CLEAN_PROMPT`, ordered as
+  background → image roles → layout → what to keep → what not to add. It avoids naming the item and says not to reshape it into a more typical one
+- **Model switch for experiments**: `--model` runs flux-2 (full) or Nano Banana Pro for comparison (`generator._model_args`)
 
 **2026-10-05**
 - **Paged dev results**: `GET /dev/results?offset&limit` (returns `total`). The dev page fetches 50 at a time

@@ -42,6 +42,7 @@ class Settings(BaseSettings):              # ⭐ 대문자 클래스
     # 10-05 실험: verify(마크 보존) + added_text(없던 글자)를 VLM 한 호출로 (원본 · 생성본 두 장). 병렬 두 호출과
     # 왕복은 비슷하지만 호출 · 이미지 입력이 하나 준다. 판정이 같은지 eval 로 비교한 뒤 기본값을 정한다
     verify_combined: bool = False
+    count_gate: bool = False   # 세트 구성품 개수 게이트 (10-09 실험, 기본 꺼짐) — 생성본의 종류별 개수를 원본과 비교
     # 10-05 실험: 원하는 모습의 남의 상품 사진(스타일 참고)을 생성 모델에 두 번째 이미지로 — 배경 · 조명 · 구도만 따라 하게.
     # 물건 이름(item)으로 고른다. 색 · 글자가 섞여 들어올 수 있어 기본 꺼짐 (eval 로 본 뒤 정한다)
     style_ref: bool = False

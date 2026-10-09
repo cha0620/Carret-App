@@ -348,3 +348,33 @@ def test_prep_check_count_mismatch_raises(monkeypatch):
     _analyze_with(monkeypatch, {"checks": [{"visible": True}]})
     with pytest.raises(ValueError):
         detector.prep_check(b"x", ["box", "figure"])
+
+
+def test_parse_objects_name_ko_only_when_present():
+    out = _parse_objects([{"what": "a", "box_2d": [0, 0, 10, 10], "name_ko": "설명서"},
+                          {"what": "b", "box_2d": [0, 0, 10, 10]}])
+    assert out[0]["name_ko"] == "설명서" and "name_ko" not in out[1]
+
+
+# ── photo_review (10-09) ──
+def test_photo_review_parses_and_clamps(monkeypatch):
+    """shows 40자 · missing 최대 4 · base 범위 밖이면 0 · with 는 중복 · base 제외 · 최대 2."""
+    import json as _json
+    import app.services.ai.detector as detector
+    body = {"photos": [{"index": 1, "shows": "가" * 60}, {"index": 9, "shows": "x"}],
+            "missing": [{"what": f"m{i}", "hint": "h"} for i in range(6)],
+            "base": 7, "with": [0, 2, 2, 1, True]}
+    fake_get_client, _ = _make_fake_get_client(_json.dumps(body))
+    monkeypatch.setattr(detector, "get_client", fake_get_client)
+    out = detector.photo_review([b"a", b"b", b"c"])
+    assert out["photos"] == ["", "가" * 40, ""]
+    assert len(out["missing"]) == 4 and out["base"] == 0 and out["with"] == [2, 1]
+
+
+def test_photo_review_without_photos_raises(monkeypatch):
+    import pytest
+    import app.services.ai.detector as detector
+    fake_get_client, _ = _make_fake_get_client("not json")
+    monkeypatch.setattr(detector, "get_client", fake_get_client)
+    with pytest.raises(ValueError):
+        detector.photo_review([b"a"])

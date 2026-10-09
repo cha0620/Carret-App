@@ -6,9 +6,12 @@ Report:
    Things in the background that are not for sale do not count.
    objects — every separate physical object clearly visible in the photo that a seller could be
    selling, ONE entry per piece (two CDs = two entries, a pair of shoes = one entry, a product and
-   its box = two entries), at most 12. For each: what (short noun), box_2d, and for_sale — true if it
+   its box = two entries), at most 12. For each: what (short noun), name_ko (the same thing as a short
+   everyday Korean noun a seller would use, without numbers — e.g. 미니피규어, 설명서, 박스, 충전기), box_2d, and for_sale — true if it
    is part of what is being sold (the items you counted in item_count), false for things around it
    (a keyboard behind, a mug next to it). Do not list hands, people, furniture, the floor or walls.
+   A product made of several parts (a board game, a LEGO set, a kit) is NOT one entry: list its box and every
+   part you can see (the board, each card deck, each pawn or figure, dice, the manual).
    role (for things for sale) — ask "without it, is it still the same product?":
      "main"      — the product being sold (a phone, sneakers, a LEGO set's built model, a board game)
      "component" — part of what makes the product complete; without it the product is incomplete

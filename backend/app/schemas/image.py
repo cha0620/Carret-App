@@ -44,8 +44,28 @@ class TransformRequest(BaseModel):
         default=None, description="고른 정석 구도 (GET /api/items 의 compositions[].key) — 구도의 틀로만 정리, 각도는 그대로")
 
     sell: list[int] | None = Field(
-        default=None, max_length=12,
+        default=None, max_length=20,
         description="팔 물건 (POST /api/analyze 의 objects[].index, 여러 개 가능) — 없으면 분석 판단대로")
+
+    extra_view_ids: list[str] | None = Field(
+        default=None, max_length=2,
+        description="같은 물건의 다른 상품 사진 file_id (최대 2) — 생성 입력은 메인 포함 3장까지 (10-09)")
+
+    item_id: str | None = Field(
+        default=None, pattern=r"^[a-f0-9]{32}$",
+        description="extra_view_ids 를 보낼 때 그 사진들이 속한 물건 묶음 (서버가 같은 물건 · 상품 사진인지 확인, 10-09)")
+
+    ref_file: str | None = Field(
+        default=None, max_length=80,
+        description="판매자가 고른 정답 구도 (GET /api/refs 의 file) — 선 그림 + 구도 문장으로 넣는다 (10-09)")
+
+    mains: list[int] | None = Field(
+        default=None, max_length=20,
+        description="판매자가 본품으로 고른 번호 (sell 안) — 나머지 sell 은 구성품 (10-09)")
+
+    accessories: list[int] | None = Field(
+        default=None, max_length=20,
+        description="부가품 (objects[].index) — 같이 팔지만 대표사진에선 뺀다 (10-09). sell 과 겹치면 안 됨")
 
     separate: bool = Field(
         default=False, description="물건마다 따로 만드는 중 (sell 은 하나) — 결과 이름에 물건 번호를 붙여 서로 덮어쓰지 않게")
@@ -56,11 +76,38 @@ class TransformRequest(BaseModel):
             raise ValueError("따로 만들 때는 팔 물건을 하나만 골라 주세요")
         return self
 
+    @model_validator(mode="after")
+    def _extra_needs_item(self):
+        if self.extra_view_ids and not self.item_id:
+            raise ValueError("다른 사진을 같이 보낼 때는 item_id 가 필요해요")
+        return self
+
+    @model_validator(mode="after")
+    def _mains_in_sell(self):
+        if self.mains and not set(self.mains) <= set(self.sell or []):
+            raise ValueError("본품은 사진에 넣을 물건 중에서 골라 주세요")
+        return self
+
+    @model_validator(mode="after")
+    def _accessories_not_in_photo(self):
+        if self.accessories and (any(i < 0 or i >= 20 for i in self.accessories)
+                                 or set(self.accessories) & set(self.sell or [])):
+            raise ValueError("부가품은 0~19 번호로, 사진에 넣을 물건과 겹치지 않게 골라 주세요")
+        return self
+
+    @field_validator("extra_view_ids")
+    @classmethod
+    def _extra_ids(cls, v: list[str] | None) -> list[str] | None:
+        import re
+        if v is not None and any(not re.fullmatch(r"[a-f0-9]{32}", i) for i in v):
+            raise ValueError("다른 사진 file_id 형식이 아니에요")
+        return v
+
     @field_validator("sell")
     @classmethod
     def _sell_indices(cls, v: list[int] | None) -> list[int] | None:
-        if v is not None and (not v or any(i < 0 or i >= 12 for i in v)):
-            raise ValueError("팔 물건을 하나 이상, 0~11 번호로 골라 주세요")
+        if v is not None and (not v or any(i < 0 or i >= 20 for i in v)):
+            raise ValueError("팔 물건을 하나 이상, 0~19 번호로 골라 주세요")
         return v
 
     @field_validator("composition")
@@ -94,6 +141,7 @@ class TransformResponse(BaseModel):
     result_url: str = Field(description="브라우저에서 바로 보는 URL")
     prompt_used: str = Field(description="사용된 프롬프트 (실험 기록용)")
     gate_passed: bool | None = None
+    accessories: list[int] = Field(default_factory=list, description="받은 부가품 번호 그대로 (게시글 구성 표시용, 10-09)")
     item: str = "object"
     considered: list[str] = []
     composite_reason: str | None = Field(
@@ -134,11 +182,35 @@ class AnalyzeRequest(BaseModel):
     file_id: str = Field(pattern=r"^[a-f0-9]{32}$")
 
 
+class ComponentsRequest(BaseModel):
+    """게시글 구성품 (10-09) — 기준 사진 + 같이 넣는 참고 사진 (서버가 같은 묶음인지 확인)."""
+    file_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    item_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
+    extra_view_ids: list[str] | None = Field(default=None, max_length=2)
+
+    @field_validator("extra_view_ids")
+    @classmethod
+    def _ids(cls, v: list[str] | None) -> list[str] | None:
+        import re
+        if v is not None and any(not re.fullmatch(r"[a-f0-9]{32}", i) for i in v):
+            raise ValueError("다른 사진 file_id 형식이 아니에요")
+        return v
+
+    @model_validator(mode="after")
+    def _needs_item(self):
+        if self.extra_view_ids and not self.item_id:
+            raise ValueError("다른 사진을 같이 보낼 때는 item_id 가 필요해요")
+        return self
+
+
 class SellObject(BaseModel):
     index: int
+    photo: int = Field(default=0, description="어느 사진에서 보였나 (0 = 기준, 1~ = 같이 넣은 참고 사진) — 10-09")
     what: str
     box: dict = Field(description="x1 · y1 · x2 · y2 (0-1000)")
     for_sale: bool = Field(description="분석이 판매 물건으로 본 것 — 화면의 기본 체크")
+    name_ko: str | None = Field(default=None, description="구성품 한국어 이름 (미니피규어 · 설명서 · 박스) — 화면 표시용, 10-09")
+    role: str | None = Field(default=None, description="main | component | accessory — 화면 기본값 (부가품이면 '부가품', 10-09)")
 
 
 class AnalyzeResponse(BaseModel):

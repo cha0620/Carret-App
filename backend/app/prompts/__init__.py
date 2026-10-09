@@ -78,6 +78,36 @@ def item_text_prompt(item: str) -> str:
     return get_prompt_text("item_text", fallback=frag("item_text"), item=item)
 
 
+def components_prompt(n: int) -> str:
+    """게시글 구성품 목록 (10-09) — 기준 + 참고 사진 n 장을 같이 보고, 세트는 부품까지 쪼갠다."""
+    return get_prompt_text("components", fallback=frag("components"), n_last=str(n - 1))
+
+
+def layout_plan_prompt(pieces: list[tuple[str, int]]) -> str:
+    """세트 배치 정하기 (10-09) — 정답 사진의 배치를 이 구성품에 맞춰 문장으로."""
+    lines = "\n".join(f"- {k} x{n}" for k, n in pieces)
+    return get_prompt_text("layout_plan", fallback=frag("layout_plan"), pieces=lines)
+
+
+def photo_review_prompt(n: int, with_answer: bool, needs: list[str] | None = None) -> str:
+    """사진마다 무엇이 보이나 · 더 필요한 사진 (10-09) — 규칙 각도 라벨 · 필수 면 경고를 대신한다."""
+    return get_prompt_text(
+        "photo_review", fallback=frag("photo_review"), n_last=str(n - 1),
+        answer_note=("\nThe LAST image is an ANSWER photo: a well-made listing photo of a similar product that shows the "
+                     "target result. It is a different product — use it only to judge what the seller's photos still lack."
+                     if with_answer else ""),
+        answer_goal=" and the result can look like the answer photo" if with_answer else "",
+        # 정답이 필요로 하는 부위 · 면 (각도 대신, 10-09 사용자: "게임판 앞면", "코트 상반부", "뒷면")
+        needs=("\nThe listing photo must show these parts (judge base, with and missing against them):\n"
+               + "\n".join(f"- {x}" for x in needs) + "\n") if needs else "")
+
+
+def count_pieces_prompt(kinds: list[str]) -> str:
+    """세트 구성품 종류별 개수 (10-09 개수 게이트)."""
+    lines = "\n".join(f"- {k}" for k in kinds)
+    return get_prompt_text("count_pieces", fallback=frag("count_pieces"), lines=lines)
+
+
 def prep_check_prompt(things: list[str]) -> str:
     """정답 사진의 준비물이 판매자 사진에 다 보이나 (10-05, 스타일 참고 고르기)."""
     lines = "\n".join(f"- {t}" for t in things)

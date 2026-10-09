@@ -64,6 +64,24 @@ async function uploadUrl(url) {
 }
 
 // 사진 미리 분석 — 사진 속 물건 목록(objects)으로 팔 물건을 고른다 (10-03). 결과는 서버가 저장해 변환 때 다시 쓴다
+async function fetchReview(itemId, objectId, refFile) {
+  const q = new URLSearchParams({ object_id: objectId });
+  if (refFile) q.set('ref_file', refFile);
+  const resp = await fetch(`/api/items/${itemId}/review?` + q.toString(), { method: 'POST' });
+  if (!resp.ok) throw new Error('사진 검토 실패');
+  return resp.json();
+}
+
+async function fetchComponents(fileId, extraViewIds = null, itemId = null) {
+  const resp = await fetch('/api/components', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ file_id: fileId, extra_view_ids: extraViewIds, item_id: extraViewIds ? itemId : null }),
+  });
+  if (!resp.ok) throw new Error('구성품 빠른 분석 실패');
+  return resp.json();
+}
+
 async function analyzePhoto(fileId) {
   const resp = await fetch('/api/analyze', {
     method: 'POST',
@@ -75,12 +93,21 @@ async function analyzePhoto(fileId) {
 }
 
 // separate = 물건마다 따로 만드는 중 (sell 은 하나) — 서버가 결과 이름에 물건 번호를 붙인다
-async function requestTransform(fileId, preset, composition = null, sell = null, separate = false) {
+async function fetchRefs() {
+  const resp = await fetch("/api/refs");
+  if (!resp.ok) return [];
+  return (await resp.json()).refs || [];
+}
+
+async function requestTransform(fileId, preset, composition = null, sell = null, separate = false, accessories = null,
+                                extraViewIds = null, refFile = null, itemId = null, mains = null) {
   // 1) fetch → Response 객체 받기
   const resp = await fetch("/api/transform", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({ file_id: fileId, preset: preset, composition, sell, separate }),
+    body: JSON.stringify({ file_id: fileId, preset: preset, composition, sell, separate, accessories,
+                           extra_view_ids: extraViewIds, ref_file: refFile,
+                           item_id: extraViewIds ? itemId : null, mains }),
   });
 
   // 2) 실패면 throw (Response 상태에서)
