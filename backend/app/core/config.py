@@ -39,8 +39,11 @@ class Settings(BaseSettings):              # ⭐ 대문자 클래스
     # 원본 물건 위 글자를 읽어 생성 프롬프트에 넣는다 (VLM 호출 1회 추가)
     text_lock: bool = True
     # 10-03: 생성본에 원본에 없던 글자 · 로고가 생겼나 (원본 · 생성본 두 장 비교, VLM 1회) — 생기면 게이트 실패.
-    # VLM 이 없는 글자를 있다고 볼 수 있어 끌 수 있게 (ADDED_TEXT_GATE=false)
+    # VLM 이 없는 글자를 있다고 볼 수 있어 끌 수 있게 (ADDED_TEXT_GATE=false). text_gate=false(기본)면 어차피 안 돈다
     added_text_gate: bool = True
+    # 글자를 재생성 · 배경 교체 판단에 쓰나 (10-11 사용자: "글자는 어느 정도 무시하고 상세(검증) 사진에서 보강").
+    # false 면 잔글씨(text_dense)도 생성, 검사는 로고 · 모양만, 없던 글자 검사 안 함 — 대신 글자 근접 사진을 요청
+    text_gate: bool = False
     # 10-05 실험: verify(마크 보존) + added_text(없던 글자)를 VLM 한 호출로 (원본 · 생성본 두 장). 병렬 두 호출과
     # 왕복은 비슷하지만 호출 · 이미지 입력이 하나 준다. 판정이 같은지 eval 로 비교한 뒤 기본값을 정한다
     verify_combined: bool = False

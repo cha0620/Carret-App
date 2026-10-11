@@ -111,8 +111,14 @@ def _section(run: str) -> str:
         tries = r.get("tries") or []
         res_cls = "bad" if r.get("mode") != "generate" else "main"
         outs = [_fig(f"../{run}/files/{t}", f"{i + 1}차 시도") for i, t in enumerate(tries)]
-        outs.append(_fig(f"../{run}/files/{r['result']}", f"최종 ({r.get('mode')}"
-                         + (f" · {r['composite_reason']}" if r.get("composite_reason") else "") + ")", res_cls))
+        if r.get("mode") == "skipped_view":
+            # 구도 부족으로 생성하지 않음 (10-11 --view-check) — 어느 방면이 모자란지 (사용자가 나중에 평가)
+            outs.append("<div class=skip><b>구도 부족 — 생성 안 함</b><ul>" + "".join(
+                f"<li>{html.escape(m.get('what') or '')} — {html.escape(m.get('hint') or '')}</li>"
+                for m in r.get("view_missing") or []) + "</ul></div>")
+        else:
+            outs.append(_fig(f"../{run}/files/{r['result']}", f"최종 ({r.get('mode')}"
+                             + (f" · {r['composite_reason']}" if r.get("composite_reason") else "") + ")", res_cls))
         prompts = r.get("gen_prompts") or ([r["prompt_used"]] if r.get("mode") == "generate" else [])
         ko = ko_all.get(tag) or []
         if TRANSLATE and prompts and len(ko) < len(prompts):

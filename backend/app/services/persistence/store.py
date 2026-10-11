@@ -51,7 +51,10 @@ def record_result(file_id, preset_key, result_name, item,
 
 
 FEEDBACK_TAGS = ("defect_lost", "text_broken", "shape_changed", "color_changed",
-                 "framing", "background", "bubble_wrong", "good")   # bubble_wrong 은 옛 피드백용 (10-05 말풍선 없앰)
+                 "framing", "background", "bubble_wrong", "good",
+                 # 원본 사진에 정답 구도의 각도가 없어서 생긴 실패 (10-11) — 모델 탓이 아니라 사진 탓,
+                 # 사진 검토(photo_review)가 그 사진을 요청했어야 했다 — 검토를 고칠 근거로 모은다
+                 "view_missing", "added")   # bubble_wrong 은 옛 피드백용 (10-05 말풍선 없앰)
 
 
 def save_feedback(file_id, preset_key, rating, comment=None, source="user", tags=None):

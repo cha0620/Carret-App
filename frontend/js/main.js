@@ -445,7 +445,9 @@ function renderContents() {
   head.className = 'contents-title';
   head.textContent = '대표사진에 담길 것';
   el.append(head);
-  const [repObjs, restObjs] = repSplit((analysisObjects || []).filter(o => sell && sell.includes(o.index)));
+  // 판매자가 고쳐 골랐으면 고른 것 전부가 사진에 (서버 apply_selection 과 같게, 10-11). 기본값일 때만 본체 하나
+  const picked = (analysisObjects || []).filter(o => sell && sell.includes(o.index));
+  const [repObjs, restObjs] = sellDirty ? [picked, []] : repSplit(picked);
   const objs = repObjs.map(o => ({ ...o, role: mains.includes(o.index) ? 'main' : 'component' }));
   if (!objs.length) {
     const p = document.createElement('p');
@@ -1000,8 +1002,15 @@ function setupFinal(btn, fid, key, source) {
 function renderDetailPieces(data) {
   const dp = document.getElementById('detail-pieces');
   const pieces = data.detail_pieces || [];
-  dp.hidden = !pieces.length;
+  const reqs = data.detail_requests || [];       // 따로 받을 검증 사진 — 글자 근접 등 (10-11)
+  dp.hidden = !pieces.length && !reqs.length;
   dp.replaceChildren();
+  for (const t of reqs) {
+    const r = document.createElement('p');
+    r.className = 'muted';
+    r.textContent = '📷 상세 사진으로 올려 주세요: ' + t;
+    dp.append(r);
+  }
   if (!pieces.length) return;
   const head = document.createElement('p');
   head.className = 'muted';
@@ -1172,7 +1181,7 @@ feedbackSubmitBtn.onclick = async () => {
   feedbackSubmitBtn.disabled = true;
   feedbackStatus.textContent = '전송 중...';
   try {
-    await submitFeedback(fileId, PRESET, currentRating, feedbackComment.value.trim() || null);
+    await submitFeedback(fileId, PRESET, currentRating, feedbackComment.value.trim() || null, feedbackTags());
     feedbackStatus.textContent = '피드백 감사합니다! 🙏';
   } catch (e) {
     feedbackStatus.textContent = e.message;

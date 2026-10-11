@@ -125,11 +125,11 @@ async function requestTransform(fileId, preset, composition = null, sell = null,
   return res;
 }
 
-async function submitFeedback(fileId, presetKey, rating, comment) {
+async function submitFeedback(fileId, presetKey, rating, comment, tags = []) {
   const resp = await fetch('/api/feedback', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ file_id: fileId, preset_key: presetKey, rating, comment }),
+    body: JSON.stringify({ file_id: fileId, preset_key: presetKey, rating, comment, tags }),
   });
   if (!resp.ok) {
     const e = await resp.json().catch(() => ({}));

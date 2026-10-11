@@ -196,6 +196,7 @@ def _response(item: dict) -> ItemResponse:
         user_edited=item.get("user_edited", False), needs_review=item.get("needs_review", False))
 
 
+
 @router.post("/items", response_model=ItemResponse)
 def create_item(files: list[UploadFile] = File(default=[]), proof_files: list[UploadFile] = File(default=[])):
     # def = 스레드풀 (동영상 디코딩 · VLM 호출이 블로킹). proof_files = 근거 칸 (보증서 · 정품 마크 · 영수증 …)

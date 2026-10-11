@@ -278,6 +278,28 @@ def photo_review(images: list[bytes], answer: bytes | None = None, needs: list[s
     return {"photos": shows, "missing": missing, "base": base, "with": list(dict.fromkeys(with_))[:2]}
 
 
+def composition_check(images: list[bytes], answer: bytes) -> dict:
+    """정답 구도로 만들 수 있나 (10-11, VLM 1회) — 반환 {"ok": bool, "need": str, "why": str}.
+    판단은 모델이 판매자 사진 · 정답 사진을 보고 한다 (규칙 각도 X). 깨지면 예외."""
+    client = get_client()
+    prompt = P.composition_check_prompt(len(images) + 1)
+    parts = []
+    for i, b in enumerate(images):
+        parts += [f"Seller photo {i}:", image_part(b, "image/jpeg", "composition_check")]
+    parts += ["ANSWER photo:", image_part(answer, "image/jpeg", "composition_check")]
+    with observe("composition_check", as_type="generation", model=vlm_model("composition_check"), input=prompt) as obs:
+        resp = client.models.generate_content(
+            model=vlm_model("composition_check"), contents=[*parts, prompt],
+            config=types.GenerateContentConfig(temperature=0, response_mime_type="application/json",
+                                               thinking_config=thinking("composition_check")))
+        data = json.loads(resp.text)
+        if obs is not None:
+            obs.update(output=data, usage_details=_usage(resp))
+    if not isinstance(data, dict) or not isinstance(data.get("ok"), bool):
+        raise ValueError(f"composition_check: 응답에 ok 없음: {str(data)[:200]}")
+    return {"ok": data["ok"], "need": (_text(data.get("need")) or "")[:80], "why": (_text(data.get("why")) or "")[:160]}
+
+
 def analyze(image_bytes: bytes) -> dict:
     """파이프라인 첫 단계 (VLM 1회) — 예전 classify + detect 를 합친 것.
 

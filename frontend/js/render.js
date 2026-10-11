@@ -84,8 +84,18 @@ function setStars(rating) {
   });
 }
 
+// 피드백 태그 (10-11) — "원본에 이 구도 사진이 없음"은 모델이 아니라 사진 탓으로 따로 모은다
+function setFeedbackTags(tags) {
+  for (const b of document.querySelectorAll('#feedback-tags [data-tag]')) b.classList.toggle('on', (tags || []).includes(b.dataset.tag));
+}
+function feedbackTags() {
+  return [...document.querySelectorAll('#feedback-tags .on')].map(b => b.dataset.tag);
+}
+document.querySelectorAll('#feedback-tags [data-tag]').forEach(b => b.onclick = () => b.classList.toggle('on'));
+
 function resetFeedbackBox() {
   feedbackBox.classList.remove('hidden');
+  setFeedbackTags([]);
   setStars(0);
   feedbackComment.value = '';
   feedbackStatus.textContent = '';
@@ -94,6 +104,7 @@ function resetFeedbackBox() {
 function renderFeedback(fb) {
   feedbackBox.classList.remove('hidden');
   setStars(fb.rating);
+  setFeedbackTags(fb.tags);
   feedbackComment.value = fb.comment || '';
   feedbackStatus.textContent = '이전에 남긴 피드백이에요. 수정 후 다시 보낼 수 있어요.';
 }

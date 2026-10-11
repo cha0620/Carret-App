@@ -18,6 +18,13 @@ from PIL import Image
 import app.core.tracing as tracing
 import app.services.pipeline as pipeline_mod
 from app.core.config import settings
+
+
+@pytest.fixture(autouse=True)
+def _text_gate_on(monkeypatch):
+    """이 파일의 글자 검사 시나리오는 글자를 판단에 쓰던 때(text_gate=true) 기준 — 10-11 기본값은 false (test_text_gate_off_*)."""
+    from app.core.config import settings as _s
+    monkeypatch.setattr(_s, "text_gate", True)
 from app.services.persistence import storage, store
 
 ORIG, COMP = (120, 90, 60), (9, 9, 9)

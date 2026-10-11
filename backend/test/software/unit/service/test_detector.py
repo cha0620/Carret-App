@@ -378,3 +378,18 @@ def test_photo_review_without_photos_raises(monkeypatch):
     monkeypatch.setattr(detector, "get_client", fake_get_client)
     with pytest.raises(ValueError):
         detector.photo_review([b"a"])
+
+
+# ── composition_check (10-11) ──
+def test_composition_check_parses_and_requires_ok(monkeypatch):
+    """모델이 정답 구도로 못 만든다고 하면 어느 방면이 필요한지 — ok 가 bool 이 아니면 예외."""
+    import json as _json
+    import pytest
+    import app.services.ai.detector as detector
+    fake, _ = _make_fake_get_client(_json.dumps({"ok": False, "need": "앞에서 비스듬히 찍은 사진", "why": "옆면이 안 보여요"}))
+    monkeypatch.setattr(detector, "get_client", fake)
+    assert detector.composition_check([b"a"], b"ans") == {"ok": False, "need": "앞에서 비스듬히 찍은 사진", "why": "옆면이 안 보여요"}
+    fake, _ = _make_fake_get_client(_json.dumps({"ok": "yes"}))
+    monkeypatch.setattr(detector, "get_client", fake)
+    with pytest.raises(ValueError):
+        detector.composition_check([b"a"], b"ans")

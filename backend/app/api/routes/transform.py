@@ -191,6 +191,7 @@ def transform(req: TransformRequest, background: BackgroundTasks):
         composite_reason=out.get("composite_reason"),
         risk_reason=out.get("risk_reason"),
         detail_pieces=out.get("detail_pieces") or [],
+        detail_requests=out.get("detail_requests") or [],
         photo_type=out.get("photo_type"),
         wear_level=out.get("wear_level"),
         watermark=out.get("watermark"),

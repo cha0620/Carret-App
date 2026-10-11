@@ -19,6 +19,24 @@ HERE = Path(__file__).resolve().parent
 IMAGES = HERE / "data" / "images"
 
 
+def picked_pieces(post: str, used: list[str], picks: list[str]) -> list[tuple[str, int]] | None:
+    """판매자처럼 고른 물건만 (10-11 사용자: "물건 리스트 주고 선택된 걸 생성") — picks 는 objects.json 의 what.
+    생성에 들어간 사진에 보이는 것만, 정답 개수 그대로. 첫 번째로 고른 것이 본체."""
+    f = HERE / "data" / "posts" / post / "objects.json"
+    objs = {o["what"]: o for o in json.loads(f.read_text(encoding="utf-8"))["objects"]}
+    out = []
+    for i, w in enumerate(picks):
+        o = objs.get(w)
+        if o is None:
+            raise SystemExit(f"{post}: objects.json 에 없는 물건 '{w}'")
+        if not set(o.get("photos") or []) & set(used):
+            print(f"  {post}: '{w}' 은 생성에 들어간 사진에 안 보여 뺌")
+            continue
+        n = int(o.get("count") or 1)
+        out.append((f"main piece ({w})" if i == 0 else w, n))
+    return out or None
+
+
 def gt_pieces(post: str, used: list[str]) -> list[tuple[str, int]] | None:
     """정답 구성품 (eval/data/posts/<post>/objects.json, 10-10) → [(종류, 개수)]. 생성에 들어간 사진(used)에 보이는
     판매 본품 · 구성품만 — 근거 사진에서만 보인 것은 모델이 못 본다. 정답이 없으면 None (분석에서)."""
@@ -50,11 +68,18 @@ def main():
     ap.add_argument("--clean-prompt", action="store_true", help="정리한 프롬프트로 통째로 (pipeline.CLEAN_PROMPT, 10-08)")
     ap.add_argument("--min-prompt", action="store_true", help="최소 프롬프트 (pipeline.MIN_PROMPT, 10-09) — 목록 · 이름 · 금지 없이")
     ap.add_argument("--prompt-file", help="생성 프롬프트를 이 파일 내용 그대로 (10-09 세트 JSON 실험)")
+    ap.add_argument("--mode", choices=["generate", "composite", "auto"], default="generate",
+                    help="generate: 생성만 — 실패할 것 같아도 돌린다 (기본, 10-11 사용자: 생성 · 배경 교체는 별개, 테스트일 뿐) · "
+                         "composite: 배경 교체만 · auto: 예전처럼 분석이 정함")
+    ap.add_argument("--view-check", action="store_true",
+                    help="생성 전에 구도 검사(VLM 1회, detector.composition_check) — 모델이 정답 구도로 못 만든다고 하면 생성하지 않고 '구도 부족(어느 방면)' 으로 기록 (10-11)")
+    ap.add_argument("--picks", help="고른 물건 JSON {post: [what, ...]} (10-11) — 첫 번째가 본체, 고른 것 전부를 생성")
     ap.add_argument("--no-gt-pieces", action="store_true", help="세트 구성품을 정답(data/posts/<post>/objects.json) 대신 분석에서")
     ap.add_argument("--force-generate", action="store_true", help="글자 많음(text_dense) · 잘림(cut_off) · 겹침(overlap) 이어도 배경 교체로 보내지 않고 생성 (10-10 실험)")
     ap.add_argument("--set-prompt", action="store_true", help="세트면 종류 · 개수 JSON, 아니면 최소 프롬프트 (10-09) + 개수 게이트")
     ap.add_argument("--ref-sketch", action="store_true", help="--ref-text 와 함께: 정답 선 그림도 같이 넣는다")
     a = ap.parse_args()
+    picks = json.loads(Path(a.picks).read_text(encoding="utf-8")) if a.picks else {}
 
     run_dir = HERE / "results" / "runs" / a.run_id
     (run_dir / "files").mkdir(parents=True, exist_ok=True)
@@ -133,13 +158,27 @@ def main():
                     # 옷은 다른 각도를 넣지 않는다 — 각도마다 모양이 달라 선 그림체로 옆에 콜라주했다 (10-08)
                     extras = []
                 t0 = time.time()
-                gt = None if a.no_gt_pieces else gt_pieces(post, [names[f] for f in [main_id, *extras]])   # 한 번만 — 기록과 실제가 같게
+                if a.view_check and planned:
+                    # 구도 부족이면 돌리지 않는다 — 모델이 판매자 사진 · 정답 사진을 보고 판단, 사용자가 나중에 평가 (10-11)
+                    ids = o["photo_ids"][:4]
+                    cc = detector.composition_check([storage.load_original(f) for f in ids], style_refs.answer_photo(planned[0]))
+                    if not cc["ok"]:
+                        out.append({"post": post, "object": o["id"], "label": o.get("label"), "composition": comp,
+                                    "main": names[main_id], "planned_ref": planned[0], "mode": "skipped_view",
+                                    "view_missing": [{"what": cc["need"], "hint": cc["why"]}], "result": None,
+                                    "photos_checked": [names[f] for f in ids], "elapsed_s": round(time.time() - t0, 1)})
+                        print(f"  {post}: 구도 부족 — 생성 안 함: {cc['need']} ({cc['why']})", flush=True)
+                        continue
+                used = [names[f] for f in [main_id, *extras]]
+                gt = (picked_pieces(post, used, picks[post]) if post in picks
+                      else None if a.no_gt_pieces else gt_pieces(post, used))   # 한 번만 — 기록과 실제가 같게
                 res = pipeline.run_transform(main_id, a.preset, composition=comp, extra_view_ids=extras,
                                              ref_category=o.get("category"), ref_view=views.get(main_id),
                                              ref_file=planned[0] if planned else None, ref_layout=layout,
                                              ref_sketch=a.ref_sketch, clean_prompt=("text:" + Path(a.prompt_file).read_text(encoding="utf-8").strip()) if a.prompt_file else "set" if a.set_prompt else "min" if a.min_prompt else a.clean_prompt,
                                              ref_keep=keep,
-                                             fixed_pieces=gt)
+                                             fixed_pieces=gt,
+                                             user_mode=None if a.mode == "auto" else a.mode)
                 tag = f"{post}__{o['id']}{'_' + comp if comp else ''}"
                 src = storage.BASE / "result" / res["result_name"]
                 if src.exists():
@@ -149,7 +188,7 @@ def main():
                        "main": names[main_id], "main_view": views.get(main_id), "planned_ref": planned[0] if planned else None,
                        "extras": [names[f] for f in extras], "all": [names[f] for f in o["photo_ids"]],
                        "style_ref": ref[0] if ref else None, "ref_layout": layout, "model": os.environ.get("FAL_MODEL"), "prompt_used": res.get("prompt_used"), "gen_prompts": res.get("gen_prompts") or [], "count_mismatch": res.get("count_mismatch"), "gt_pieces": gt, "result": f"{tag}_result.jpg",
-                       "mode": res.get("mode"), "composite_reason": res.get("composite_reason"),
+                       "mode": res.get("mode"), "composite_reason": res.get("composite_reason"), "risk_reason": res.get("risk_reason"),
                        "gate_passed": res.get("gate_passed"), "added_text": res.get("added_text"),
                        "checks": res.get("checks"), "gen_attempts": res.get("gen_attempts"),
                        "elapsed_s": round(time.time() - t0, 1)}

@@ -154,6 +154,7 @@ class TransformResponse(BaseModel):
     item: str = "object"
     considered: list[str] = []
     risk_reason: str | None = Field(default=None, description="생성이 잘 안될 이유가 있는데 생성을 골랐을 때 그 이유 (10-11)")
+    detail_requests: list[str] = Field(default_factory=list, description="따로 받을 검증 사진 — 글자 근접 등 (10-11)")
     detail_pieces: list[DetailPiece] = Field(default_factory=list, description="대표사진(본체 하나)에서 뺀 구성품 — 상세 · 인증 목록, 원하면 따로 생성 (10-11)")
     composite_reason: str | None = Field(
         default=None, description="생성하지 않은 이유: detect_failed | inside_view | document | text_dense | "

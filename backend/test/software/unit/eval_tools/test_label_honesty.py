@@ -16,4 +16,4 @@ def test_save_label_keeps_only_known_flags_and_summary_counts(tmp_path, monkeypa
     assert "evil" not in got["r/a"] and len(got["r/a"]["memo"]) == 500
     cases = [{"id": i} for i in ("r/a", "r/b", "r/c", "r/d")]
     assert L.summary(cases, got) == {"cases": 4, "labeled": 3, "unsure": 1, "same": 1, "differ": 1,
-                                     "added": 1, "missing": 0, "changed": 1}
+                                     "added": 1, "missing": 0, "changed": 1, "view_missing": 0}

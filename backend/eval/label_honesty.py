@@ -5,6 +5,7 @@
     cd backend
     python eval/label_honesty.py              # http://localhost:8002 — 원본 · 결과 나란히, 키보드로 라벨
     python eval/label_honesty.py --all        # 게이트 탈락 · 검사 안 한 생성본까지
+    python eval/label_honesty.py --all --runs picks-flash-1011   # 이 실행만 (10-11 지금 파이프라인)
 
 대상: results/runs/*/storage 의 inspect 중 mode=generate (기본은 gate_passed=True 만 — 보증 대상).
 라벨: data/honesty_labels.json {case_id: {"same": bool, "added": bool, "missing": bool, "changed": bool,
@@ -21,7 +22,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 RUNS = HERE / "results" / "runs"
 LABELS = HERE / "data" / "honesty_labels.json"
-FLAGS = ("same", "added", "missing", "changed", "unsure")
+FLAGS = ("same", "added", "missing", "changed", "unsure", "view_missing")   # view_missing: 원본에 그 구도 사진이 없어서 (원인, 10-11)
 
 
 def _source_names(run_dir: Path) -> dict:
@@ -40,7 +41,7 @@ def _source_names(run_dir: Path) -> dict:
     return out
 
 
-def cases(include_all: bool = False) -> list[dict]:
+def cases(include_all: bool = False, runs: list[str] | None = None) -> list[dict]:
     out = []
     for q in sorted(RUNS.glob("*/storage/quality/*_inspect.json")):
         try:
@@ -50,6 +51,8 @@ def cases(include_all: bool = False) -> list[dict]:
         if d.get("mode") != "generate" or (not include_all and d.get("gate_passed") is not True):
             continue
         storage, run = q.parent.parent, q.parts[-4]
+        if runs and run not in runs:
+            continue
         stem = q.name[: -len("_inspect.json")]
         fid = stem[:32]
         result = storage / "result" / f"{stem}.jpg"
@@ -136,20 +139,21 @@ def summary(case_list: list, labels: dict) -> dict:
     differ = [x for x in sure if not x.get("same")]
     return {"cases": len(case_list), "labeled": len(done), "unsure": len(done) - len(sure),
             "same": len(sure) - len(differ), "differ": len(differ),
-            **{k: sum(x.get(k, False) for x in sure) for k in ("added", "missing", "changed")}}
+            **{k: sum(x.get(k, False) for x in sure) for k in ("added", "missing", "changed", "view_missing")}}
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8002)
     ap.add_argument("--all", action="store_true", help="게이트 탈락 · 검사 안 한 생성본까지")
+    ap.add_argument("--runs", default="", help="이 실행만 (쉼표) — 예: picks-flash-1011")
     ap.add_argument("--summary", action="store_true", help="서버 없이 라벨 집계만")
     ap.add_argument("--labels", type=Path, default=None, help="라벨 파일 (기본 data/honesty_labels.json — 시험용으로 바꿀 때)")
     a = ap.parse_args()
     if a.labels:
         global LABELS
         LABELS = a.labels
-    cl = cases(a.all)
+    cl = cases(a.all, [r for r in a.runs.split(",") if r])
     if a.summary:
         print(json.dumps(summary(cl, load_labels()), ensure_ascii=False, indent=1))
         return

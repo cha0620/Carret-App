@@ -12,6 +12,7 @@ style_refs.json: [{"file", "category", "view": [각도], "prep": [준비물 — 
 """
 import copy
 import json
+import re
 import logging
 from pathlib import Path
 
@@ -137,7 +138,9 @@ def plan_text(item: str | None, category: str | None, views: list[str | None],
     hit = [e for e in entries if any(k.lower() in name for k in e.get("items", []))]
     same = [e for e in entries if category and e.get("category") == category and e not in hit]
     have = {v for v in views if v}
-    for e in hit + same:
+    # 이름이 맞는 정답이 있는데 각도가 안 맞아 못 쓰면, 같은 종류의 다른 물건 정답으로 넘어가지 않는다 —
+    # 폰 사진에 헤드폰 정답이 붙었다 (10-11 picks-flash-1011). 이름이 맞는 게 하나도 없을 때만 종류로
+    for e in (hit or same):
         need = e.get("view") or []
         if len(need) > 1 and not all(any(view_ok(n, v) for v in have) for n in need):
             if e.get("layout_single"):
@@ -150,3 +153,4 @@ def plan_text(item: str | None, category: str | None, views: list[str | None],
             return e["file"], e["layout_nobox"]
         return e["file"], e["layout"]
     return None
+

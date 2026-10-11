@@ -12,6 +12,13 @@ import pytest
 
 import app.services.pipeline as pipeline_mod
 
+
+@pytest.fixture(autouse=True)
+def _text_gate_on(monkeypatch):
+    """이 파일의 글자 검사 시나리오는 글자를 판단에 쓰던 때(text_gate=true) 기준 — 10-11 기본값은 false (test_text_gate_off_*)."""
+    from app.core.config import settings as _s
+    monkeypatch.setattr(_s, "text_gate", True)
+
 MAX = pipeline_mod.TEXT_VERIFY_MAX
 
 
@@ -218,9 +225,19 @@ def test_plan_generate_choice_overrides_risk_and_records_reason():
     assert "composite_reason" not in out and out["risk_reason"] == "cut_off"
 
 
-def test_plan_generate_choice_cannot_override_inside_view_or_detect_failed():
-    assert pipeline_mod.plan({**_PLAN, "photo_type": "inside_view", "user_mode": "generate"})["composite_reason"] == "inside_view"
-    assert pipeline_mod.plan({**_PLAN, "detect_failed": True, "user_mode": "generate"})["composite_reason"] == "detect_failed"
+def test_plan_generate_choice_always_generates_even_inside_view_or_detect_failed():
+    """10-11 사용자: 생성과 배경 교체는 별개 — 생성을 고르면 어떤 이유로도 돌리지 않고 이유만 남긴다."""
+    for st, why in (({"photo_type": "inside_view"}, "inside_view"), ({"detect_failed": True}, "detect_failed")):
+        out = pipeline_mod.plan({**_PLAN, **st, "user_mode": "generate"})
+        assert "composite_reason" not in out and out["risk_reason"] == why
+
+
+def test_generate_only_never_routes_to_composite_after_gate():
+    s = {"gate_passed": False, "mode": "generate", "user_mode": "generate"}
+    assert pipeline_mod._route_after_verify(s) == "regen"
+    assert pipeline_mod._route_after_verify({**s, "gate_retried": True}) == "done"
+    assert pipeline_mod._route_after_verify({**s, "verify_failed": True}) == "done"
+    assert pipeline_mod._route_after_verify({**s, "user_mode": None, "gate_retried": True}) == "composite"   # 고르지 않으면 예전대로
 
 
 def test_plan_composite_choice_without_risk():

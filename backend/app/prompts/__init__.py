@@ -102,6 +102,11 @@ def photo_review_prompt(n: int, with_answer: bool, needs: list[str] | None = Non
                + "\n".join(f"- {x}" for x in needs) + "\n") if needs else "")
 
 
+def composition_check_prompt(n: int) -> str:
+    """정답 구도로 만들 수 있나 — 판매자 사진 + 정답 사진을 모델이 직접 본다 (10-11 사용자: 각도를 규칙으로 정하지 말고 모델에게)."""
+    return get_prompt_text("composition_check", fallback=frag("composition_check"), n_last=str(n - 1))
+
+
 def count_pieces_prompt(kinds: list[str]) -> str:
     """세트 구성품 종류별 개수 (10-09 개수 게이트)."""
     lines = "\n".join(f"- {k}" for k in kinds)

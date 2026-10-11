@@ -57,6 +57,7 @@
     <button data-k="missing"><kbd>3</kbd> 누락 (있던 것이 사라짐)</button>
     <button data-k="changed"><kbd>4</kbd> 변형 (로고 · 글자 · 색 · 모양이 바뀜)</button>
     <button data-k="unsure"><kbd>5</kbd> 모르겠음</button>
+    <button data-k="view_missing"><kbd>6</kbd> 원인: 원본에 그 구도 사진 없음</button>
   </div>
   <textarea id="memo" placeholder="어디가 다른지 (선택) — 예: 왼쪽 로고 글자 E→F"></textarea>
   <div class="nav">
@@ -73,13 +74,13 @@ const $ = id => document.getElementById(id);
 let cases = [], labels = {}, i = 0, cur = {};
 
 function setFlags(f) {
-  cur = { same: false, added: false, missing: false, changed: false, unsure: false, ...f };
+  cur = { same: false, added: false, missing: false, changed: false, unsure: false, view_missing: false, ...f };
   document.querySelectorAll('.labels button').forEach(b => b.classList.toggle('on', !!cur[b.dataset.k]));
 }
 function toggle(k) {
   const v = !cur[k];
   if (k === 'same' && v) setFlags({ same: true });
-  else if (k === 'unsure') setFlags({ ...cur, unsure: v });
+  else if (k === 'unsure' || k === 'view_missing') setFlags({ ...cur, [k]: v });   // 원인 칸은 같음/다름과 따로
   else setFlags({ ...cur, [k]: v, ...(v && k !== 'same' ? { same: false } : {}) });
 }
 function show() {
@@ -125,7 +126,7 @@ $('save').onclick = save; $('next').onclick = () => go(1); $('prev').onclick = (
 document.querySelectorAll('.pair img').forEach(im => im.onclick = () => $('main').classList.toggle('zoom'));
 document.addEventListener('keydown', e => {
   if (e.target === $('memo')) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); save(); } return; }
-  const k = { 1: 'same', 2: 'added', 3: 'missing', 4: 'changed', 5: 'unsure' }[e.key];
+  const k = { 1: 'same', 2: 'added', 3: 'missing', 4: 'changed', 5: 'unsure', 6: 'view_missing' }[e.key];
   if (k) toggle(k);
   else if (e.key === 'Enter') save();
   else if (e.key === 'ArrowRight') go(1);
