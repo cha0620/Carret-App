@@ -38,6 +38,9 @@ DEFAULT_THINKING: dict[str, str | int] = {
     "objects": 4096,              # 여러 장을 물건별로 묶기 + 각도 (10-04, views 를 대신)
     "added_text": 2048,           # 없던 글자 검사 (두 장 비교) — verify 와 같은 상한
     "verify_combined": 3072,      # verify + added_text 한 호출 (10-05) — 둘을 합친 만큼보다 조금 작게
+    "components": 512,
+    "layout_plan": 1024,
+    "photo_review": 1024,         # 사진마다 보이는 것 · 더 필요한 사진 (10-09, 규칙 각도 대신)          # 정답 사진 배치를 구성품에 맞춰 한두 문장 (10-09)            # 구성품만 빠르게 (10-09) — 화면 목록용, 오래 생각할 일이 아니다
 }
 
 
@@ -56,6 +59,8 @@ DEFAULT_THINKING: dict[str, str | int] = {
 DEFAULT_MODELS: dict[str, str] = {
     "check_photo": "gemini-3.5-flash-lite",
     "objects": "gemini-3.5-flash-lite",
+    "components": "gemini-3.5-flash-lite",
+    "photo_review": "gemini-3.5-flash-lite",   # 큰 그림 판단 — objects 와 같은 급   # 10-09 — objects(묶기)와 같은 큰 그림 일
 }
 
 

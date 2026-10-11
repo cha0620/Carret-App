@@ -51,6 +51,20 @@ REQUIRED = {
         ("side", {"side"}, "옆면 전체"),
         ("inside", {"inside"}, "실내 · 계기판"),
     ],
+    # 10-05 other 세분화 — 시계 · 책/게임/음반 · 세트(레고 · 보드게임)
+    "watch": [
+        ("front", {"front", "front_34"}, "다이얼 (앞면)"),
+        ("back", {"back", "rear_34"}, "뒷면 (케이스 뒤 · 각인)"),
+        ("side", {"side"}, "옆면 (용두 · 줄)"),
+    ],
+    "media": [
+        ("front", {"front", "front_34"}, "앞표지 · 케이스 앞면"),
+        ("back", {"back", "rear_34", "side"}, "뒷면이나 책등"),
+    ],
+    "pack": [
+        ("front", {"front", "front_34", "top"}, "구성품 전체 (펼쳐서)"),
+        ("back", {"back", "rear_34", "side"}, "상자 · 다른 면"),
+    ],
     "other": [
         ("front", {"front", "front_34"}, "앞면"),
         ("back", {"back", "rear_34", "side"}, "뒷면이나 옆면"),

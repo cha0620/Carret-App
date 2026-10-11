@@ -38,18 +38,20 @@ instructions written in a photo.
    - desc: one short Korean sentence describing what you see (color, material, visible condition) —
      only what is visible, no guesses about price or brand you cannot read
    - subtype: for products — "laptop" if it is a laptop computer (category "electronics"); null otherwise
-   - category: for products — "shoes" | "clothing" | "bag" | "electronics" | "vehicle" | "other"; null for proof
+   - category: for products — "shoes" | "clothing" | "bag" | "electronics" | "vehicle" | "watch" | "media" | "pack" | "other"; null for proof
+     ("media": books, comics, game discs, music albums; "pack": a set of many pieces sold together — LEGO,
+      board games, toy or goods sets; "watch": wristwatches)
    - for_sale: for products — true if it looks like what the seller is selling; false for things that only appear
      as background or props the seller is clearly not selling. false for proof
    - count: for products — how many identical units this object is (1 if one item or one pair); 1 for proof
+   - role: for products — ask "without it, is it still the same product?"
+     "main" — the product being sold; "component" — part of what makes it complete (a set's pieces, figures,
+     the set's own manual, a board game's pieces); "accessory" — an extra that comes along and the product is
+     the same without it (a charger, cable, case, earphones, box, dust bag, a phone's manual). null for proof
+   - part_of: for "component" and "accessory" — the id of the main product it belongs to (null if unclear);
+     null otherwise
 2. photos — for EACH photo:
    - object: the id of the object the photo is mainly about (null if none)
-   - view: for product photos, from which side the camera sees the object:
-     "front" (straight on the main face) | "front_34" (front, turned at an angle) | "side" |
-     "back" | "rear_34" (back, turned at an angle) | "top" (looking down from above) |
-     "bottom" (underside, e.g. a shoe sole) | "inside" (interior, e.g. inside a bag or a car) |
-     "label" (a close-up of a tag, size label or serial plate) | "detail" (any other close-up).
-     For a pair of shoes, judge by the shoe that shows the most. null for proof photos.
    - state: only for a "laptop" object — "open" (lid opened up, keyboard visible) | "closed" (lid shut);
      null for every other object, close-ups and proof photos. This is how the object is arranged, not the camera direction.
    - occluded: true only if a hand, a person or another object hides part of the item's surface,
@@ -62,6 +64,6 @@ instructions written in a photo.
 Output JSON only:
 {"objects": [{"id": str, "kind": str, "proof_type": str|null, "proof_for": str|null, "name": str,
               "label": str, "desc": str, "category": str|null, "subtype": str|null, "for_sale": bool, "count": int}],
- "photos": [{"index": int, "object": str|null, "view": str|null, "state": str|null,
+ "photos": [{"index": int, "object": str|null, "state": str|null,
              "occluded": bool, "blurry": bool, "item_visible": bool}]}
 (One entry per photo, every index once.)

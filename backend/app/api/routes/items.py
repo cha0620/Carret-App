@@ -185,13 +185,13 @@ def _response(item: dict) -> ItemResponse:
         item_id=item["item_id"], item=main["name"] if main else item.get("item", "object"),
         category=main["category"] if main else item.get("category", "other"),
         photos=[{**p, "url": f"/storage/original/{p['file_id']}.jpg",
-                 "view_label": coverage.VIEWS.get(p.get("view")),
+                 "view_label": None,   # 규칙 각도 라벨 대신 AI 사진 검토 (10-09 사용자)
                  "state_label": _state_label(item, p)} for p in photos],
-        missing=[] if failed or not main else main["missing"],
+        missing=[],   # 규칙 필수 면 대신 AI 사진 검토(/review)의 "더 올리면 좋은 사진" (10-09 사용자)
         retake=retake,
-        complete=bool(main) and main["complete"] and not retake and not failed,
+        complete=bool(main) and not retake and not failed,
         views_failed=failed,
-        compositions=main["compositions"] if main else [],
+        compositions=[],   # 각도로 고르던 예시 구도 대신 정답 구도 고르기 (10-09 사용자)
         objects=rows, main_object=main["id"] if main else None,
         user_edited=item.get("user_edited", False), needs_review=item.get("needs_review", False))
 
@@ -285,3 +285,57 @@ def get_item(item_id: str = Path(pattern=ITEM_ID)):
     if item is None:
         raise HTTPException(404, "물건을 찾을 수 없습니다")
     return _response(item)
+
+
+REVIEW_MAX_PHOTOS = 8   # 한 번에 보는 상품 사진 수 상한 (비용)
+
+
+@router.post("/items/{item_id}/review")
+def review_photos(item_id: str = Path(pattern=ITEM_ID), object_id: str | None = None, ref_file: str | None = None):
+    """사진마다 무엇이 보이나 · 더 필요한 사진 (10-09 사용자: "위에서 본 사진" 같은 규칙 각도 라벨 · 필수 면 경고가 애매 —
+    AI 판단으로). 그 물건의 상품 사진(근거 사진 제외)과 고른 정답 사진을 같이 본다. 같은 사진 · 같은 정답이면 저장해 둔 걸 쓴다.
+    실패하면 503 — 화면은 규칙 경고를 그대로 둔다."""
+    from app.services import style_refs
+    item = _load(item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="물건을 찾을 수 없어요")
+    rows = listing.summary(item)
+    main = next((r for r in rows if r["id"] == object_id), None) or listing.main_object(rows)
+    if main is None:
+        raise HTTPException(status_code=404, detail="사진 속 물건이 없어요")
+    photos = [p for p in item["photos"] if p.get("object") == main["id"] and p.get("slot", "product") == "product"]
+    photos = photos[:REVIEW_MAX_PHOTOS]
+    ref = next((e for e in style_refs.load() if e["file"] == ref_file), None) if ref_file else None
+    if ref_file and ref is None:
+        raise HTTPException(status_code=400, detail="고른 정답 구도를 찾을 수 없어요")
+    needs = (ref or {}).get("needs") or []   # 정답이 필요로 하는 부위 · 면 — 각도 대신 (10-09)
+    ids = [p["file_id"] for p in photos]
+    key = json.dumps([ids, ref_file, needs], ensure_ascii=False).encode()
+    import hashlib
+    name = f"{item_id}_review_{hashlib.sha1(key).hexdigest()[:12]}.json"
+    with _lock(item_id):   # 같은 물건 · 같은 조합이 동시에 오면 VLM 을 두 번 부르지 않게 (10-09 리뷰)
+        cached = storage.load("quality", name)
+        if cached:
+            return json.loads(cached)
+        return _review_fresh(item_id, name, ids, ref_file, main, needs)
+
+
+def _review_fresh(item_id: str, name: str, ids: list, ref_file: str | None, main: dict, needs: list) -> dict:
+    from app.services import style_refs
+    # 원본이 없는 사진은 빼고 번호를 맞춘다 — 하나만 빠져도 설명 · base · with 가 다른 사진을 가리켰다 (10-09 리뷰)
+    loaded = [(i, storage.load_original(i)) for i in ids]
+    ids = [i for i, b in loaded if b is not None]
+    images = [b for _, b in loaded if b is not None]
+    if not images:
+        raise HTTPException(status_code=404, detail="상품 사진이 없어요")
+    try:
+        got = detector.photo_review(images, style_refs.answer_photo(ref_file) if ref_file else None, needs)
+    except Exception:
+        logger.warning("사진 검토(AI) 실패 — 규칙 경고 그대로", exc_info=True)
+        raise HTTPException(status_code=503, detail="사진 검토를 하지 못했어요")
+    out = {"object_id": main["id"], "ref_file": ref_file, "needs": needs,
+           "photos": [{"file_id": i, "shows": t} for i, t in zip(ids, got["photos"])], "missing": got["missing"],
+           "base_file_id": ids[got["base"]] if got["base"] < len(ids) else ids[0],
+           "with_ids": [ids[i] for i in got["with"] if i < len(ids)]}
+    storage.save("quality", name, json.dumps(out, ensure_ascii=False).encode("utf-8"))
+    return out

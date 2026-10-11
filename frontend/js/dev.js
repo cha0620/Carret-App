@@ -242,14 +242,42 @@ function renderResults() {
   if (more) more.onclick = () => { rsShown += RS_PAGE; renderResults(); };
 }
 
+// 결과가 쌓이면 한 번에 받기가 느리다 — 첫 페이지를 먼저 그리고 나머지는 이어 받아 덧붙인다.
+// 다시 불러오기를 누르면 이전 차례는 버린다 (rsLoadSeq).
+const RS_FETCH = 50;
+let rsLoadSeq = 0;
 async function loadResults() {
+  const seq = ++rsLoadSeq;
+  rsItems = [];
+  rsShown = RS_PAGE;
+  // 페이지 사이에 새 결과가 생기면 목록이 밀려 같은 항목이 또 온다 — 키로 거른다.
+  // 카드는 첫 페이지와 끝에서만 다시 그린다 (받는 동안 쓰던 피드백이 날아가지 않게).
+  const seen = new Set();
+  let total = 0;
   try {
-    const r = await fetch('/dev/results');
-    if (!r.ok) throw new Error(r.status);
-    rsItems = (await r.json()).items;
+    for (let offset = 0; ; offset += RS_FETCH) {
+      const r = await fetch(`/dev/results?offset=${offset}&limit=${RS_FETCH}`);
+      if (!r.ok) throw new Error(r.status);
+      const body = await r.json();
+      if (seq !== rsLoadSeq) return;
+      total = body.total;
+      for (const it of body.items) {
+        const k = `${it.file_id}_${it.preset}`;
+        if (!seen.has(k)) { seen.add(k); rsItems.push(it); }
+      }
+      if (offset === 0) renderResults();
+      else $('rs-summary').innerHTML = rsSummary(rsItems) + ` <span class="tc-empty">받는 중 ${rsItems.length}/${total}</span>`;
+      if (!body.items.length || offset + RS_FETCH >= total) break;
+    }
     renderResults();
   } catch (e) {
-    $('rs-list').innerHTML = `<p class="tc-empty">불러오기 실패: ${esc(e.message)}</p>`;
+    if (seq !== rsLoadSeq) return;
+    if (!rsItems.length) {
+      $('rs-list').innerHTML = `<p class="tc-empty">불러오기 실패: ${esc(e.message)}</p>`;
+      return;
+    }
+    renderResults();   // 받은 만큼은 보여 주되, 일부라는 걸 알린다
+    $('rs-summary').innerHTML += ` <span class="tc-empty">⚠ ${rsItems.length}/${total} 만 받음 (${esc(e.message)}) — 다시 불러오기</span>`;
   }
 }
 $('btn-rs-reload').onclick = loadResults;
