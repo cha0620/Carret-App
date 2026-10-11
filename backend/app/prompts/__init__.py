@@ -89,17 +89,53 @@ def layout_plan_prompt(pieces: list[tuple[str, int]]) -> str:
     return get_prompt_text("layout_plan", fallback=frag("layout_plan"), pieces=lines)
 
 
-def photo_review_prompt(n: int, with_answer: bool, needs: list[str] | None = None) -> str:
-    """사진마다 무엇이 보이나 · 더 필요한 사진 (10-09) — 규칙 각도 라벨 · 필수 면 경고를 대신한다."""
+MISSING_TRUST = (
+    "2. missing — what photo the seller should still add so that a buyer can trust the listing.\n"
+    "   Only things that really matter for THIS product (all parts of a set laid out, the sole of used shoes,\n"
+    "   a size label of clothing, a screen of a phone, a visible defect up close). At most 4. Empty if nothing is missing.\n"
+    "   For each: what (short Korean, e.g. \"구성품을 펼쳐 찍은 사진\") and hint (one short Korean sentence on how to take it).\n")
+# 정답을 골랐으면 "더 올릴 사진" 의 기준은 그 정답 사진을 만드는 것 (10-11 사용자: 그냥 부족한 걸 달라고 하지 말고)
+MISSING_FOR_ANSWER = (
+    "2. missing — the ANSWER photo will be redrawn with the seller's product, from these seller photos only.\n"
+    "   First look at the ANSWER line drawing itself and note every part, face and side it shows (e.g. the outside of one\n"
+    "   ear cup AND the inner cushion of the other, the strap, the sole edge) — the parts list above is only a hint.\n"
+    "   List the photos the seller must still add so that EVERY one of those can be drawn from a real photo instead\n"
+    "   of being invented — e.g. the\n"
+    "   face the ANSWER shows that no seller photo shows, a piece the ANSWER lays out that is hidden, cut off or\n"
+    "   missing in the seller photos. Only what this ANSWER needs. At most 4. Empty if the photos already cover it.\n"
+    "   For each: what (short Korean, e.g. \"상자 앞면을 정면에서 찍은 사진\") and hint (one short Korean sentence on how\n"
+    "   to take it so it matches the ANSWER).\n")
+
+
+def answer_text(ref: dict | None) -> str:
+    """정답 사진을 글로 — 무엇을 어떻게 놓은 사진인가 (note) · 배치 (layout) · 꼭 보여야 할 부위 (needs)."""
+    if not ref:
+        return ""
+    lines = [f"ANSWER photo: {ref['note']}" if ref.get("note") else "",
+             f"ANSWER layout: {ref['layout']}" if ref.get("layout") else "",
+             ("ANSWER parts that must come from the seller photos (a hint, may be incomplete — the ANSWER photo itself "
+              "line drawing decides):\n" + "\n".join(f"- {x}" for x in ref["needs"]))
+             if ref.get("needs") else ""]
+    return "\n".join(x for x in lines if x)
+
+
+def photo_review_prompt(n: int, with_answer: bool, ref: dict | None = None) -> str:
+    """사진마다 무엇이 보이나 · 더 필요한 사진 (10-09) — 규칙 각도 라벨 · 필수 면 경고를 대신한다.
+    10-11: 정답이 있으면 정답 사진 + 정답 글(note · layout · needs)을 같이 주고, 더 필요한 사진은 "그 정답을 만들려면" 기준.
+    옛 Langfuse 판이 새 항목 없이 덮지 않게 이름을 바꿨다 (v3)."""
+    text = answer_text(ref) if with_answer else ""
     return get_prompt_text(
-        "photo_review", fallback=frag("photo_review"), n_last=str(n - 1),
-        answer_note=("\nThe LAST image is an ANSWER photo: a well-made listing photo of a similar product that shows the "
-                     "target result. It is a different product — use it only to judge what the seller's photos still lack."
-                     if with_answer else ""),
-        answer_goal=" and the result can look like the answer photo" if with_answer else "",
-        # 정답이 필요로 하는 부위 · 면 (각도 대신, 10-09 사용자: "게임판 앞면", "코트 상반부", "뒷면")
-        needs=("\nThe listing photo must show these parts (judge base, with and missing against them):\n"
-               + "\n".join(f"- {x}" for x in needs) + "\n") if needs else "")
+        "photo_review_v3", fallback=frag("photo_review"), n_last=str(n - 1),
+        fit_item=("5. fit — can a listing photo of the seller's product in the ANSWER composition be made from these "
+                  "photos without inventing any part the photos do not show? ok: true or false. need: when false, which "
+                  "photo the seller should add, in short Korean. Empty when true.\n" if with_answer else ""),
+        fit_json=(', "fit": {"ok": bool, "need": str}' if with_answer else ""),
+        answer_note=("\nThe LAST image is the ANSWER: a LINE DRAWING traced from a well-made listing photo of a similar "
+                     "product. The listing photo will be drawn to follow this line drawing. It is a different product — use "
+                     "it only for which parts, faces and pieces must be shown and how they are placed, never for its look. "
+                     "Only what the line drawing shows counts." if with_answer else ""),
+        missing_item=MISSING_FOR_ANSWER if with_answer else MISSING_TRUST,
+        needs=("\n" + text + "\n(judge base, with and missing against the ANSWER above)\n") if text else "")
 
 
 def composition_check_prompt(n: int) -> str:

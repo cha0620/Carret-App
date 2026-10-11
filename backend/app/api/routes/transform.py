@@ -92,13 +92,10 @@ def analyze(req: AnalyzeRequest):
     out = pipeline.load_analysis(req.file_id) or pipeline.analyze_original(req.file_id, original)
     if out.get("detect_failed"):
         raise HTTPException(status_code=503, detail="분석하지 못했습니다 — 변환은 할 수 있어요")
-    reason = pipeline._composite_first_reason(out)
-    route = "generate" if reason is None else "original" if reason == "inside_view" else "composite"
     objects = [{"index": i, **o} for i, o in enumerate(out.get("objects") or [])]
     return AnalyzeResponse(item=out.get("item", "object"), item_count=out.get("item_count") or 1,
                            objects=objects, photo_type=out.get("photo_type"),
-                           wear_level=out.get("wear_level"), text_level=out.get("text_level"),
-                           route=route, reason=reason)
+                           wear_level=out.get("wear_level"), text_level=out.get("text_level"))
 
 
 def _checked_extra_views(req: TransformRequest) -> list[str] | None:
@@ -153,7 +150,7 @@ def transform(req: TransformRequest, background: BackgroundTasks):
                 sell, accessories, mains = None, None, None
         key = _result_key(req, extras, ref)
         out = pipeline.run_transform(req.file_id, key, defer_signals=True, note=req.note,
-                                     composition=req.composition, sell=sell, mains=mains,
+                                     sell=sell, mains=mains,
                                      extra_view_ids=extras, extra_views_explicit=bool(extras), user_mode=req.mode,
                                      clean_prompt="set",   # 앱 기본 (10-09): 세트면 종류 · 개수 JSON + 개수 게이트, 아니면 최소 문장
                                      # 정답 = 선 그림 + 구도 문장 (원본 정답 사진은 넣지 않는다 — 사용자 규칙)
@@ -189,7 +186,6 @@ def transform(req: TransformRequest, background: BackgroundTasks):
         detect_failed=out.get("detect_failed", False),
         verify_failed=out.get("verify_failed", False),
         composite_reason=out.get("composite_reason"),
-        risk_reason=out.get("risk_reason"),
         detail_pieces=out.get("detail_pieces") or [],
         detail_requests=out.get("detail_requests") or [],
         photo_type=out.get("photo_type"),

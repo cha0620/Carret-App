@@ -35,7 +35,7 @@ def save_inspect(s: State) -> dict:
             "sell": s.get("sell"), "leave_out": s.get("leave_out") or [],
             "mode": s.get("mode", "generate"),
             "composite_reason": s.get("composite_reason"),
-            "user_mode": s.get("user_mode"), "risk_reason": s.get("risk_reason"),
+            "user_mode": s.get("user_mode"),
             "gate_retried": s.get("gate_retried", False),
             "composite_error": s.get("composite_error"),
             "checks": s.get("checks", []),

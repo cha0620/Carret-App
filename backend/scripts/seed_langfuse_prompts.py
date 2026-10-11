@@ -42,7 +42,7 @@ def prompts_to_seed() -> dict:
         "objects": frag("objects"),       # 여러 장을 물건별로 묶기 (10-04) — {{n}} · {{n_last}} 같음
         "components": frag("components"),   # 구성품만 빠르게 (10-09)
         "layout_plan": frag("layout_plan"),   # 세트 배치 — 정답 사진 기준 (10-09)
-        "photo_review": frag("photo_review"),   # 사진마다 보이는 것 · 더 필요한 사진 (10-09)
+        "photo_review_v3": frag("photo_review"),   # 사진마다 보이는 것 · 더 필요한 사진 (10-09) · 정답 기준 더 필요한 사진 · 구도 가능 (10-11)
         "composition_check": frag("composition_check"),   # 정답 구도로 만들 수 있나 — 모델이 판단 (10-11)
         "count_pieces": frag("count_pieces"),   # 세트 구성품 종류별 개수 (10-09 개수 게이트) — {{lines}}
         "prep_check": frag("prep_check"),   # 정답 사진의 준비물이 판매자 사진에 다 보이나 (10-05) — {{lines}}

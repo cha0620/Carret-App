@@ -393,3 +393,53 @@ def test_composition_check_parses_and_requires_ok(monkeypatch):
     monkeypatch.setattr(detector, "get_client", fake)
     with pytest.raises(ValueError):
         detector.composition_check([b"a"], b"ans")
+
+
+# ── photo_review fit (10-11) ──
+def _review(monkeypatch, body, answer=None):
+    import json as _json
+    fake_get_client, _ = _make_fake_get_client(_json.dumps({"photos": [], **body}))
+    monkeypatch.setattr(detector, "get_client", fake_get_client)
+    return detector.photo_review([b"a"], answer=answer)
+
+
+def test_photo_review_fit_none_without_answer(monkeypatch):
+    out = _review(monkeypatch, {"fit": {"ok": False, "need": "뒷면"}})
+    assert out["fit"] is None
+
+
+def test_photo_review_fit_false_keeps_need_truncated(monkeypatch):
+    out = _review(monkeypatch, {"fit": {"ok": False, "need": "가" * 100}}, answer=b"ans")
+    assert out["fit"] == {"ok": False, "need": "가" * 80}
+
+
+def test_photo_review_fit_true_clears_need(monkeypatch):
+    out = _review(monkeypatch, {"fit": {"ok": True, "need": "뒷면"}}, answer=b"ans")
+    assert out["fit"] == {"ok": True, "need": ""}
+
+
+def test_photo_review_fit_non_bool_ok_is_none(monkeypatch):
+    out = _review(monkeypatch, {"fit": {"ok": "true", "need": "x"}}, answer=b"ans")
+    assert out["fit"] is None
+
+
+def test_photo_review_prompt_fit_only_with_answer():
+    from app import prompts as P
+    assert '"fit"' in P.photo_review_prompt(2, True)
+    assert '"fit"' not in P.photo_review_prompt(2, False)
+
+
+
+
+# ── photo_review: 정답 기준 더 필요한 사진 (10-11) ──
+def test_photo_review_prompt_missing_is_for_answer_when_ref():
+    """정답이 있으면 정답 글(note · layout · needs)이 들어가고 missing 은 "정답을 만들려면" 기준, 없으면 신뢰 기준."""
+    from app.prompts import photo_review_prompt
+    ref = {"note": "장난감 — 상자 뒤, 내용물 앞", "layout": "Stand the box at the back.", "needs": ["레고 상자 앞면"]}
+    with_ans = photo_review_prompt(3, True, ref)
+    assert "ANSWER photo: 장난감 — 상자 뒤, 내용물 앞" in with_ans and "Stand the box at the back." in with_ans
+    assert "LINE DRAWING" in with_ans
+    assert "- 레고 상자 앞면" in with_ans and "ANSWER photo will be redrawn" in with_ans
+    assert "buyer can trust" not in with_ans
+    plain = photo_review_prompt(3, False, ref)
+    assert "buyer can trust" in plain and "ANSWER" not in plain

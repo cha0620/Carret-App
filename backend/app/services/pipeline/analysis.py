@@ -41,16 +41,8 @@ def read_text(s: State) -> dict:
         except Exception as e:
             logger.warning(f"[read_text] 실패(무시): {e}")
             return {"item_texts": [], "item_box": box}
-    upd = {"item_texts": out["texts"], "item_box": box or out.get("item_box")}
-    # analyze 가 simple 이라고 했어도 막상 읽어 보니 잔글씨가 많으면 — 생성 전 배경 교체 (안전망).
-    # dev 그래프(provided_result)는 배경 교체로 가지 않는다 (inspect 에 엉뚱한 사유가 남지 않게).
-    # 생성 전 배경 교체가 이미 실패하고 온 길(composite_error)이면 다시 보내지 않는다 (무한 왕복 방지).
-    n = settings.composite_first_min_texts
-    if (n and len(out["texts"]) >= n and s.get("provided_result") is None
-            and not s.get("composite_error")):
-        logger.info(f"[read_text] 글자 {len(out['texts'])}줄 → 생성 전 배경 교체 모드로: text_heavy")
-        upd["composite_reason"] = "text_heavy"
-    return upd
+    # 글자가 많아도 배경 교체로 보내지 않는다 (10-11 — 생성 전 판단은 지웠다)
+    return {"item_texts": out["texts"], "item_box": box or out.get("item_box")}
 
 
 def _analysis_name(file_id: str) -> str:

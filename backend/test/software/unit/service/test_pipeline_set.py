@@ -231,8 +231,8 @@ def test_plan_layout_uses_answer_photo_caches_and_falls_back(monkeypatch):
 
 def test_photo_review_prompt_lists_needs_only_when_given():
     from app import prompts as P
-    assert "- 게임판 앞면" in P.photo_review_prompt(2, True, ["게임판 앞면"])
-    assert "must show these parts" not in P.photo_review_prompt(2, False, None)
+    assert "- 게임판 앞면" in P.photo_review_prompt(2, True, {"needs": ["게임판 앞면"]})
+    assert "must come from the seller photos" not in P.photo_review_prompt(2, False, None)
 
 
 def test_set_pieces_mains_marks_main_rest_component():

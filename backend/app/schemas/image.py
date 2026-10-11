@@ -40,8 +40,6 @@ class TransformRequest(BaseModel):
                       description="원하는 분위기 한 줄 (선택, 40자) — 배경에만. 물건을 바꾸는 요청은 422")
     purpose: Literal["secondhand", "feed", "shop"] | None = Field(
         default=None, description="어디에 올릴 사진인가 — 무드 추천용, 결과는 바꾸지 않는다")
-    composition: str | None = Field(
-        default=None, description="고른 정석 구도 (GET /api/items 의 compositions[].key) — 구도의 틀로만 정리, 각도는 그대로")
 
     mode: Literal["generate", "composite"] | None = Field(
         default=None, description="판매자가 고른 기능 — generate(AI 생성) · composite(배경만 교체). 없으면 분석 판단대로 (10-11)")
@@ -113,14 +111,6 @@ class TransformRequest(BaseModel):
             raise ValueError("팔 물건을 하나 이상, 0~19 번호로 골라 주세요")
         return v
 
-    @field_validator("composition")
-    @classmethod
-    def _known_composition(cls, v: str | None) -> str | None:
-        from app.services.compositions import BY_KEY
-        if v is not None and v not in BY_KEY:
-            raise ValueError(f"알 수 없는 구도: {v}")
-        return v
-
     @field_validator("preset")
     @classmethod
     def _known_mood(cls, v: str) -> str:
@@ -153,12 +143,10 @@ class TransformResponse(BaseModel):
     accessories: list[int] = Field(default_factory=list, description="받은 부가품 번호 그대로 (게시글 구성 표시용, 10-09)")
     item: str = "object"
     considered: list[str] = []
-    risk_reason: str | None = Field(default=None, description="생성이 잘 안될 이유가 있는데 생성을 골랐을 때 그 이유 (10-11)")
     detail_requests: list[str] = Field(default_factory=list, description="따로 받을 검증 사진 — 글자 근접 등 (10-11)")
     detail_pieces: list[DetailPiece] = Field(default_factory=list, description="대표사진(본체 하나)에서 뺀 구성품 — 상세 · 인증 목록, 원하면 따로 생성 (10-11)")
     composite_reason: str | None = Field(
-        default=None, description="생성하지 않은 이유: detect_failed | inside_view | document | text_dense | "
-                                  "text_heavy | wear_heavy | cut_off | overlap | multi_item | gate_failed | verify_failed")
+        default=None, description="생성하지 않은 이유: user_choice (판매자가 [배경만 바꾸기]를 골랐다, 10-11)")
     verify_failed: bool = Field(default=False,
                                 description="결과 보존 검사(verify) 호출 실패 — 보존 여부를 검증하지 못함")
     detect_failed: bool = Field(default=False,
@@ -232,9 +220,6 @@ class AnalyzeResponse(BaseModel):
     photo_type: str | None = None
     wear_level: str | None = None
     text_level: str | None = None
-    route: Literal["generate", "composite", "original"] = Field(
-        description="예상 경로 — 생성(무드대로 배경) | 배경 교체(무드 색 단색) | 원본 그대로")
-    reason: str | None = Field(default=None, description="생성하지 않는 이유 (plan 과 같은 값)")
 
 
 # ===== 여러 각도 업로드 (10-01) =====
@@ -254,25 +239,14 @@ class ItemPhoto(BaseModel):
     object: str | None = Field(default=None, description="이 사진이 어느 물건인지 (ItemObject.id) — 모르면 None")
 
 
-class MissingView(BaseModel):
-    view: str
-    label: str
-    hint: str = Field(description="무엇을 찍으면 되는지")
-
-
 class Retake(BaseModel):
     file_id: str
     reason: str
 
 
-class CompositionOption(BaseModel):
-    key: str
-    label: str
-    desc: str
-    image: str = Field(description="구도 그림 주소 (선 그림)")
-    photo_ids: list[str] = Field(default_factory=list, description="이 구도로 만들 수 있는 사진 (좋은 것 먼저)")
-    available: bool = False
-    hint: str | None = Field(default=None, description="쓸 사진이 없을 때 — 무엇을 찍으면 되는지")
+class RefSuggestion(BaseModel):
+    file: str = Field(description="정답 파일 (GET /api/refs 의 file)")
+    score: float = Field(description="대표 사진과의 CLIP 유사도")
 
 
 class ItemObject(BaseModel):
@@ -293,10 +267,9 @@ class ItemObject(BaseModel):
         default=None, description="product 만: 본품 | 본구성품(빠지면 본품이 완전하지 않음) | 부가품(없어도 같은 상품 — 썸네일에서 뺀다)")
     part_of: str | None = Field(default=None, description="본구성품 · 부가품: 어느 본품 것인가 (id)")
     photo_ids: list[str] = Field(default_factory=list)
-    missing: list[MissingView] = Field(default_factory=list)
     retake: list[Retake] = Field(default_factory=list)
-    complete: bool = True
-    compositions: list[CompositionOption] = Field(default_factory=list)
+    ref_suggest: list[RefSuggestion] = Field(
+        default_factory=list, description="product 만: 대표 사진과 닮은 정답 구도 (최대 3, 좋은 것 먼저 — 낮으면 비움, 10-11)")
 
 
 class ItemObjectEdit(BaseModel):
@@ -346,15 +319,11 @@ class ItemResponse(BaseModel):
     item: str = "object"
     category: str = "other"
     photos: list[ItemPhoto]
-    missing: list[MissingView] = Field(default_factory=list, description="빠진 면 — 더 찍으면 좋은 것")
     retake: list[Retake] = Field(default_factory=list, description="다시 찍으면 좋은 사진")
     complete: bool = False
     views_failed: bool = Field(default=False, description="각도 분류 실패 — 빠진 면을 모른다")
-    compositions: list[CompositionOption] = Field(default_factory=list,
-                                                  description="이 종류의 정석 구도 (지금은 신발만)")
     objects: list[ItemObject] = Field(default_factory=list,
-                                      description="사진 속 물건들 (10-04). 위의 item · category · missing · "
-                                                  "compositions 는 대표 물건(파는 상품 중 사진이 가장 많은 것) 기준")
+                                      description="사진 속 물건들 (10-04). 위의 item · category 는 대표 물건(파는 상품 중 사진이 가장 많은 것) 기준")
     main_object: str | None = Field(default=None, description="대표 물건 id")
     user_edited: bool = Field(default=False, description="사용자가 묶음을 확인 · 수정했나")
     needs_review: bool = Field(default=False, description="확인한 뒤 더 올린 사진을 AI 가 붙였다 — 다시 확인받는다")

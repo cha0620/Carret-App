@@ -241,17 +241,21 @@ def layout_plan(answer: bytes, photos: list[bytes], pieces: list[tuple[str, int]
     return text
 
 
-def photo_review(images: list[bytes], answer: bytes | None = None, needs: list[str] | None = None) -> dict:
+def photo_review(images: list[bytes], answer: bytes | None = None, ref: dict | None = None) -> dict:
     """사진마다 무엇이 보이나 + 더 필요한 사진 (10-09, VLM 1회) — 규칙 각도 라벨 · 필수 면 경고를 대신한다.
     반환: {"photos": [str (사진 순서)], "missing": [{"what", "hint"}], "base": int, "with": [int]} — base · with 는
-    기준 사진 · 같이 넣을 사진 추천 (규칙 각도로 고르던 것을 대신). 깨지면 예외 (호출부가 규칙 경고로)."""
+    기준 사진 · 같이 넣을 사진 추천 (규칙 각도로 고르던 것을 대신). 깨지면 예외 (호출부가 규칙 경고로).
+    10-11: "fit" — 정답이 있으면 정답 구도를 만들 사진이 다 있나 {"ok", "need"} (없거나 깨지면 None).
+    ref 는 고른 정답 항목 (style_refs.json) — 정답 글(note · layout · needs)을 같이 넣고 missing 을 그 정답 기준으로.
+    answer 는 정답의 **선 그림** (10-11 사용자: 생성이 따르는 그림 기준으로만 더 달라고 한다 — 원본 정답 사진엔 있어도
+    선 그림에서 빠진 부분은 생성에 안 쓰이니 요청하지 않는다)."""
     client = get_client()
-    prompt = P.photo_review_prompt(len(images), answer is not None, needs)
+    prompt = P.photo_review_prompt(len(images), answer is not None, ref)
     parts = []
     for i, b in enumerate(images):
         parts += [f"Seller photo {i}:", image_part(b, "image/jpeg", "photo_review")]
     if answer is not None:
-        parts += ["ANSWER photo:", image_part(answer, "image/jpeg", "photo_review")]
+        parts += ["ANSWER line drawing:", image_part(answer, "image/png", "photo_review")]
     with observe("photo_review", as_type="generation", model=vlm_model("photo_review"), input=prompt) as obs:
         resp = client.models.generate_content(
             model=vlm_model("photo_review"), contents=[*parts, prompt],
@@ -275,7 +279,12 @@ def photo_review(images: list[bytes], answer: bytes | None = None, needs: list[s
     base = data.get("base") if isinstance(data.get("base"), int) and 0 <= data.get("base") < n else 0
     with_ = [i for i in (data.get("with") or []) if isinstance(i, int) and not isinstance(i, bool)
              and 0 <= i < n and i != base]
-    return {"photos": shows, "missing": missing, "base": base, "with": list(dict.fromkeys(with_))[:2]}
+    # 정답 구도를 만들 사진이 다 있나 (10-11) — 정답이 있고 ok 가 bool 일 때만, 아니면 None (모르는 걸 안내로 띄우지 않는다)
+    f = data.get("fit") if isinstance(data.get("fit"), dict) else None
+    fit = ({"ok": f["ok"], "need": (_text(f.get("need")) or "")[:80] if f["ok"] is False else ""}
+           if answer is not None and f is not None and isinstance(f.get("ok"), bool) else None)
+    return {"photos": shows, "missing": missing, "base": base, "with": list(dict.fromkeys(with_))[:2],
+            "fit": fit}
 
 
 def composition_check(images: list[bytes], answer: bytes) -> dict:

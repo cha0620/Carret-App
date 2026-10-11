@@ -14,7 +14,6 @@ class State(TypedDict, total=False):
     file_id: str
     preset_key: str            # 스타일 키 (무드, 한 줄이 있으면 무드-해시) — 저장 이름·DB 키
     style_note: str            # 사용자가 적은 무드 한 줄 (clean_note 통과) — 배경에만
-    composition: str | None    # 고른 정석 구도 키 (services/compositions.py) — 틀만, 각도는 그대로
     mains: list | None         # 판매자가 본품으로 고른 번호 (sell 안) — 없으면 분석 role (10-09)
     sell: list | None          # 사용자가 고른 팔 물건 (analyze objects 의 번호) — None 이면 analyze 판단대로
     answer_count: int | None   # eval 정답 개수 — 고르는 화면 없이 정답대로 (10-03)
@@ -34,19 +33,17 @@ class State(TypedDict, total=False):
     item_texts: list           # 원본 물건 위 글자 [{text, x1..}] → generate 프롬프트
     text_level: str | None     # analyze 가 본 물건 위 글자 수준: none | simple | dense(잔글씨·원본에서도 못 읽음) (실패면 None)
     item_box: dict | None      # 원본에서 물건 위치 (0-1000) — 오리기 범위 (배경 교체 · item_dino)
-    item_cut_off: bool         # analyze: 판매 물건이 사진 밖으로 잘림 — 생성하지 않고 배경 교체(cut_off)
-    pieces_overlap: bool       # analyze: 세트 구성품끼리 겹쳐 가려짐 — 생성하지 않고 배경 교체(overlap), 다시 찍기 안내 (10-10)
+    item_cut_off: bool         # analyze: 판매 물건이 사진 밖으로 잘림 — 기록만 (10-11: 배경 교체로 보내지 않는다)
+    pieces_overlap: bool       # analyze: 세트 구성품끼리 겹쳐 가려짐 — 기록만 (10-11)
     item_count: int            # 팔려는 물건 개수 — analyze 판단, 사용자가 고르면 고른 수, eval 은 정답.
-                               #   2개 이상이면 생성하지 않고 배경 교체(multi_item) — 10-03, 개수 문장(count_lock)은 효과 없어 뺐다
+                               #   2개 이상이면 구도 문장을 붙이지 않는다 (10-03 CD 2장)
     gate_retried: bool         # verify 게이트 실패로 재생성을 이미 1회 했나
     gate_note: str             # 그 재생성 때 프롬프트에 붙인 "사라진 하자" 목록
     added_text: list           # 생성본에 새로 생긴 글자 · 로고 (원본에 없던 것) — 있으면 게이트 실패
     gate_added_text: list      # 게이트에서 떨어진 생성본의 added_text (재생성 · 배경 교체 뒤에도 남긴다)
     mode: str                  # "generate" | "composite"(원본 물건 + 배경만 교체) | "composite_failed"
                                #   | "original"(원본 그대로 — inside_view 등)
-    composite_reason: str | None   # 생성하지 않은 이유: detect_failed | inside_view | document | text_dense
-                                   #   | cut_off(물건이 잘림) | overlap(구성품이 겹침) | multi_item(여러 개)
-                                   #   | text_heavy | wear_heavy | gate_failed | verify_failed
+    composite_reason: str | None   # 생성하지 않은 이유: user_choice (판매자가 [배경만 바꾸기], 10-11 — 생성 전 판단은 지웠다)
     provided_result: bytes     # dev 그래프: generate 대신 쓸 결과 이미지
     composite_error: str | None
     result: bytes
@@ -59,7 +56,6 @@ class State(TypedDict, total=False):
     item_patch_similarity: float | None   # 같은 누끼 쌍의 DINO 패치 하위 1% (item_patch 가드)
     ocr_local_recall: float | None    # 로컬 OCR 글자 recall (ocr_local 가드, 설정으로 켤 때만)
     checks: list
-    gate_checks: list          # 배경 교체로 가기 전 생성본 게이트의 checks (무엇이 사라졌나 — 기록용)
     gate_passed: bool | None
     prompt_used: str
     objects: list              # analyze 의 사진 속 물건 [{what, box, for_sale, role}] — 세트 구성품 (10-09 State 에 추가:
@@ -70,7 +66,6 @@ class State(TypedDict, total=False):
     rep_pieces: list           # 대표사진 조각 [(종류, 1)] — 본체 하나 (apply_selection, 10-11)
     detail_pieces: list        # 대표사진에서 뺀 구성품 [{what, count}] — 상세 · 인증용 목록 (10-10)
     user_mode: str | None      # 판매자가 고른 기능 — "generate" | "composite" | None(분석 판단대로) (10-11)
-    risk_reason: str | None    # 생성이 잘 안될 이유(_composite_first_reason)가 있는데 생성을 골랐다 — 실패율 기록용 (10-11)
     fixed_pieces: list         # 정답에 미리 적어 둔 구성품 [(종류, 개수)] — 있으면 분석 objects 대신 (eval/data/posts, 10-10)
     extra_views_explicit: bool  # extra_view_ids 를 판매자가 화면에서 보냈다 (10-09) — multi_view 설정과 무관하게 쓴다
     extra_view_ids: list       # multi_view: 같은 물건의 다른 각도 원본 file_id (최대 2)

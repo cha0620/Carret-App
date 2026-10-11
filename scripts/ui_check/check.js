@@ -31,13 +31,16 @@ const item = {
   photos: F.map((f, i) => ({ file_id: f, url: `/fake/${i}`, object: 'o1', view: null, state: null, slot: 'product',
                             source: 'photo', view_label: null, state_label: null })),
   objects: [{ id: 'o1', kind: 'product', label: '레고 키마 스콜피온 세트', desc: '갈색 전갈 모양 탈것과 미니피겨 3개, 설명서 2권',
-              category: 'pack', for_sale: true, count: 1, photo_ids: F, missing: [], compositions: [], proof_type: null, proof_for: null }],
-  main_object: 'o1', missing: [], retake: [], compositions: [], user_edited: false, needs_review: false,
+              category: 'pack', for_sale: true, count: 1, photo_ids: F, proof_type: null, proof_for: null,
+              ref_suggest: [{ file: 'style_lego.jpg', score: 0.68 }, { file: 'style_pack.jpg', score: 0.63 }] }],
+  main_object: 'o1', retake: [], user_edited: false, needs_review: false,
 };
 const review = {
   object_id: 'o1', ref_file: 'style_lego.jpg', needs: [],
   photos: [{ file_id: F[0], shows: '본체와 미니피규어 3개, 설명서 2권' }, { file_id: F[1], shows: '본체 옆면' }, { file_id: F[2], shows: '설명서 표지' }],
   missing: [{ what: '미니피규어 뒷면', hint: '피규어를 뒤집어 한 장' }], base_file_id: F[0], with_ids: [F[1], F[2]],
+  // UI_FIT_NEED="..." — 고른 구도를 만들 사진이 모자랄 때 안내 확인 (10-11)
+  fit: process.env.UI_FIT_NEED ? { ok: false, need: process.env.UI_FIT_NEED } : { ok: true, need: '' },
 };
 
 async function shoot(browser, name, width) {
@@ -56,7 +59,7 @@ async function shoot(browser, name, width) {
     }
     if (u.pathname === '/api/items' && r.method() === 'POST') return j(item);
     if (u.pathname === '/api/components') return j({ objects: objs, contents_hidden: false, extras: [] });
-    if (u.pathname === '/api/analyze') return j({ item: 'lego set', item_count: 1, objects: objs, route: process.env.UI_REASON ? 'composite' : 'generate', reason: process.env.UI_REASON || null });  // UI_REASON=overlap 등 — 배경 교체 안내 문구 확인
+    if (u.pathname === '/api/analyze') return j({ item: 'lego set', item_count: 1, objects: objs });
     if (u.pathname.endsWith('/review')) return j(review);
     // 변환은 서버의 요청 검증만 거치게 — 가짜 물건이라 400(같은 물건 아님)·404 는 정상, 422(형식 오류)는 실패 (10-09 accessories:null 422)
     // UI_RESULT=1 — 결과 화면(대표 본체 + 구성품 검증 목록 · 따로 만들기) 확인용 가짜 변환 (10-11)

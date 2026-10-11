@@ -75,7 +75,6 @@ def main():
                     help="생성 전에 구도 검사(VLM 1회, detector.composition_check) — 모델이 정답 구도로 못 만든다고 하면 생성하지 않고 '구도 부족(어느 방면)' 으로 기록 (10-11)")
     ap.add_argument("--picks", help="고른 물건 JSON {post: [what, ...]} (10-11) — 첫 번째가 본체, 고른 것 전부를 생성")
     ap.add_argument("--no-gt-pieces", action="store_true", help="세트 구성품을 정답(data/posts/<post>/objects.json) 대신 분석에서")
-    ap.add_argument("--force-generate", action="store_true", help="글자 많음(text_dense) · 잘림(cut_off) · 겹침(overlap) 이어도 배경 교체로 보내지 않고 생성 (10-10 실험)")
     ap.add_argument("--set-prompt", action="store_true", help="세트면 종류 · 개수 JSON, 아니면 최소 프롬프트 (10-09) + 개수 게이트")
     ap.add_argument("--ref-sketch", action="store_true", help="--ref-text 와 함께: 정답 선 그림도 같이 넣는다")
     a = ap.parse_args()
@@ -99,11 +98,6 @@ def main():
     from app.services import pipeline, style_refs
     from app.services.ai import detector
     from app.services.persistence import storage
-    if a.force_generate:
-        _first = pipeline._composite_first_reason
-        # 그 두 판단만 지우고 다시 본다 — 뒤의 wear_heavy · overlap · multi_item 은 그대로 (10-10 리뷰).
-        # dense 를 생성으로 보내면 글자 읽기 · 글자 잠금이 빠진다 — 결과를 "dense 도 된다"로 읽지 않는다
-        pipeline._composite_first_reason = lambda s: _first({**s, "text_level": "simple", "item_cut_off": False, "pieces_overlap": False})
     from main import app
     db.init_db()
     client = TestClient(app)
@@ -145,12 +139,7 @@ def main():
                     storage.load_original, detector.prep_check)
             else:
                 planned = None
-            if planned:
-                jobs = [(None, planned[1])]
-            else:
-                jobs = [(c["key"], c["photo_ids"][0]) for c in o.get("compositions") or [] if c.get("available") and c.get("photo_ids")]
-                jobs = jobs or [(None, o["photo_ids"][0])]
-            for comp, main_id in jobs:
+            for main_id in [planned[1] if planned else o["photo_ids"][0]]:
                 rest = [f for f in o["photo_ids"] if f != main_id]
                 rest.sort(key=lambda f: views.get(f) == views.get(main_id))   # 각도가 다른 것 먼저
                 extras = rest[:2]
@@ -163,7 +152,7 @@ def main():
                     ids = o["photo_ids"][:4]
                     cc = detector.composition_check([storage.load_original(f) for f in ids], style_refs.answer_photo(planned[0]))
                     if not cc["ok"]:
-                        out.append({"post": post, "object": o["id"], "label": o.get("label"), "composition": comp,
+                        out.append({"post": post, "object": o["id"], "label": o.get("label"),
                                     "main": names[main_id], "planned_ref": planned[0], "mode": "skipped_view",
                                     "view_missing": [{"what": cc["need"], "hint": cc["why"]}], "result": None,
                                     "photos_checked": [names[f] for f in ids], "elapsed_s": round(time.time() - t0, 1)})
@@ -172,23 +161,23 @@ def main():
                 used = [names[f] for f in [main_id, *extras]]
                 gt = (picked_pieces(post, used, picks[post]) if post in picks
                       else None if a.no_gt_pieces else gt_pieces(post, used))   # 한 번만 — 기록과 실제가 같게
-                res = pipeline.run_transform(main_id, a.preset, composition=comp, extra_view_ids=extras,
+                res = pipeline.run_transform(main_id, a.preset, extra_view_ids=extras,
                                              ref_category=o.get("category"), ref_view=views.get(main_id),
                                              ref_file=planned[0] if planned else None, ref_layout=layout,
                                              ref_sketch=a.ref_sketch, clean_prompt=("text:" + Path(a.prompt_file).read_text(encoding="utf-8").strip()) if a.prompt_file else "set" if a.set_prompt else "min" if a.min_prompt else a.clean_prompt,
                                              ref_keep=keep,
                                              fixed_pieces=gt,
                                              user_mode=None if a.mode == "auto" else a.mode)
-                tag = f"{post}__{o['id']}{'_' + comp if comp else ''}"
+                tag = f"{post}__{o['id']}"
                 src = storage.BASE / "result" / res["result_name"]
                 if src.exists():
                     shutil.copy(src, run_dir / "files" / f"{tag}_result.jpg")
                 ref = res.get("style_ref")
-                row = {"post": post, "object": o["id"], "label": o.get("label"), "composition": comp,
+                row = {"post": post, "object": o["id"], "label": o.get("label"),
                        "main": names[main_id], "main_view": views.get(main_id), "planned_ref": planned[0] if planned else None,
                        "extras": [names[f] for f in extras], "all": [names[f] for f in o["photo_ids"]],
                        "style_ref": ref[0] if ref else None, "ref_layout": layout, "model": os.environ.get("FAL_MODEL"), "prompt_used": res.get("prompt_used"), "gen_prompts": res.get("gen_prompts") or [], "count_mismatch": res.get("count_mismatch"), "gt_pieces": gt, "result": f"{tag}_result.jpg",
-                       "mode": res.get("mode"), "composite_reason": res.get("composite_reason"), "risk_reason": res.get("risk_reason"),
+                       "mode": res.get("mode"), "composite_reason": res.get("composite_reason"),
                        "gate_passed": res.get("gate_passed"), "added_text": res.get("added_text"),
                        "checks": res.get("checks"), "gen_attempts": res.get("gen_attempts"),
                        "elapsed_s": round(time.time() - t0, 1)}

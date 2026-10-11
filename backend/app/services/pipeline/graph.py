@@ -19,7 +19,7 @@ from app.services.pipeline.checks import (
     validate_result,
     verify,
 )
-from app.services.pipeline.composite import _route_after_composite, composite, keep_original
+from app.services.pipeline.composite import _route_after_composite, composite
 from app.services.pipeline.results import (
     ITEM_SIGNAL_MODES,
     _clear_quality,
@@ -48,8 +48,7 @@ def build(*, dev: bool = False):
              ("finalize", finalize)]
     nodes += ([("use_provided", use_provided)] if dev else
               [("generate", generate), ("validate_result", validate_result),
-               ("mark_gate_retry", mark_gate_retry), ("composite", composite),
-               ("keep_original", keep_original)])
+               ("mark_gate_retry", mark_gate_retry), ("composite", composite)])
     for n, f in nodes:
         g.add_node(n, f)
 
@@ -69,7 +68,7 @@ def build(*, dev: bool = False):
     else:
         g.add_conditional_edges("plan", _route_after_plan,
                                 {"generate": "generate", "composite": "composite",
-                                 "read_text": "read_text", "keep_original": "keep_original"})
+                                 "read_text": "read_text"})
         g.add_conditional_edges("read_text", _route_after_read_text,
                                 {"generate": "generate", "composite": "composite"})
         g.add_edge("generate", "validate_result")
@@ -77,13 +76,10 @@ def build(*, dev: bool = False):
                                 {"retry": "generate", "ok": "score_similarity"})
         g.add_edge("score_similarity", "verify")
         g.add_conditional_edges("verify", _route_after_verify,
-                                {"done": "save_inspect", "regen": "mark_gate_retry",
-                                 "composite": "composite"})
+                                {"done": "save_inspect", "regen": "mark_gate_retry"})
         g.add_edge("mark_gate_retry", "generate")
-        g.add_edge("keep_original", "save_inspect")
         g.add_conditional_edges("composite", _route_after_composite,
-                                {"ok": "score_similarity", "failed": "save_inspect",
-                                 "generate": "generate", "read_text": "read_text"})
+                                {"ok": "score_similarity", "failed": "save_inspect"})
     g.add_edge("save_inspect", "finalize")
     g.add_edge("finalize", END)
     return g.compile()
@@ -99,7 +95,7 @@ RECURSION_LIMIT = 80
 
 
 def run_transform(file_id: str, preset_key: str, *, defer_signals: bool = False,
-                  score_quality: bool = False, note: str = "", composition: str | None = None,
+                  score_quality: bool = False, note: str = "",
                   sell: list | None = None, answer_count: int | None = None,
                   extra_view_ids: list | None = None, ref_category: str | None = None,
                   ref_view: str | None = None, ref_file: str | None = None,
@@ -134,7 +130,7 @@ def run_transform(file_id: str, preset_key: str, *, defer_signals: bool = False,
             # 남겨 두면 새 결과에 옛 점수가 붙는다 (원본 그대로·채점 실패 때도)
             _clear_quality(f"{file_id}_{preset_key}.json")
             out = GRAPH.invoke({"file_id": file_id, "preset_key": preset_key, "style_note": note,
-                                "composition": composition, "sell": sell, "mains": mains, "answer_count": answer_count,
+                                "sell": sell, "mains": mains, "answer_count": answer_count,
                                 "extra_view_ids": extra_view_ids or [],
                                 "extra_views_explicit": extra_views_explicit,
                                 "ref_category": ref_category, "ref_view": ref_view, "ref_file": ref_file,
@@ -168,7 +164,6 @@ def run_transform(file_id: str, preset_key: str, *, defer_signals: bool = False,
                 "guard_report": out.get("guard_report", []),
                 "mode": out.get("mode", "generate"),
                 "composite_reason": out.get("composite_reason"),
-                "risk_reason": out.get("risk_reason"),
                 "detail_requests": detail_requests(out),
                 "photo_type": out.get("photo_type"),
                 "wear_level": out.get("wear_level"),
@@ -192,7 +187,6 @@ def run_transform(file_id: str, preset_key: str, *, defer_signals: bool = False,
                     "photo_check": result["photo_check"],
                     "mode": result["mode"],
                     "composite_reason": result["composite_reason"],
-                    "risk_reason": result["risk_reason"],
                     "photo_type": result["photo_type"],
                     "wear_level": result["wear_level"],
                     "detect_failed": result["detect_failed"],

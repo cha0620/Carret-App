@@ -55,11 +55,6 @@ class Settings(BaseSettings):              # ⭐ 대문자 클래스
     # 10-05 실험: 같은 물건의 다른 각도 사진(최대 2장)을 생성 · 없던 글자 검사에 같이 넣는다 (flux-2 edit 는 4장까지).
     # 결과 각도는 첫 장(주 사진)을 따른다. 물건이 섞이거나 둘이 될 수 있어 기본 꺼짐
     multi_view: bool = False
-    # 생성 전에 바로 배경 교체 모드로 보내는 기준 (0 = 끔). 생성 모델이 거의 확실히
-    # 못 지키는 사진에 FLUX·재생성·verify 비용을 쓰지 않기 위함. 경험값 — eval 로 조정.
-    #   글자 줄 수: 잔글씨 많은 물건(책·화장품)은 TEXT_LOCK 이 있어도 뭉개지기 쉽다
-    composite_first_min_texts: int = Field(default=12, ge=0)
-    #   하자는 개수가 아니라 analyze 의 wear_level=heavy 로 본다 (하자 앵커는 09-27 에 없앰)
     # 배경 교체 모드의 물건 오리기: "fal"(BiRefNet, 기본) | "local"(rembg)
     cutout_backend: str = "fal"
     # (ocr_guard — VLM 으로 결과 글자를 다시 읽어 비교하던 hard 가드 — 는 09-27 에 없앴다: 폰 사진 6장에서
@@ -101,6 +96,11 @@ class Settings(BaseSettings):              # ⭐ 대문자 클래스
     max_bytes: int = 10 * 1024 * 1024
     dev_tools: bool = True
     warmup_models: bool = True   # 서버 시작 뒤 DINO(·local 이면 rembg)를 미리 올린다 (app/core/warmup.py)
+    # 정답 구도 추천 (10-11, services/ai/ref_matcher.py — 로컬 CLIP): 1등이 이보다 낮으면 추천 없음,
+    # 2 · 3등은 1등과 이 차이 안일 때만
+    ref_suggest: bool = True
+    ref_suggest_min: float = 0.50
+    ref_suggest_gap: float = 0.06
 
     inspect_img: str | None = None
 

@@ -1,6 +1,6 @@
 """app.services.pipeline — 순수 규칙 (그래프 없이).
 
-- 생성 전 판단 표 (_composite_first_reason)
+- 생성 전 갈림길 (plan: 판매자가 배경 교체를 고를 때만 composite)
 - verify 체크리스트에 걸 글자 고르기 (_key_texts · _verify_targets) — 글자 하나가 통과 조건이 되므로
   어떤 글자를 거느냐가 오반려·놓침을 정한다
 - 게이트 재생성 문구 (mark_gate_retry)
@@ -32,16 +32,6 @@ def _anchors(n):
 
 def _box(text, x1, y1, x2, y2):
     return {"text": text, "x1": x1, "y1": y1, "x2": x2, "y2": y2}
-
-
-# ══ 생성 전 판단 ═══════════════════════════════════════════════════
-@pytest.mark.parametrize("state,expected", [
-    ({}, None),
-    # 사유 하나씩
-    ({"detect_failed": True}, "detect_failed"),
-    ({"photo_type": "inside_view"}, "inside_view"),])
-def test_composite_first_reason(state, expected):
-    assert pipeline_mod._composite_first_reason(state) == expected
 
 
 def test_key_texts_cap_keeps_largest_and_counts_only_kept():
@@ -220,31 +210,28 @@ def test_verify_targets_skips_accessory_and_loosens_small_component():
 _PLAN = {"file_id": "f" * 32, "preset_key": "studio_white"}
 
 
-def test_plan_generate_choice_overrides_risk_and_records_reason():
-    out = pipeline_mod.plan({**_PLAN, "item_cut_off": True, "user_mode": "generate"})
-    assert "composite_reason" not in out and out["risk_reason"] == "cut_off"
+_RISKS = ({"item_cut_off": True}, {"item_count": 2}, {"pieces_overlap": True}, {"photo_type": "inside_view"},
+          {"photo_type": "document"}, {"detect_failed": True}, {"wear_level": "heavy"})
 
 
-def test_plan_generate_choice_always_generates_even_inside_view_or_detect_failed():
-    """10-11 사용자: 생성과 배경 교체는 별개 — 생성을 고르면 어떤 이유로도 돌리지 않고 이유만 남긴다."""
-    for st, why in (({"photo_type": "inside_view"}, "inside_view"), ({"detect_failed": True}, "detect_failed")):
-        out = pipeline_mod.plan({**_PLAN, **st, "user_mode": "generate"})
-        assert "composite_reason" not in out and out["risk_reason"] == why
+@pytest.mark.parametrize("user_mode", [None, "generate"])
+def test_plan_generates_regardless_of_risk_unless_composite_chosen(user_mode):
+    """10-11 사용자: 생성 전 위험 판단으로 배경 교체·원본 그대로 가지 않는다."""
+    for st in _RISKS:
+        out = pipeline_mod.plan({**_PLAN, **st, "user_mode": user_mode})
+        assert "composite_reason" not in out, st
+        assert pipeline_mod._route_after_plan({**_PLAN, **st, **out}) in ("generate", "read_text"), st
 
 
-def test_generate_only_never_routes_to_composite_after_gate():
-    s = {"gate_passed": False, "mode": "generate", "user_mode": "generate"}
+def test_plan_composite_choice_is_user_choice_even_with_risk():
+    for st in ({}, *_RISKS):
+        out = pipeline_mod.plan({**_PLAN, **st, "user_mode": "composite"})
+        assert out["composite_reason"] == "user_choice", st
+
+
+@pytest.mark.parametrize("user_mode", [None, "generate"])
+def test_route_after_verify_regens_once_then_done_never_composite(user_mode):
+    s = {"gate_passed": False, "mode": "generate", "user_mode": user_mode}
     assert pipeline_mod._route_after_verify(s) == "regen"
-    assert pipeline_mod._route_after_verify({**s, "gate_retried": True}) == "done"
-    assert pipeline_mod._route_after_verify({**s, "verify_failed": True}) == "done"
-    assert pipeline_mod._route_after_verify({**s, "user_mode": None, "gate_retried": True}) == "composite"   # 고르지 않으면 예전대로
-
-
-def test_plan_composite_choice_without_risk():
-    assert pipeline_mod.plan({**_PLAN, "user_mode": "composite"})["composite_reason"] == "user_choice"
-    assert pipeline_mod.plan({**_PLAN, "item_cut_off": True, "user_mode": "composite"})["composite_reason"] == "cut_off"
-
-
-def test_plan_no_choice_keeps_analysis():
-    assert pipeline_mod.plan({**_PLAN, "item_cut_off": True})["composite_reason"] == "cut_off"
-    assert "composite_reason" not in pipeline_mod.plan(dict(_PLAN))
+    for extra in ({"gate_retried": True}, {"verify_failed": True}, {"detect_failed": True}):
+        assert pipeline_mod._route_after_verify({**s, **extra}) == "done"

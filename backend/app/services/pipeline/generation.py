@@ -5,7 +5,6 @@ import json
 import re
 from app.core.config import settings
 from app.prompts.presets import leave_out, text_lock
-from app.services import compositions
 from app.services.ai import detector
 from app.services import style_refs
 from app.services.ai.generator import _generate_ai
@@ -166,11 +165,7 @@ REF_LAYOUT_NOTE = (
 def generate(s: State) -> dict:
     preset = s["preset"]
     set_views = 0
-    # 고른 정석 구도의 틀(가운데 · 여백 · 수평) — 각도는 잠금이 지킨다. 글자 잠금은 그 뒤에.
-    # 물건이 여러 개면 구도를 붙이지 않는다 — 구도 문장은 한 개 기준이라 여럿을 하나로 합친다 (10-03 CD 2장)
-    composition = s.get("composition") if (s.get("item_count") or 1) <= 1 else None
-    extra = (compositions.prompt_for(composition)
-             + leave_out(s.get("leave_out") or []) + text_lock(s.get("item_texts") or []))
+    extra = (leave_out(s.get("leave_out") or []) + text_lock(s.get("item_texts") or []))
     if extra:
         preset = {**preset, "prompt": preset["prompt"] + extra}
     if s.get("gate_note"):
@@ -233,9 +228,9 @@ def generate(s: State) -> dict:
         preset = {**preset, "no_negative": True,
                   "prompt": MIN_PROMPT.format(sketch=MIN_ROLE_SKETCH.format(k=2) if ref else "",
                                              background=preset.get("background") or DEFAULT_BACKGROUND)
-                  # 정답 구도 = 선 그림 + 문장 (사용자 고정 규칙) · 고른 정석 구도 · 뺄 물건 (10-09 리뷰)
+                  # 정답 구도 = 선 그림 + 문장 (사용자 고정 규칙) · 뺄 물건 (10-09 리뷰)
                   + (f" Layout: {s['ref_layout']}" if ref and s.get("ref_layout") else "")
-                  + compositions.prompt_for(composition) + leave_out(kept_lo)}
+                  + leave_out(kept_lo)}
     elif s.get("clean_prompt") and s.get("ref_layout"):
         # 정리한 프롬프트로 통째로 바꾼다 (10-08 실험) — 재시도 사유는 뒤에 다시 붙인다
         retry = preset["prompt"].split("\n\nIMPORTANT: a previous attempt", 1)

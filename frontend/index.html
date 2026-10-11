@@ -25,6 +25,13 @@
     </div>
     <input type="file" id="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,.jpg,.jpeg,.png,.webp,.mp4,.mov,.m4v,.webm" multiple hidden>
 
+    <!-- 무엇을 파나요 (10-11) — 쓰는 동안 사진 분석이 돌고, 먼저 끝나면 AI 추천을 띄운다 (당근마켓처럼) -->
+    <section id="sell-name-wrap" class="sell-name hidden">
+      <label for="sell-name" class="step-label">무엇을 파나요?</label>
+      <input id="sell-name" maxlength="40" autocomplete="off" placeholder="예: 레고 스콜피온 세트">
+      <div id="sell-name-sugg" class="sell-name-sugg" aria-live="polite"></div>
+    </section>
+
     <div id="proof-zone" class="proof-zone" role="button" tabindex="0">
       <span>🧾 보증서 · 정품 마크 · 영수증 <span class="muted">(선택)</span></span>
       <span class="dropzone-help">상품 사진과 따로 올려 주세요 — 판매 글에 근거 사진으로 붙어요. 사진만</span>
@@ -60,7 +67,7 @@
       <!-- ③ 정답 구도: 품목에 맞는 정답이 기본 -->
       <section id="ref-wrap" class="step hidden">
         <p class="step-label"><span class="step-no">3</span>정답 구도</p>
-        <p class="step-help">이렇게 찍은 것처럼 만들어요. 품목에 맞는 정답이 먼저 골라져 있어요.</p>
+        <p class="step-help">이렇게 찍은 것처럼 만들어요. 올린 사진과 닮은 정답을 추천해요.</p>
         <div id="ref-list" class="ref-list" role="radiogroup" aria-label="정답 구도"></div>
       </section>
 
@@ -77,10 +84,6 @@
       <div id="target-wrap" class="hidden">
         <p class="step-label">대표컷 만들 물건 <span class="step-sub">— 물건마다 따로 만들어요</span></p>
         <div id="targets" class="targets" role="radiogroup" aria-label="대표컷 만들 물건"></div>
-      </div>
-      <div id="comp-wrap" class="hidden">
-        <p id="comp-title" class="step-label">예시 구도 고르기</p>
-        <div id="item-comps" class="item-comps" role="radiogroup" aria-label="구도"></div>
       </div>
       <div id="arrange-wrap" class="arrange-wrap hidden">
         <p class="step-label">여러 물건을 한 장에 <span class="step-sub">— 사진마다 물건을 오려 그대로 놓아요 (다시 그리지 않아요)</span></p>

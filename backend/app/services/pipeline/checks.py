@@ -243,16 +243,8 @@ def _verify_marks(s: State) -> dict:
     checks, gate_passed = [], None
     if s.get("mode", "generate") != "generate":
         # 배경 교체본은 물건 픽셀이 원본이다 — 확인해도 VLM 오판으로 거짓 경고만 붙을 수 있고
-        # 결과를 바꾸지도 않는다 (VLM 1회 절약, 09-27). verify_failed 는 건드리지 않는다 —
-        # "verify 호출 실패 → 배경 교체"면 그 사실이 배지·inspect 에 남아야 한다.
-        # 생성본 게이트에서 떨어진 checks(무엇이 사라졌나)는 gate_checks 로 옮겨 남긴다
-        # (checks 는 말풍선 좌표라 생성본 기준 — 합성본 위에 그리면 안 된다)
-        out = {"checks": checks, "gate_passed": None, "added_text": []}
-        if s.get("checks"):
-            out["gate_checks"] = s["checks"]
-        if s.get("added_text"):
-            out["gate_added_text"] = s["added_text"]   # 생성본에 생겼던 글자 — 합성본 기준이 아님
-        return out
+        # 결과를 바꾸지도 않는다 (VLM 1회 절약, 09-27). 10-11: 생성 뒤에 배경 교체로 오는 길은 없다
+        return {"checks": checks, "gate_passed": None, "added_text": []}
     if s.get("detect_failed"):
         # 원본 마크 목록이 없으니 보존 여부를 확인할 수 없다 — 생성본은 통과로 치지 않는다
         return {"checks": checks, "gate_passed": False, "verify_failed": False}
@@ -329,23 +321,14 @@ def _log_added(added: list) -> None:
 
 
 def _route_after_verify(s: State) -> str:
-    """게이트 실패 → (1) 사라지거나 바뀐 마크를 알려주고 1회 재생성 → (2) 그래도 실패면
-    원본 물건 픽셀을 그대로 쓰는 배경 교체 모드. 생성 모델이 로고·글자를
-    지키지 못하는 경우의 정직성 폴백."""
+    """게이트 실패 → 사라지거나 바뀐 마크를 알려주고 1회 재생성 → 그래도 실패면 마지막 결과 + 탈락 기록.
+    배경 교체로 넘어가지 않는다 (10-11 사용자: 생성과 배경 교체는 별개 — 먼저 생성해 보고 얼마나 깨지는지 본다).
+    확인할 기준이 없거나(detect_failed) 확인을 못 했으면(verify_failed) 재생성하지 않는다."""
     if s.get("gate_passed") is not False or s.get("mode", "generate") != "generate":
         return "done"
-    if s.get("user_mode") == "generate":
-        # 생성만 (10-11) — 검사에서 떨어져도 배경 교체로 가지 않는다. 1회 재생성 뒤엔 마지막 결과 + 탈락 기록
-        if s.get("gate_retried") or s.get("detect_failed") or s.get("verify_failed"):
-            return "done"
-        return "regen"
-    if s.get("detect_failed"):
-        return "composite"   # 재생성해도 확인할 기준이 없다 (앞선 오리기 실패 후 생성한 경우)
-    if s.get("verify_failed"):
-        return "composite"   # 확인 자체를 못 했다 — 재생성해도 또 확인 못 할 가능성이 크다
-    if not s.get("gate_retried"):
-        return "regen"
-    return "composite"
+    if s.get("gate_retried") or s.get("detect_failed") or s.get("verify_failed"):
+        return "done"
+    return "regen"
 
 
 def mark_gate_retry(s: State) -> dict:

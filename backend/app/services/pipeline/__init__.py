@@ -1,11 +1,11 @@
 """변환 파이프라인 (LangGraph) — 사진 한 장을 대표사진으로.
 
     load → analyze → plan ─┬─ 생성:     [read_text] → generate → validate_result → score_similarity → verify ─┐
-                           ├─ 배경 교체: composite (원본 물건 픽셀 + 새 배경)                                   ├→ save_inspect → finalize
-                           └─ 원본 그대로: keep_original                                                     ┘
+                           └─ 배경 교체: composite (원본 물건 픽셀 + 새 배경)                                   ┴→ save_inspect → finalize
 
-생성과 배경 교체는 판매자가 고르는 별개 기능이다 (user_mode, 10-11). 생성을 고르면 검사에서 떨어져도 1회 재생성 뒤
-마지막 결과를 탈락 기록과 함께 내보내고, 배경 교체를 고르면 생성으로 넘어가지 않는다. 고르지 않으면(옛 호출) 분석이 정한다.
+생성과 배경 교체는 판매자가 고르는 별개 기능이다 (user_mode, 10-11). 생성은 검사에서 떨어져도 1회 재생성 뒤
+마지막 결과를 탈락 기록과 함께 내보내고, 배경 교체는 [배경만 바꾸기]를 골랐을 때만 한다. 생성 전에 배경 교체로 보내던
+판단(잘림 · 겹침 · 여러 개 · 사용감 · 문서 · 내부 · 글자)은 지웠다 — 먼저 생성해 보고 얼마나 깨지는지 본다 (10-11).
 
 파일 지도 (읽는 순서):
     state.py      State · 재시도 · 백그라운드 실행
@@ -26,7 +26,7 @@ import time  # noqa: F401 — 예전 한 파일의 이름들 (pipeline.time · p
 import types
 
 from app.core.config import settings  # noqa: F401
-from app.services import compositions, style_refs  # noqa: F401
+from app.services import style_refs  # noqa: F401
 from app.services.ai import compositor, detector, embedder, judge  # noqa: F401
 from app.services.persistence import storage, store  # noqa: F401
 from app.services.quality import guards  # noqa: F401

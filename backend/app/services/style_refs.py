@@ -63,8 +63,8 @@ def sketch(file: str) -> tuple[str, bytes] | None:
     return None
 
 
-# 서로 대신 쳐 주는 각도 (10-05) — 정면 ↔ 앞쪽 비스듬히, 뒷면 ↔ 뒤쪽 비스듬히. 필수 면(coverage.REQUIRED)도
-# 같은 쌍을 대신 쳐 준다. 정확히 같아야만 하면 헤드폰 정면 · 보드게임 정면이 정답을 하나도 못 받았다
+# 서로 대신 쳐 주는 각도 (10-05) — 정면 ↔ 앞쪽 비스듬히, 뒷면 ↔ 뒤쪽 비스듬히.
+# 정확히 같아야만 하면 헤드폰 정면 · 보드게임 정면이 정답을 하나도 못 받았다
 VIEW_COMPAT = {"front": {"front", "front_34"}, "front_34": {"front", "front_34"},
                "back": {"back", "rear_34"}, "rear_34": {"back", "rear_34"}}
 
