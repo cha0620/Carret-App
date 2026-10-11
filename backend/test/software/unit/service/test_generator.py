@@ -169,3 +169,14 @@ def test_generate_ai_5xx_html_page_is_not_returned_as_image(monkeypatch):
     assert len(calls) == 2
 
 
+
+
+def test_generate_ai_qwen_no_negative_drops_negative_prompt(monkeypatch):
+    # 10-09: qwen 은 negative_prompt 를 받지만 최소 프롬프트 실험(no_negative)이면 뺀다
+    fake_fal, fake_httpx = FakeFalClient(), FakeHttpx()
+    monkeypatch.setattr(generator_mod, "fal_client", fake_fal)
+    monkeypatch.setattr(generator_mod, "httpx", fake_httpx)
+    monkeypatch.setattr(generator_mod.settings, "fal_model", "fal-ai/qwen-image-3/edit")
+    _generate_ai(b"img", {**_preset(), "no_negative": True})
+    args = fake_fal.subscribe_calls[0]["arguments"]
+    assert "negative_prompt" not in args and args["enable_prompt_expansion"] is False

@@ -93,7 +93,7 @@ def test_create_item_saves_photos_and_item(client, views, isolated_storage):
     assert len(body["item_id"]) == 32
     assert body["item"] == "mug" and body["category"] == "other"
     assert [p["view"] for p in body["photos"]] == ["front", "back"]
-    assert [p["view_label"] for p in body["photos"]] == ["정면", "뒷면"]
+    assert [p["view_label"] for p in body["photos"]] == [None, None]   # 규칙 각도 라벨 대신 AI 검토 (10-09)
     assert all(p["source"] == "photo" for p in body["photos"])
     fids = [p["file_id"] for p in body["photos"]]
     assert len(set(fids)) == 2
@@ -303,12 +303,7 @@ def test_shoes_item_lists_compositions_with_matching_photos(client, views):
     body = r.json()
     fids = [p["file_id"] for p in body["photos"]]
     comps = {c["key"]: c for c in body["compositions"]}
-    assert list(comps) == ["shoes_front34", "shoes_side", "shoes_top", "shoes_back", "shoes_sole"]
-    assert comps["shoes_front34"]["photo_ids"] == [fids[0]]
-    assert comps["shoes_side"]["photo_ids"] == [fids[2], fids[1]]        # 가려진 사진은 뒤로
-    assert comps["shoes_sole"]["available"] and comps["shoes_sole"]["hint"] is None
-    assert not comps["shoes_top"]["available"] and "위에서" in comps["shoes_top"]["hint"]
-    assert comps["shoes_side"]["image"] == "/img/compositions/shoes_side.svg"
+    assert comps == {}   # 각도로 고르던 예시 구도는 정답 구도 고르기로 대신 (10-09 사용자)
 
 
 # ── 10-04: 물건별 묶음 (objects · main_object · PUT /objects) ──
@@ -372,8 +367,9 @@ def test_create_item_groups_objects(client, views, isolated_storage):
     assert body["user_edited"] is False and body["needs_review"] is False
     # top-level 은 대표 물건(운동화) 기준
     assert body["item"] == "sneakers" and body["category"] == "shoes"
-    assert [m["view"] for m in body["missing"]] == ["back", "bottom"] == [m["view"] for m in shoe["missing"]]
-    assert body["compositions"] == shoe["compositions"]
+    assert body["missing"] == []   # 규칙 필수 면 대신 AI 사진 검토 (10-09) — 물건별 행에는 남아 있다
+    assert [m["view"] for m in shoe["missing"]] == ["back", "bottom"]
+    assert body["compositions"] == []
     saved = _saved(isolated_storage, body["item_id"])
     assert len(saved["objects"]) == 2 and all("unclassified" not in p for p in saved["photos"])
 
@@ -407,7 +403,7 @@ def test_put_objects_renames_moves_and_saves(client, views, isolated_storage):
     assert o1["photo_ids"] == [fids[0]] and o3["photo_ids"] == [fids[2]]
     assert o3["name"] == "item" and o3["label"] == "신발 상자"     # 사용자 label 은 name 에 안 들어간다
     assert [p["object"] for p in got["photos"]] == ["o1", "o2", "o3"]
-    assert got["photos"][2]["view"] == "top" and got["photos"][2]["view_label"] == "위에서"
+    assert got["photos"][2]["view"] == "top" and got["photos"][2]["view_label"] is None
     assert got["main_object"] == "o1"                        # 신발 상자는 팔지 않음
     assert client.get(f"/api/items/{body['item_id']}").json() == got
     saved = _saved(isolated_storage, body["item_id"])
@@ -487,7 +483,7 @@ def test_get_old_format_item_becomes_one_object(client, views, isolated_storage)
     assert got["item"] == "tote" and got["category"] == "bag"
     assert [p["object"] for p in got["photos"]] == ["o1", "o1"]
     assert [p["view"] for p in got["photos"]] == ["front", "back"]
-    assert [m["view"] for m in got["missing"]] == ["back", "bottom", "inside"]     # 흐린 뒷면은 안 친다
+    assert got["missing"] == []   # 규칙 필수 면 대신 AI 사진 검토 (10-09)
     assert got["retake"] == [{"file_id": got["photos"][1]["file_id"], "reason": "흐려요"}]
     assert (isolated_storage / "items" / f"{body['item_id']}.json").read_bytes() == before   # GET 은 저장 안 함
 

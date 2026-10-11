@@ -166,7 +166,8 @@ def test_group_objects_old_shape_response_one_object(fake_vlm):
 def test_objects_prompt_lists_all_kinds_views_categories():
     from app.services import coverage, listing
     text = P.objects_prompt(2)
-    for word in [*coverage.VIEWS, *coverage.CATEGORIES, *listing.KINDS, *listing.PROOF_TYPES]:
+    for word in [*coverage.CATEGORIES, *listing.KINDS, *listing.PROOF_TYPES]:
         assert f'"{word}"' in text, word
+    assert '"view"' not in text   # 각도는 묶음에서 묻지 않는다 — AI 사진 검토가 대신 (10-09 사용자)
 
 

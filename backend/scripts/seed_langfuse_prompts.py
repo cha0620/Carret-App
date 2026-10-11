@@ -40,6 +40,11 @@ def prompts_to_seed() -> dict:
         "analyze_v2": analyze_template(),   # 10-01 글자(texts)까지 — 옛 "analyze" 는 배포된 옛 서버용으로 그대로 둔다
         "views": frag("views"),           # {{n}} · {{n_last}} 는 호출 시점에 채워짐 (여러 각도, 10-01)
         "objects": frag("objects"),       # 여러 장을 물건별로 묶기 (10-04) — {{n}} · {{n_last}} 같음
+        "components": frag("components"),   # 구성품만 빠르게 (10-09)
+        "layout_plan": frag("layout_plan"),   # 세트 배치 — 정답 사진 기준 (10-09)
+        "photo_review": frag("photo_review"),   # 사진마다 보이는 것 · 더 필요한 사진 (10-09)
+        "count_pieces": frag("count_pieces"),   # 세트 구성품 종류별 개수 (10-09 개수 게이트) — {{lines}}
+        "prep_check": frag("prep_check"),   # 정답 사진의 준비물이 판매자 사진에 다 보이나 (10-05) — {{lines}}
         "judge_system": _SYSTEM_TEMPLATE,  # {{rubric}} 는 호출 시점에 채워짐
         "auto_feedback_system": AUTO_FEEDBACK_TEMPLATE,
     }

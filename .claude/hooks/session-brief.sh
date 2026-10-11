@@ -10,9 +10,9 @@ note=$(ls -1 study/*.md 2>/dev/null | sort | tail -1)
 todo=$(awk '
   /^## .*하루 마무리/ { buf=""; on=1; next }
   /^## / { if (on) done=1; on=0 }
-  on && /^- \[ \]/ { buf = buf $0 "\n" }
+  on && /^[ \t]*- \[ \]/ { buf = buf $0 "\n" }
   END { printf "%s", buf }' "$note")
-[ -z "$todo" ] && todo=$(grep -E '^- \[ \]' "$note" | tail -10)
+[ -z "$todo" ] && todo=$(grep -E '^[[:space:]]*- \[ \]' "$note" | tail -10)
 todo=$(printf '%s' "$todo" | sed -E 's/\*\*//g' | cut -c1-140 | head -15)
 
 branch=$(git branch --show-current 2>/dev/null)

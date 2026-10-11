@@ -95,12 +95,12 @@ TEXT_LOCK_MAX_LINES = 30
 TEXT_LOCK_MAX_CHARS = 80
 
 
-def prompt_safe(text) -> str:
+def prompt_safe(text, limit: int = TEXT_LOCK_MAX_CHARS) -> str:
     """이미지·VLM 에서 온 글자를 생성 프롬프트에 넣기 전 정리 — 개행·제어문자 제거,
     따옴표 무력화, 길이 제한 (사진에 적힌 문장이 프롬프트 지시문처럼 읽히지 않게)."""
     t = "".join(ch if ch.isprintable() else " " for ch in str(text))
     t = " ".join(t.replace('"', "'").split())
-    return t[:TEXT_LOCK_MAX_CHARS]
+    return t[:limit]
 
 
 def unreadable(text) -> bool:
@@ -237,6 +237,7 @@ def get_preset(key: str, note: str = "") -> dict:
     return {
         "name": preset["name"],
         "prompt": with_secondhand_lock(body),
+        "background": body,   # 잠금 없이 배경 · 조명만 — 최소 · 세트 프롬프트가 끝에 붙인다 (10-09)
         "bg_color": preset["bg_color"],
     }
 

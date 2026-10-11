@@ -17,7 +17,8 @@ def disable_langfuse(monkeypatch):
 @pytest.mark.parametrize("key", list(PRESETS.keys()))
 def test_get_preset_returns_expected_keys_and_secondhand_lock(key):
     preset = get_preset(key)
-    assert set(preset.keys()) == {"name", "prompt", "bg_color"}
+    assert set(preset.keys()) == {"name", "prompt", "bg_color", "background"}
+    assert SECONDHAND_LOCK not in preset["background"]   # 최소 · 세트 프롬프트용 배경 문장엔 잠금이 없다 (10-09)
     assert preset["name"] == PRESETS[key]["name"]
     assert preset["bg_color"] == PRESETS[key]["bg_color"]
     assert SECONDHAND_LOCK in preset["prompt"]

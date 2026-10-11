@@ -43,6 +43,23 @@ CREATE TABLE IF NOT EXISTS feedbacks (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(file_id, preset_key, source)
 );
+-- 칠한 곳 고치기 A/B (10-11) — 판매자가 칠한 곳 · 설명 · 고른 쪽도 피드백이다. 마스크 그림은 storage(quality)에
+CREATE TABLE IF NOT EXISTS inpaint_rounds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    round_id TEXT NOT NULL UNIQUE,
+    file_id TEXT NOT NULL,
+    base_key TEXT NOT NULL,
+    note TEXT NOT NULL,
+    slots TEXT NOT NULL,
+    prompts TEXT NOT NULL,
+    mask_area REAL,
+    errors TEXT,
+    elapsed_s REAL,
+    pick TEXT,
+    picked_model TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    picked_at TIMESTAMP
+);
 """
 
 

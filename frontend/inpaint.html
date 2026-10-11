@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,<text xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🖌️</text></text>">
+<title>칠한 곳 고치기 🥕</title>
+<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/inpaint.css">
+</head>
+<body>
+<a class="mode-toggle" href="/">← 앱으로</a>
+<main class="app">
+  <header class="app-header">
+    <h1>칠한 곳 고치기 🖌️</h1>
+    <p class="subtitle">틀린 곳을 칠하고 설명하면 두 방식(A · B)으로 고쳐요 — 더 나은 쪽을 고르세요</p>
+  </header>
+
+  <section class="card" id="pick-photo">
+    <p class="step-label">고칠 사진</p>
+    <div class="ip-row">
+      <input id="ip-file" placeholder="file_id (32자리)" maxlength="32">
+      <input id="ip-preset" placeholder="결과 키 (예: studio_white)">
+      <button id="ip-load" class="btn btn-ghost">불러오기</button>
+    </div>
+  </section>
+
+  <section class="card hidden" id="paint-card">
+    <p class="step-label">① 틀린 곳 칠하기</p>
+    <div class="ip-tools">
+      <label>붓 크기 <input id="ip-brush" type="range" min="5" max="120" value="30"></label>
+      <button id="ip-erase" class="btn btn-ghost btn-small" type="button">지우개</button>
+      <button id="ip-clear" class="btn btn-ghost btn-small" type="button">다 지우기</button>
+    </div>
+    <div class="ip-stage" id="ip-stage">
+      <img id="ip-base" alt="고칠 사진">
+      <canvas id="ip-mask"></canvas>
+    </div>
+    <p class="step-label">② 칠한 곳을 어떻게 고칠지</p>
+    <textarea id="ip-note" maxlength="200" placeholder="예: 로고 글자가 원본과 달라요 — 원본대로 / 이 카드는 원래 없어요, 지워 주세요"></textarea>
+    <button id="ip-run" class="btn btn-primary btn-block">A · B 만들기 &nbsp;<span class="muted">(유료 · 2회 생성)</span></button>
+    <p id="ip-status" class="muted"></p>
+  </section>
+
+  <section class="card hidden" id="ab-card">
+    <p class="step-label">③ 더 나은 쪽 고르기</p>
+    <div class="ip-ab">
+      <figure><img id="ip-a" alt="A"><figcaption>A <span id="ip-a-model"></span></figcaption>
+        <button class="btn btn-primary btn-block" data-pick="a">A가 나아요</button></figure>
+      <figure><img id="ip-b" alt="B"><figcaption>B <span id="ip-b-model"></span></figcaption>
+        <button class="btn btn-primary btn-block" data-pick="b">B가 나아요</button></figure>
+    </div>
+    <button class="btn btn-ghost btn-block" data-pick="none">둘 다 별로예요 (원래 사진으로)</button>
+    <details id="ip-prompts" class="hidden"><summary>실제 쓴 프롬프트</summary><pre id="ip-prompt-text"></pre></details>
+  </section>
+
+  <section class="card">
+    <p class="step-label">기록</p>
+    <p id="ip-stats" class="muted"></p>
+    <ol id="ip-history" class="ip-history"></ol>
+  </section>
+</main>
+<script src="js/inpaint.js"></script>
+</body>
+</html>

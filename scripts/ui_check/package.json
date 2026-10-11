@@ -1,0 +1,6 @@
+{
+  "name": "carret-ui-check",
+  "private": true,
+  "description": "프론트 화면 확인 — AI 응답을 가짜로 넣고 스크린샷 (비용 없음)",
+  "dependencies": { "puppeteer-core": "22.15.0" }
+}

@@ -103,3 +103,37 @@ def get_result(file_id, preset_key):
             "SELECT * FROM results WHERE file_id=? AND preset_key=?",
             (file_id, preset_key)).fetchone()
     return dict(row) if row else None
+
+# ── 칠한 곳 고치기 A/B (10-11) ──
+def record_inpaint(round_id, file_id, base_key, note, slots, prompts, mask_area, errors, elapsed_s):
+    with db.get_conn() as c:
+        c.execute("""
+            INSERT INTO inpaint_rounds(round_id, file_id, base_key, note, slots, prompts, mask_area, errors, elapsed_s)
+            VALUES (?,?,?,?,?,?,?,?,?)
+        """, (round_id, file_id, base_key, note, json.dumps(slots), json.dumps(prompts, ensure_ascii=False),
+              mask_area, json.dumps(errors), elapsed_s))
+
+
+def get_inpaint(file_id, round_id):
+    with db.get_conn() as c:
+        r = c.execute("SELECT * FROM inpaint_rounds WHERE file_id=? AND round_id=?", (file_id, round_id)).fetchone()
+    if not r:
+        return None
+    d = dict(r)
+    for k in ("slots", "prompts", "errors"):
+        d[k] = json.loads(d[k]) if d[k] else {}
+    return d
+
+
+def pick_inpaint(round_id, pick, picked_model):
+    with db.get_conn() as c:
+        c.execute("UPDATE inpaint_rounds SET pick=?, picked_model=?, picked_at=CURRENT_TIMESTAMP WHERE round_id=?",
+                  (pick, picked_model, round_id))
+
+
+def inpaint_stats(file_id=None) -> dict:
+    """어느 모델이 몇 번 골렸나 — picked_model(모델) · none(둘 다 별로) · undecided(안 고름)."""
+    q = "SELECT COALESCE(picked_model, CASE WHEN pick='none' THEN 'none' ELSE 'undecided' END) k, COUNT(*) n FROM inpaint_rounds"
+    with db.get_conn() as c:
+        rows = c.execute(q + (" WHERE file_id=?" if file_id else "") + " GROUP BY k", (file_id,) if file_id else ()).fetchall()
+    return {r["k"]: r["n"] for r in rows}

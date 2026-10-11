@@ -343,10 +343,17 @@ def test_composite_first_skips_generate_and_verify(w, analysis, reason, composer
     assert w.route()["composite_reason"] == reason
 
 
+_SET_OBJS = [{"what": "photocard", "for_sale": True, "role": "main"},   # 10-10: 조각 합 2 초과일 때만 overlap
+             {"what": "calendar", "for_sale": True, "role": "component"},
+             {"what": "sticker", "for_sale": True, "role": "component"}]
+
+
 @pytest.mark.parametrize("analysis,reason", [
     ({"item_cut_off": True}, "cut_off"),
     ({"item_cut_off": True, "text_level": "simple", "item_count": 3}, "cut_off"),   # 잘림이 먼저,
-    ({"item_count": 2}, "multi_item"),])
+    ({"item_count": 2}, "multi_item"),
+    # 10-10: 세트 구성품이 겹치면 overlap (cut_off 다음, multi_item 앞)
+    ({"pieces_overlap": True, "item_count": 2, "objects": _SET_OBJS}, "overlap"),])
 def test_cut_off_or_multi_item_goes_composite_without_generating(w, analysis, reason):
     """10-03: 물건이 잘렸거나(cut_off) 여러 개(multi_item)면 생성하지 않고 배경만 바꾼다."""
     w.analysis.update(analysis)
@@ -357,6 +364,12 @@ def test_cut_off_or_multi_item_goes_composite_without_generating(w, analysis, re
     assert out["gate_passed"] is None and out["prompt_used"].startswith("COMPOSITE")
     assert w.result() == "comp" and w.inspect()["composite_reason"] == reason
     assert w.route()["composite_reason"] == reason
+
+
+def test_pieces_overlap_ignored_for_single_item():
+    """10-10: 조각이 1개(세트 아님)면 pieces_overlap 이어도 overlap 으로 가지 않는다."""
+    single = [{"what": "photocard", "for_sale": True, "role": "main"}]
+    assert pipeline_mod._composite_first_reason({"pieces_overlap": True, "objects": single}) is None
 
 
 def test_cut_off_from_cached_analysis(w):

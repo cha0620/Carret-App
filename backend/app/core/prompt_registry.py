@@ -12,6 +12,7 @@ variable 문법은 Langfuse 컨벤션인 이중 중괄호 {{name}} 를 쓴다 �
 자동으로 fallback 문자열을 같은 방식으로 compile 해서 돌려준다.
 """
 import logging
+from app.core.config import settings
 from app.core.tracing import get_langfuse
 
 logger = logging.getLogger("carret.prompts")
@@ -20,7 +21,7 @@ _LABEL = "production"
 
 
 def get_prompt_text(name: str, fallback: str, **variables) -> str:
-    lf = get_langfuse()
+    lf = get_langfuse() if settings.langfuse_prompts else None
     if lf is None:
         return _compile_locally(fallback, variables)
 

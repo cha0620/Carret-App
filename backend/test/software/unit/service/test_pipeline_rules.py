@@ -87,8 +87,9 @@ def _analysis(objects=(CD1, CD2, KB), **kw):
             "objects": list(objects), "detect_failed": False, **kw}
 
 
-def test_apply_selection_picks_two_unions_boxes_and_leaves_out_rest():
-    out = pipeline_mod.apply_selection(_analysis(), [0, 1])
+def test_apply_selection_picks_two_mains_unions_boxes_and_leaves_out_rest():
+    """본품 2개(CD 두 장)는 대표 하나로 줄이지 않는다 (10-10 multi_item 유지)."""
+    out = pipeline_mod.apply_selection(_analysis([_role(CD1, "main"), _role(CD2, "main"), KB]), [0, 1])
     assert out["item_count"] == 2 and out["item"] == "CD"
     assert out["item_box"] == {"x1": 50, "y1": 100, "x2": 950, "y2": 900}
     assert out["leave_out"] == ["keyboard"]
@@ -146,3 +147,87 @@ def test_apply_selection_answer_count_overrides_analysis_and_selection(answer):
     assert out["item_count"] == answer and out["leave_out"] == ["keyboard"]
 
 
+
+
+# ══ 10-05: 고르지 않았을 때 부가품 빼기 · verify 대상 ═════════════════
+def _role(o, role):
+    return {**o, "role": role}
+
+
+def test_apply_selection_without_sell_drops_accessory_keeps_count():
+    a = _analysis([_role(CD1, "main"), _role(CASE, "accessory"), KB])
+    out = pipeline_mod.apply_selection(a, None)
+    assert out["leave_out"] == ["case"] and out["leave_out_boxes"] == [CASE["box"]]
+    assert out["item_box"] == CD1["box"] and out["item_count"] == 2   # 개수는 그대로
+
+
+def test_apply_selection_without_sell_only_accessory_keeps_analysis_adds_rep():
+    a = _analysis([_role(CASE, "accessory"), KB])
+    out = pipeline_mod.apply_selection(a, None)
+    assert {k: v for k, v in out.items() if k not in ("rep_pieces", "detail_pieces")} == a
+    assert out["rep_pieces"] == [("main piece (case)", 1)] and out["detail_pieces"] == []
+
+
+def test_apply_selection_without_sell_component_goes_to_detail():
+    """10-10: 대표사진 = 본품 하나 — 구성품은 빼고 상세(인증) 개수로."""
+    out = pipeline_mod.apply_selection(_analysis([_role(CD1, "main"), _role(CD2, "component")]), None)
+    assert out["leave_out_boxes"] == [CD2["box"]] and out["item_box"] == CD1["box"]
+    assert out["rep_pieces"] == [("main piece (CD)", 1)] and out["detail_pieces"] == [{"what": "CD", "count": 1, "indices": [1]}]
+
+
+# ── rep_split (10-10 대표 = 본품 하나 + 상자) ──
+def _o(what, role="main"):
+    return {"what": what, "role": role}
+
+
+def test_rep_split_main_only_box_and_rest_to_detail():
+    """10-11: 대표사진 = 본체 하나 — 상자도 상세(검증용)로."""
+    objs = [_o("photo card", "component"), _o("calendar"), _o("box", "accessory"), _o("sticker", "component")]
+    assert pipeline_mod.rep_split(objs, [0, 1, 2, 3]) == ([1], [0, 2, 3])
+
+
+def test_rep_split_two_mains_keeps_all():
+    objs = [_o("CD"), _o("CD"), _o("상자", "accessory")]
+    assert pipeline_mod.rep_split(objs, [0, 1, 2]) == ([0, 1, 2], [])
+
+
+def test_rep_split_seller_mains_win_over_analysis_role():
+    objs = [_o("calendar"), _o("photo card", "component")]
+    assert pipeline_mod.rep_split(objs, [0, 1], mains=[1]) == ([1], [0])
+
+
+def test_rep_split_box_only():
+    assert pipeline_mod.rep_split([_o("package", "accessory")], [0]) == ([0], [])
+
+
+def test_verify_targets_skips_accessory_and_loosens_small_component():
+    anchors = [{"what": "A", "on": "main", "size": "small"},
+               {"what": "B", "on": "accessory", "size": "large"},
+               {"what": "C", "on": "component", "size": "small"},
+               {"what": "D", "on": "component", "size": "large"}]
+    got = pipeline_mod._verify_targets({"anchors": anchors})
+    assert [(t["what"], t.get("loose", False)) for t in got] == [("A", False), ("C", True), ("D", False)]
+
+
+# ── 판매자가 기능을 고른다 (10-11: 배경 교체 강제 대신 선택) ──
+_PLAN = {"file_id": "f" * 32, "preset_key": "studio_white"}
+
+
+def test_plan_generate_choice_overrides_risk_and_records_reason():
+    out = pipeline_mod.plan({**_PLAN, "item_cut_off": True, "user_mode": "generate"})
+    assert "composite_reason" not in out and out["risk_reason"] == "cut_off"
+
+
+def test_plan_generate_choice_cannot_override_inside_view_or_detect_failed():
+    assert pipeline_mod.plan({**_PLAN, "photo_type": "inside_view", "user_mode": "generate"})["composite_reason"] == "inside_view"
+    assert pipeline_mod.plan({**_PLAN, "detect_failed": True, "user_mode": "generate"})["composite_reason"] == "detect_failed"
+
+
+def test_plan_composite_choice_without_risk():
+    assert pipeline_mod.plan({**_PLAN, "user_mode": "composite"})["composite_reason"] == "user_choice"
+    assert pipeline_mod.plan({**_PLAN, "item_cut_off": True, "user_mode": "composite"})["composite_reason"] == "cut_off"
+
+
+def test_plan_no_choice_keeps_analysis():
+    assert pipeline_mod.plan({**_PLAN, "item_cut_off": True})["composite_reason"] == "cut_off"
+    assert "composite_reason" not in pipeline_mod.plan(dict(_PLAN))
