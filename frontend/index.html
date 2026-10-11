@@ -102,7 +102,11 @@
              placeholder="원하는 분위기 한 줄 (선택) — 예: 캠핑 감성, 빈티지 카페">
       <p class="note-help">배경과 조명만 바뀌어요. 물건의 색·흠집·글자는 그대로 둬요.</p>
     </div>
-    <button id="run" class="btn btn-primary btn-block" disabled>변환하기</button>
+    <p id="risk-note" class="risk-note" hidden></p>
+    <div class="run-choice">
+      <button id="run" class="btn btn-primary btn-block" disabled>AI로 정리하기</button>
+      <button id="run-bg" class="btn btn-ghost btn-block" disabled>배경만 바꾸기</button>
+    </div>
     <div id="multi-choice" class="multi-choice hidden" role="group" aria-label="여러 물건">
       <p id="multi-q" class="step-label"></p>
       <button id="multi-together" type="button" class="btn btn-ghost">한 장에 같이</button>
@@ -145,6 +149,8 @@
       </div>
 
       <p id="gate-badge" hidden></p>
+      <a id="inpaint-link" class="btn btn-ghost btn-block" hidden>🖌️ 틀린 곳 칠해서 고치기</a>
+      <div id="detail-pieces" hidden></div>
 
       <div id="detail-wrap" class="hidden">
         <p class="step-label">상세 사진 <span class="step-sub">— 인증서 · 영수증 같은 문서는 대표사진 말고 여기에 따로</span></p>

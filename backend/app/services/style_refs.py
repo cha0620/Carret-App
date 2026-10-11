@@ -1,7 +1,8 @@
 """스타일 참고(정답 사진) 고르기 (settings.style_ref, 10-05 실험).
 
 style_refs.json: [{"file", "category", "view": [각도], "prep": [준비물 — 자유 영어 문장], "parts": [화면용 라벨],
-                   "items": [물건 이름 키워드], "note"}]
+                   "items": [물건 이름 키워드], "note",
+                   "set_layout": 세트일 때 생성 프롬프트에 그대로 넣는 구도 문장 (있으면 layout_plan VLM 대신, 10-10)}]
 생성 모델엔 사진이 아니라 선 그림(refs/sketch/, eval/style_sketch.py)을 넣는다 — 사진을 주면 생김새 · 글자까지
 베낀다 (study 10-04 §16). 이미지는 같은 폴더의 refs/ (남의 상품 사진이라 git 밖).
 

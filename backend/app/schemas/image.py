@@ -43,6 +43,9 @@ class TransformRequest(BaseModel):
     composition: str | None = Field(
         default=None, description="고른 정석 구도 (GET /api/items 의 compositions[].key) — 구도의 틀로만 정리, 각도는 그대로")
 
+    mode: Literal["generate", "composite"] | None = Field(
+        default=None, description="판매자가 고른 기능 — generate(AI 생성) · composite(배경만 교체). 없으면 분석 판단대로 (10-11)")
+
     sell: list[int] | None = Field(
         default=None, max_length=20,
         description="팔 물건 (POST /api/analyze 의 objects[].index, 여러 개 가능) — 없으면 분석 판단대로")
@@ -134,6 +137,12 @@ class TransformRequest(BaseModel):
     gate_passed: bool | None = None
 
 
+class DetailPiece(BaseModel):
+    what: str
+    count: int
+    indices: list[int] = Field(default_factory=list, description="objects 번호 — 이 구성품만 따로 만들 때 sell 로 (10-11)")
+
+
 class TransformResponse(BaseModel):
     file_id: str
     preset: str
@@ -144,9 +153,11 @@ class TransformResponse(BaseModel):
     accessories: list[int] = Field(default_factory=list, description="받은 부가품 번호 그대로 (게시글 구성 표시용, 10-09)")
     item: str = "object"
     considered: list[str] = []
+    risk_reason: str | None = Field(default=None, description="생성이 잘 안될 이유가 있는데 생성을 골랐을 때 그 이유 (10-11)")
+    detail_pieces: list[DetailPiece] = Field(default_factory=list, description="대표사진(본체 하나)에서 뺀 구성품 — 상세 · 인증 목록, 원하면 따로 생성 (10-11)")
     composite_reason: str | None = Field(
         default=None, description="생성하지 않은 이유: detect_failed | inside_view | document | text_dense | "
-                                  "text_heavy | wear_heavy | gate_failed | verify_failed")
+                                  "text_heavy | wear_heavy | cut_off | overlap | multi_item | gate_failed | verify_failed")
     verify_failed: bool = Field(default=False,
                                 description="결과 보존 검사(verify) 호출 실패 — 보존 여부를 검증하지 못함")
     detect_failed: bool = Field(default=False,

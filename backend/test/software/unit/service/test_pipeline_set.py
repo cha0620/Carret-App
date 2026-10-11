@@ -95,9 +95,10 @@ def test_count_gate_mismatch_fails_gate(monkeypatch):
     assert out["count_mismatch"] == [{"what": "instruction booklet", "want": 2, "got": 3}]
 
 
-def test_count_gate_error_does_not_block(monkeypatch):
+def test_count_gate_error_blocks(monkeypatch):
+    # 검사를 못 했으면 통과가 아니다 (10-10 — 504 로 못 센 결과가 채택됐다)
     out, _ = _verify(monkeypatch, RuntimeError("vlm down"))
-    assert out == {"gate_passed": True}
+    assert out["gate_passed"] is False
 
 
 def test_count_gate_off_or_already_failed_skips_call(monkeypatch):
@@ -246,7 +247,8 @@ def test_apply_selection_item_count_follows_mains():
     a = {"item": "x", "objects": [{"what": w, "box": box, "for_sale": True, "role": "main", "photo": 0}
                                   for w in ("a", "b", "c")]}
     assert pipeline_mod.apply_selection(a, [0, 1, 2], mains=[0, 2])["item_count"] == 2
-    assert pipeline_mod.apply_selection(a, [0, 1, 2], mains=[])["item_count"] == 1
+    out = pipeline_mod.apply_selection(a, [0, 1, 2], mains=[])   # 판매자 본품 없음 → 분석 본품 3개라 전부 유지
+    assert out["item_count"] == 1 and "rep_pieces" not in out and out["leave_out_boxes"] == []   # 본품 여럿이면 대표로 줄이지 않는다
 
 
 def test_transform_request_mains_must_be_in_sell():
@@ -263,3 +265,25 @@ def test_transform_request_accepts_null_lists():
     r = TransformRequest(file_id="a" * 32, preset="studio_white", sell=None, accessories=None, mains=None,
                          extra_view_ids=None, ref_file=None, item_id=None)
     assert r.accessories is None
+
+
+# ── fixed_pieces (10-10 정답 구성품) ──
+def test_pieces_uses_fixed_over_analysis_objects():
+    s = {"objects": LEGO, "fixed_pieces": [["main piece (desk calendar)", 1], ["photo card", 3]]}
+    assert pipeline_mod._pieces(s, 0) == [("main piece (desk calendar)", 1), ("photo card", 3)]
+
+
+def test_pieces_fixed_total_under_two_is_not_a_set():
+    assert pipeline_mod._pieces({"objects": LEGO, "fixed_pieces": [["main piece (x)", 1]]}, 0) is None
+
+
+def test_pieces_without_fixed_falls_back_to_set_pieces():
+    s = {"objects": LEGO, "fixed_pieces": []}
+    assert pipeline_mod._pieces(s, 0) == pipeline_mod.set_pieces(LEGO)
+
+
+def test_set_prompt_named_main_piece_not_in_front_row():
+    p = pipeline_mod.set_prompt([("main piece (desk calendar)", 1), ("sticker", 2)])
+    d = json.loads(p)
+    front = d["layout"].split("main piece large at front center")[1]
+    assert "desk calendar" not in front and "sticker" in front

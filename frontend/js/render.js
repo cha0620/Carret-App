@@ -21,6 +21,11 @@ function renderGate(res) {
     if (res.composite_reason === 'wear_heavy') {
       return show('ℹ️ 사용감이 많은 물건이라 상태를 그대로 보여드리려고 원본 사진을 그대로 두었어요', '#5d6d7e');
     }
+    const RETAKE = {
+      overlap: 'ℹ️ 구성품이 겹쳐 있어 원본 사진을 그대로 두었어요 — 겹치지 않게 펼쳐 다시 찍으면 정리된 사진으로 만들어 드려요',
+      cut_off: 'ℹ️ 물건이 사진에 다 안 나와 원본 사진을 그대로 두었어요 — 전체가 나오게 다시 찍으면 정리해 드려요',
+    };
+    if (RETAKE[res.composite_reason]) return show(RETAKE[res.composite_reason], '#5d6d7e');
     return res.composite_reason === 'inside_view'
       ? show('ℹ️ 물건 일부·내부를 찍은 사진이라 배경을 바꾸지 않고 원본을 그대로 보여드려요', '#5d6d7e')
       : show('ℹ️ 배경을 바꾸지 않고 원본 사진을 그대로 보여드려요', '#5d6d7e');
@@ -32,6 +37,10 @@ function renderGate(res) {
       ? show(res.detect_failed
           ? '⚠️ 원본 물건 사진에 배경만 바꿨어요 (사진 분석은 하지 못했어요)'
           : '⚠️ 원본 물건 사진에 배경만 바꿨어요 (결과 검사는 하지 못했어요)', '#b9770e')
+      : res.composite_reason === 'user_choice'
+        ? show('🛡️ 원본 물건 사진에 배경만 바꿨어요', '#2a7f2a')
+      : res.composite_reason === 'overlap'
+        ? show('🛡️ 구성품이 겹쳐 있어 원본 사진에 배경만 바꿨어요 — 겹치지 않게 펼쳐 다시 찍으면 정리된 사진으로 만들어 드려요', '#2a7f2a')
       : show(res.composite_reason === 'document'
           ? '🛡️ 인쇄된 글자·그림이 곧 상품이라 원본 물건 사진에 배경만 바꿨어요'
           : '🛡️ 하자·글자를 지키려고 원본 물건 사진에 배경만 바꿨어요', '#2a7f2a');
@@ -40,7 +49,9 @@ function renderGate(res) {
     return show('⚠️ 보존 검사를 하지 못했습니다 — 생성 이미지에서 로고·글자가 바뀌었을 수 있어요', '#c0392b');
   }
   // 생성본: 로고·주요 글자만 검사한다. 흠집·얼룩은 자동으로 검사하지 않는다 — 과장하지 않게 같이 알린다
-  const wearNote = ' · 흠집·얼룩은 자동 검사하지 않아요, 원본 사진으로 확인해 주세요';
+  // 위험하다고 본 사진인데 생성을 골랐다 (10-11) — 결과를 원본과 꼭 비교하게
+  const wearNote = ' · 흠집·얼룩은 자동 검사하지 않아요, 원본 사진으로 확인해 주세요'
+    + (res.risk_reason ? ' · 생성이 잘 안될 수 있는 사진이라 원본과 꼭 비교해 주세요' : '');
   const passed = res.gate_passed;
   if (passed === null || passed === undefined) {
     return show('ℹ️ AI가 다시 그린 사진이에요' + wearNote, '#5d6d7e');

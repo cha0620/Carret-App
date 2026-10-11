@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.routes import feedback
 from app.api.routes import images
 from app.api.routes import items
+from app.api.routes import inpaint
 from app.api.routes import transform
 from app.core import db
 from app.core.config import settings
@@ -46,6 +47,7 @@ app.include_router(images.router, prefix="/api/images", tags=["images"])
 app.include_router(transform.router, prefix="/api", tags=["transform"])
 app.include_router(feedback.router, prefix="/api", tags=["feedback"])
 app.include_router(items.router, prefix="/api", tags=["items"])
+app.include_router(inpaint.router, prefix="/api", tags=["inpaint"])
 
 # 2) 결과 파일 서빙 — storage 추상화를 거친다 (STORAGE_BACKEND=local/s3 무관하게 동일 URL로 서빙)
 # 이미지(original · result)만 — quality(성적표 · inspect · 분석 JSON)는 dev API 로만 읽는다 (10-05)

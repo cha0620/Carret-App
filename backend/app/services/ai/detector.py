@@ -234,10 +234,11 @@ def layout_plan(answer: bytes, photos: list[bytes], pieces: list[tuple[str, int]
             data = {}
         if obs is not None:
             obs.update(output=data, usage_details=_usage(resp))
-    text = _text(data.get("layout")) if isinstance(data, dict) else None
+    # 배치는 문장 두어 개 — 글자 잠금 길이(TEXT_LOCK_MAX_CHARS)로 자르면 문장 중간에서 끊긴다 (10-10)
+    text = prompt_safe(data.get("layout"), 400) if isinstance(data, dict) and data.get("layout") else None
     if not text:
         raise ValueError(f"layout_plan: 응답에 layout 없음: {str(data)[:200]}")
-    return text[:400]
+    return text
 
 
 def photo_review(images: list[bytes], answer: bytes | None = None, needs: list[str] | None = None) -> dict:
@@ -317,6 +318,7 @@ def analyze(image_bytes: bytes) -> dict:
         "text_level": level,
         "item_count": _count(data.get("item_count")),
         "item_cut_off": data.get("item_cut_off") is True,   # 물건이 사진 밖으로 잘림 — 없으면 False (예전 동작)
+        "pieces_overlap": data.get("pieces_overlap") is True,   # 구성품끼리 겹쳐 가려짐 (10-10) — 없으면 False
         "objects": _parse_objects(data.get("objects")),
         # 물건 위 글자 (10-01, 글자 읽기 호출을 합침). 응답에 texts 목록이 없으면(옛 프롬프트) 키를 두지
         # 않는다 — read_text 가 예전처럼 따로 읽는다. 글자 수준이 simple 이 아니면 쓰지 않으니 비운다

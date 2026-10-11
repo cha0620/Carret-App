@@ -31,6 +31,8 @@ class Settings(BaseSettings):              # ⭐ 대문자 클래스
     device: str = "cpu"
     fal_key: SecretStr = SecretStr("")
     fal_model: str = "fal-ai/flux-2/flash/edit"
+    # 칠한 곳 고치기 A/B (10-11) — A 는 fal_model(flash, 마스크 없음 → 서버가 칠한 곳만 붙임), B 는 마스크 · 원본 참고를 받는 인페인팅
+    inpaint_b_model: str = "fal-ai/flux-kontext-lora/inpaint"
     # 구도 잘림/자막 오버레이 감지 시 재생성 횟수 (최초 포함) — 상한 없으면
     # 오설정(.env 오타 등) 시 invalid 가 계속 나올 때 fal.ai/VLM 비용이 무한정 나간다.
     max_generate_attempts: int = Field(default=2, ge=1, le=5)
@@ -105,6 +107,7 @@ class Settings(BaseSettings):              # ⭐ 대문자 클래스
         default="https://cloud.langfuse.com",
         validation_alias=AliasChoices("LANGFUSE_HOST", "LANGFUSE_BASE_URL"),
     )
+    langfuse_prompts: bool = True       # false 면 프롬프트는 저장소 것만 — 트레이스는 그대로 (eval 실험, 10-10)
 
     db_path: str = "data/carret.db"
     storage_backend: str = "local"      # "local" | "s3"

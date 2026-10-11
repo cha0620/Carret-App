@@ -56,9 +56,17 @@ async function shoot(browser, name, width) {
     }
     if (u.pathname === '/api/items' && r.method() === 'POST') return j(item);
     if (u.pathname === '/api/components') return j({ objects: objs, contents_hidden: false, extras: [] });
-    if (u.pathname === '/api/analyze') return j({ item: 'lego set', item_count: 1, objects: objs, route: 'generate', reason: null });
+    if (u.pathname === '/api/analyze') return j({ item: 'lego set', item_count: 1, objects: objs, route: process.env.UI_REASON ? 'composite' : 'generate', reason: process.env.UI_REASON || null });  // UI_REASON=overlap 등 — 배경 교체 안내 문구 확인
     if (u.pathname.endsWith('/review')) return j(review);
     // 변환은 서버의 요청 검증만 거치게 — 가짜 물건이라 400(같은 물건 아님)·404 는 정상, 422(형식 오류)는 실패 (10-09 accessories:null 422)
+    // UI_RESULT=1 — 결과 화면(대표 본체 + 구성품 검증 목록 · 따로 만들기) 확인용 가짜 변환 (10-11)
+    if (u.pathname === '/api/transform' && process.env.UI_RESULT) {
+      const sent = JSON.parse(r.postData() || '{}');
+      return j({ result_url: '/fake/' + (sent.separate ? 1 : 0), route: 'generate', detail_pieces: sent.separate ? [] : [
+        { what: 'minifigure', count: 3, indices: [1, 2, 3] },
+        { what: 'instruction booklet', count: 2, indices: [4, 5] },
+        { what: 'box', count: 1, indices: [6] }] });
+    }
     if (u.pathname === '/api/transform') return r.continue();
     return r.continue();
   });
@@ -81,6 +89,16 @@ async function shoot(browser, name, width) {
   await p.evaluate(() => document.getElementById('run').click());
   const [st, body] = await Promise.race([tx, new Promise(res => setTimeout(() => res([0, '변환 요청이 안 나감']), 5000))]);
   counts.transform = st;
+  if (process.env.UI_RESULT) {
+    await new Promise(res => setTimeout(res, 1500));
+    counts.detailPieces = await p.evaluate(() => document.querySelectorAll('#detail-pieces .detail-piece').length);
+    if (!counts.detailPieces) problems.push('비어 있음: detailPieces');
+    await p.evaluate(() => document.querySelector('#detail-pieces .detail-piece button')?.click());
+    await new Promise(res => setTimeout(res, 1500));
+    counts.pieceImg = await p.evaluate(() => document.querySelectorAll('#detail-pieces .detail-piece-img').length);
+    if (!counts.pieceImg) problems.push('따로 만들기 결과 없음');
+    await p.screenshot({ path: path.join(OUT, 'result_' + name), fullPage: true });
+  }
   if (st === 0 || st === 422 || st >= 500) problems.push(`변환 요청 ${st}: ${body}`);
   await p.close();
   return { name, counts, problems };

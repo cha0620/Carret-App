@@ -22,6 +22,9 @@ Report:
    item_cut_off — true if part of an item for sale is outside the photo (cut by the frame edge) or
    hidden behind something, so its whole outline is not shown. A close-up of one spot is
    "inside_view", not cut off. false if every item for sale is fully in the photo.
+   pieces_overlap — true if two or more pieces for sale lie on top of each other or are stacked, so a
+   piece is partly hidden by another piece (a photocard lying on a calendar, cards fanned over each other).
+   Pieces packed side by side in their box or simply touching are NOT overlap. false for a single item.
 
 2. considered — 3~8 inspection terms for THIS item, most likely first
    (e.g. clothing: stain, tear, pilling; phone: scratch, crack, display line).

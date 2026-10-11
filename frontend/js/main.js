@@ -9,6 +9,9 @@ const fileInput = document.getElementById('file');
 const urlInput  = document.getElementById('url-input');
 const urlBtn    = document.getElementById('url-run');
 const runBtn    = document.getElementById('run');
+const runBgBtn  = document.getElementById('run-bg');   // 배경만 바꾸기 — 생성과 따로 고른다 (10-11)
+const riskNote  = document.getElementById('risk-note');
+function setRunDisabled(v) { runBtn.disabled = v; runBgBtn.disabled = v; }
 const statusEl  = document.getElementById('status');
 const beforeImg = document.getElementById('before');
 const afterImg  = document.getElementById('after');
@@ -92,7 +95,7 @@ function setBusy(on) {
   for (const b of document.querySelectorAll('.sell-check')) b.disabled = on;   // 변환 중엔 고르기 잠금
   for (const el of document.querySelectorAll('#obj-list select, #obj-list input')) el.disabled = on;
   objSaveBtn.disabled = on || !needsSave();
-  runBtn.disabled = on || !canRun();
+  setRunDisabled(on || !canRun());
   if (item) drawArrange();
 }
 
@@ -147,15 +150,29 @@ let compApplied = false;
 function syncAnalyzing() {
   analyzing = fullPending || compPending;
   renderContents();
-  runBtn.disabled = busy || !canRun();
+  setRunDisabled(busy || !canRun());
+}
+
+const BOX_RE = /\b(box|boxes|package|packaging)\b|상자|박스/i;   // 서버 pipeline.BOX_RE 와 같게
+const isBox = o => BOX_RE.test(`${o.what || ''} ${o.name_ko || ''}`);
+
+// 대표사진에 실제로 들어가는 것 — 본체 하나 (서버 rep_split 과 같은 규칙, 10-11). 본품이 둘 이상이면 전부
+function repSplit(objs) {
+  const nMain = mains.length ? mains.length : objs.filter(o => (!o.role || o.role === 'main') && !isBox(o)).length;
+  if (nMain >= 2) return [objs, []];
+  const main = objs.find(o => mains.includes(o.index)) || objs.find(o => (!o.role || o.role === 'main') && !isBox(o))
+    || objs.find(o => o.role === 'main') || objs.find(o => !isBox(o)) || objs[0];
+  if (!main) return [[], []];
+  return [[main], objs.filter(o => o !== main)];
 }
 
 function applyObjects(objs, hidden = false) {
   analysisObjects = objs;
   contentsHidden = hidden;
   // 기본값은 분석 판단 — 본품 · 구성품은 사진에, 부가품(상자 · 충전기)은 부가품으로 (서버 기본 동작과 같다)
-  sell = objs.filter(o => o.for_sale && o.role !== 'accessory').map(o => o.index);
-  accessories = objs.filter(o => o.for_sale && o.role === 'accessory').map(o => o.index);
+  // 대표사진 = 본체 하나 (10-11) — 상자 · 구성품도 고른 채로 두면 서버가 상세(검증용) 목록으로 돌린다
+  sell = objs.filter(o => o.for_sale && (o.role !== 'accessory' || isBox(o))).map(o => o.index);
+  accessories = objs.filter(o => o.for_sale && o.role === 'accessory' && !isBox(o)).map(o => o.index);
   if (!sell.length) { sell = objs.map(o => o.index); accessories = []; }
   mains = objs.filter(o => sell.includes(o.index) && o.role === 'main').map(o => o.index);
   if (!mains.length && sell.length) mains = [sell[0]];
@@ -199,12 +216,7 @@ async function loadSellObjects(fid, refreshOnly = false) {
   try {
     const a = await analyzePhoto(fid);
     if (token !== analyzeToken || fid !== fileId) return;
-    // 생성 대신 배경만 바꾸는 사진 — 이유와 어떻게 하면 정리까지 되는지 알려준다 (10-03)
-    const NOTE = {
-      cut_off: '물건이 사진에 다 안 나와서 배경만 바꿔요 — 물건 전체가 나오게 다시 찍으면 정리까지 해 드려요',
-      multi_item: '물건이 여러 개라 배경만 바꿔요 (개수가 바뀌지 않게) — 한 개만 팔면 아래에서 하나만 고르세요',
-    };
-    if (NOTE[a.reason] && !busy) statusEl.textContent = NOTE[a.reason];
+    showRisk(a.reason);
     await quick;
     // 빠른 목록이 실패했을 때만 분석 목록으로 (서버가 분석 objects 를 구성품 목록으로 맞춰 주므로 번호가 같다)
     if (!compApplied && !compPending && fid === fileId) applyObjects(a.objects || [], !!a.contents_hidden);
@@ -215,6 +227,30 @@ async function loadSellObjects(fid, refreshOnly = false) {
       syncAnalyzing();
     }
   }
+}
+
+// 생성이 잘 안될 수 있는 사진 — 강제로 배경 교체하지 않고 이유를 알려 판매자가 고르게 한다 (10-11 사용자).
+// 실패 가능성 %는 기록(생성을 고른 결과의 risk_reason)이 쌓이면 붙인다 — 아직 정하지 않음
+const RISK = {
+  cut_off: '물건이 사진에 다 안 나와서, AI가 안 보이는 부분을 지어낼 수 있어요',
+  overlap: '구성품이 서로 겹쳐 있어서, AI가 가려진 부분을 지어내거나 복제할 수 있어요',
+  multi_item: '물건이 여러 개라 AI가 개수를 바꿀 수 있어요 — 한 개만 팔면 아래에서 하나만 고르세요',
+  text_dense: '잔글씨가 많아서 AI가 글자를 뭉갤 수 있어요',
+  wear_heavy: '사용감이 많아서 AI가 흠집을 지우거나 과장할 수 있어요',
+  document: '글자가 곧 물건(문서 · 책)이라 한 글자만 바뀌어도 다른 물건이 돼요',
+};
+const FIXED = { inside_view: '물건 내부 · 일부를 찍은 사진이라 원본 그대로 보여드려요',
+                detect_failed: '사진 분석을 못 해서 배경만 바꿀 수 있어요' };
+function showRisk(reason) {
+  const fixed = FIXED[reason];
+  riskNote.hidden = !(RISK[reason] || fixed);
+  riskNote.textContent = fixed ? 'ℹ️ ' + fixed
+    : RISK[reason] ? `⚠️ AI 생성이 잘 안될 수 있어요 — ${RISK[reason]}. 원본을 지키려면 [배경만 바꾸기]를 추천해요` : '';
+  runBtn.classList.toggle('btn-primary', !reason);
+  runBtn.classList.toggle('btn-ghost', !!reason);
+  runBgBtn.classList.toggle('btn-primary', !!reason);
+  runBgBtn.classList.toggle('btn-ghost', !reason);
+  runBtn.hidden = !!fixed;           // 고를 수 없는 경우 — 서버도 생성을 받지 않는다
 }
 
 // 구성품 종류 — 서버 set_pieces 와 같은 규칙 (끝 번호를 뗀 이름). 본품(main)은 따로 한 줄
@@ -409,8 +445,8 @@ function renderContents() {
   head.className = 'contents-title';
   head.textContent = '대표사진에 담길 것';
   el.append(head);
-  const objs = (analysisObjects || []).filter(o => sell && sell.includes(o.index))
-    .map(o => ({ ...o, role: mains.includes(o.index) ? 'main' : 'component' }));
+  const [repObjs, restObjs] = repSplit((analysisObjects || []).filter(o => sell && sell.includes(o.index)));
+  const objs = repObjs.map(o => ({ ...o, role: mains.includes(o.index) ? 'main' : 'component' }));
   if (!objs.length) {
     const p = document.createElement('p');
     p.className = 'muted';
@@ -434,6 +470,15 @@ function renderContents() {
     }
   }
   el.append(ul);
+  if (restObjs.length) {
+    // 개수 세기 · 확인은 상세 사진 쪽으로 (10-10 — 여러 개를 한 장에 생성하면 복제 · 지어내기)
+    const cnt = new Map();
+    for (const o of restObjs) { const n = nameOf(o).replace(/\s*\d+$/, ''); cnt.set(n, (cnt.get(n) || 0) + 1); }
+    const p = document.createElement('p');
+    p.className = 'muted';
+    p.textContent = '상세 사진 · 구성품 확인으로: ' + [...cnt].map(([n, c]) => c > 1 ? `${n} ${c}개` : n).join(', ');
+    el.append(p);
+  }
   if (contentsHidden) {
     // 안 보이는 건 지어내지 않는다 — 목록에도 대표사진에도 넣지 않고, 펼친 사진을 달라고 한다 (10-09 사용자)
     const w = document.createElement('p');
@@ -800,15 +845,15 @@ function selectPhoto(p, comp) {
   const role = photoRole(p.file_id);
   if (role === 'proof' || role === 'keep') {          // 변환하지 않는 사진 — 분석도 안 한다 (setBusy 가 canRun 으로 지킨다)
     resetSell();
-    runBtn.disabled = true;
+    setRunDisabled(true);
     statusEl.textContent = role === 'proof'
       ? '근거 사진(설명서 · 회로 등)은 원본 그대로 올려요 — 변환하지 않아요'
       : '팔지 않는 물건으로 표시된 사진이에요 — 팔 물건이면 위에서 바꿔 주세요';
     return;
   }
   loadSellObjects(p.file_id);
-  runBtn.disabled = !canRun();
-  statusEl.textContent = '이 구도로 변환하려면 변환하기를 누르세요';
+  setRunDisabled(!canRun());
+  statusEl.textContent = '이 구도로 만들려면 [AI로 정리하기] 또는 [배경만 바꾸기]를 누르세요';
 }
 
 function firstGoodPhoto(it) {
@@ -890,8 +935,8 @@ urlBtn.onclick = async () => {
     afterImg.hidden = true;
     clearResults();
     fileInput.value = '';
-    statusEl.textContent = '업로드 완료! 변환하기를 누르세요';
-    runBtn.disabled = false;
+    statusEl.textContent = '업로드 완료! [AI로 정리하기] 또는 [배경만 바꾸기]를 누르세요';
+    setRunDisabled(false);
   } catch (e) {
     statusEl.textContent = e.message;
   } finally {
@@ -923,6 +968,66 @@ function showResult(data) {
   afterImg.hidden = false;
   renderMetaChips(data);
   renderGate(data);
+  renderDetailPieces(data);
+  // 칠한 곳 고치기 A/B (10-11) — 이 결과를 바탕으로
+  const ip = document.getElementById('inpaint-link');
+  ip.hidden = !(data.file_id && data.preset);
+  if (!ip.hidden) ip.href = `/inpaint.html?file_id=${encodeURIComponent(data.file_id)}&preset=${encodeURIComponent(data.preset)}`;
+}
+
+// 대표사진은 본체 하나 (10-11) — 뺀 구성품(상자 포함)은 개수와 함께 아래에 (검증용).
+// 원하면 구성품마다 따로 작게 생성 — 누를 때만 (생성 비용). VLM 이 준 이름은 textContent 로만
+function renderDetailPieces(data) {
+  const dp = document.getElementById('detail-pieces');
+  const pieces = data.detail_pieces || [];
+  dp.hidden = !pieces.length;
+  dp.replaceChildren();
+  if (!pieces.length) return;
+  const head = document.createElement('p');
+  head.className = 'muted';
+  head.textContent = '대표사진엔 본체만 — 같이 들어 있는 구성품 (원본 사진을 상세 사진으로 올리면 검증용으로 충분해요):';
+  dp.append(head);
+  const fileId_ = fileId, comp_ = composition;
+  for (const p of pieces) {
+    const row = document.createElement('div');
+    row.className = 'detail-piece';
+    const name = document.createElement('span');
+    name.textContent = `${p.what} ${p.count}개`;
+    row.append(name);
+    const ix = p.indices || [];
+    if (ix.length) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-small';
+      btn.textContent = '따로 만들기';
+      btn.onclick = async () => {
+        if (busy) return;
+        setBusy(true);                 // 메인 변환 · 다른 구성품과 동시에 유료 생성이 나가지 않게 (10-11 리뷰)
+        btn.disabled = true;
+        btn.textContent = '만드는 중...';
+        try {
+          // 같은 종류가 여럿(카드 3장)이면 그 묶음만 — 따로: 다른 구성품이 섞인 참고 사진은 넣지 않는다
+          const out = await requestTransform(fileId_, PRESET, comp_, ix, true, null, null, refFile, null, [ix[0]]);
+          if (fileId_ !== fileId) return;
+          const img = document.createElement('img');
+          img.className = 'detail-piece-img';
+          img.alt = p.what;
+          img.src = out.result_url + '?t=' + Date.now();
+          row.querySelector('img')?.remove();
+          row.append(img);
+          btn.textContent = '다시 만들기';
+        } catch (e) {
+          btn.textContent = '실패 — 다시';
+          statusEl.textContent = '구성품 생성 실패: ' + e.message;
+        } finally {
+          setBusy(false);
+          btn.disabled = false;
+        }
+      };
+      row.append(btn);
+    }
+    dp.append(row);
+  }
 }
 
 // 물건별 결과 — 누르면 위 큰 화면에 (VLM 이 준 물건 이름은 textContent 로만)
@@ -952,7 +1057,7 @@ function renderMultiResults(list) {
   });
 }
 
-async function runSeparate(fileId_, comp_, picked) {
+async function runSeparate(fileId_, comp_, picked, mode = null) {
   const names = new Map((analysisObjects || []).map(o => [o.index, o.what || `물건 ${o.index + 1}`]));
   const ok = [], failed = [];
   for (const [k, i] of picked.entries()) {
@@ -960,7 +1065,7 @@ async function runSeparate(fileId_, comp_, picked) {
     const label = names.get(i) || `물건 ${i + 1}`;
     try {
       // 따로: 다른 사진은 다른 구성품이 섞여 넣지 않는다 (10-09 리뷰)
-      ok.push({ label, data: await requestTransform(fileId_, PRESET, comp_, [i], true, null, null, refFile, null) });
+      ok.push({ label, data: await requestTransform(fileId_, PRESET, comp_, [i], true, null, null, refFile, null, null, mode) });
     } catch (e) {
       failed.push(label);
     }
@@ -974,7 +1079,7 @@ async function runSeparate(fileId_, comp_, picked) {
                                        : `완료! 🎉 물건 ${ok.length}개`;
 }
 
-runBtn.onclick = async () => {
+async function runWith(mode) {
   if (busy || !canRun()) return;
   const fileId_ = fileId;        // 변환 중 사진을 바꿔도 이 결과 · 피드백은 이 사진에
   const comp_ = composition;
@@ -998,12 +1103,12 @@ runBtn.onclick = async () => {
   renderMultiResults([]);
   setBusy(true);
   if (how === 'separate') {
-    try { await runSeparate(fileId_, comp_, picked); } finally { setBusy(false); }
+    try { await runSeparate(fileId_, comp_, picked, mode); } finally { setBusy(false); }
     return;
   }
-  statusEl.textContent = '변환 중... (몇 초 걸려요)';
+  statusEl.textContent = mode === 'composite' ? '배경 바꾸는 중...' : 'AI로 정리하는 중... (몇 초 걸려요)';
   try {
-    const data = await requestTransform(fileId_, PRESET, comp_, sell_, false, acc_, extraViewIds(), refFile, item && item.item_id, mains_);
+    const data = await requestTransform(fileId_, PRESET, comp_, sell_, false, acc_, extraViewIds(), refFile, item && item.item_id, mains_, mode);
     showResult(data);
 
     // 피드백: 우선 빈 박스 표시, 기존 피드백 있으면 채워넣기
@@ -1026,7 +1131,9 @@ runBtn.onclick = async () => {
   } finally {
     setBusy(false);
   }
-};
+}
+runBtn.onclick = () => runWith('generate');
+runBgBtn.onclick = () => runWith('composite');
 
 // ---- 피드백 ----
 feedbackStars.onclick = (e) => {

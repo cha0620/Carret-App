@@ -19,6 +19,25 @@ HERE = Path(__file__).resolve().parent
 IMAGES = HERE / "data" / "images"
 
 
+def gt_pieces(post: str, used: list[str]) -> list[tuple[str, int]] | None:
+    """정답 구성품 (eval/data/posts/<post>/objects.json, 10-10) → [(종류, 개수)]. 생성에 들어간 사진(used)에 보이는
+    판매 본품 · 구성품만 — 근거 사진에서만 보인 것은 모델이 못 본다. 정답이 없으면 None (분석에서)."""
+    f = HERE / "data" / "posts" / post / "objects.json"
+    if not f.exists():
+        return None
+    # 대표사진 = 본체 하나 (10-11 사용자, 10-10 엔 + 상자) — 나머지 구성품 개수는 상세 · 인증용. 앱의 pipeline.rep_split 과 같은 규칙
+    objs = [o for o in json.loads(f.read_text(encoding="utf-8"))["objects"]
+            if o.get("for_sale") and (int(o["count"]) if o.get("count") is not None else 1) > 0
+            and set(o.get("photos") or []) & set(used)]
+    from app.services import pipeline
+    rep, _ = pipeline.rep_split(objs, list(range(len(objs))), [i for i, o in enumerate(objs) if o.get("role") == "main"][:1])
+    if not rep:
+        return None
+    out = [(f"main piece ({objs[rep[0]].get('what') or 'item'})", int(objs[rep[0]].get("count") or 1))]
+    out += [(objs[i].get("what") or "box", 1) for i in rep[1:]]
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--posts", required=True, help="쉼표로 구분한 게시글 (dataset.json 의 post)")
@@ -31,6 +50,8 @@ def main():
     ap.add_argument("--clean-prompt", action="store_true", help="정리한 프롬프트로 통째로 (pipeline.CLEAN_PROMPT, 10-08)")
     ap.add_argument("--min-prompt", action="store_true", help="최소 프롬프트 (pipeline.MIN_PROMPT, 10-09) — 목록 · 이름 · 금지 없이")
     ap.add_argument("--prompt-file", help="생성 프롬프트를 이 파일 내용 그대로 (10-09 세트 JSON 실험)")
+    ap.add_argument("--no-gt-pieces", action="store_true", help="세트 구성품을 정답(data/posts/<post>/objects.json) 대신 분석에서")
+    ap.add_argument("--force-generate", action="store_true", help="글자 많음(text_dense) · 잘림(cut_off) · 겹침(overlap) 이어도 배경 교체로 보내지 않고 생성 (10-10 실험)")
     ap.add_argument("--set-prompt", action="store_true", help="세트면 종류 · 개수 JSON, 아니면 최소 프롬프트 (10-09) + 개수 게이트")
     ap.add_argument("--ref-sketch", action="store_true", help="--ref-text 와 함께: 정답 선 그림도 같이 넣는다")
     a = ap.parse_args()
@@ -41,8 +62,8 @@ def main():
                       DB_PATH=str(run_dir / "carret.db"), KEEP_ATTEMPTS="true",
                       STYLE_REF="false" if a.no_style_ref else "true",
                       MULTI_VIEW="false" if a.no_multi_view else "true",
-                      # 실험은 저장소의 프롬프트로 — Langfuse 에 등록된 옛 프롬프트가 덮지 않게 (트레이스도 꺼진다)
-                      LANGFUSE_PUBLIC_KEY="", LANGFUSE_SECRET_KEY="")
+                      # 실험은 저장소의 프롬프트로 — Langfuse 에 등록된 옛 프롬프트가 덮지 않게. 트레이스는 남긴다 (10-10)
+                      LANGFUSE_PROMPTS="false")
     if a.model:
         os.environ["FAL_MODEL"] = a.model
     if a.set_prompt:
@@ -53,6 +74,11 @@ def main():
     from app.services import pipeline, style_refs
     from app.services.ai import detector
     from app.services.persistence import storage
+    if a.force_generate:
+        _first = pipeline._composite_first_reason
+        # 그 두 판단만 지우고 다시 본다 — 뒤의 wear_heavy · overlap · multi_item 은 그대로 (10-10 리뷰).
+        # dense 를 생성으로 보내면 글자 읽기 · 글자 잠금이 빠진다 — 결과를 "dense 도 된다"로 읽지 않는다
+        pipeline._composite_first_reason = lambda s: _first({**s, "text_level": "simple", "item_cut_off": False, "pieces_overlap": False})
     from main import app
     db.init_db()
     client = TestClient(app)
@@ -107,11 +133,13 @@ def main():
                     # 옷은 다른 각도를 넣지 않는다 — 각도마다 모양이 달라 선 그림체로 옆에 콜라주했다 (10-08)
                     extras = []
                 t0 = time.time()
+                gt = None if a.no_gt_pieces else gt_pieces(post, [names[f] for f in [main_id, *extras]])   # 한 번만 — 기록과 실제가 같게
                 res = pipeline.run_transform(main_id, a.preset, composition=comp, extra_view_ids=extras,
                                              ref_category=o.get("category"), ref_view=views.get(main_id),
                                              ref_file=planned[0] if planned else None, ref_layout=layout,
                                              ref_sketch=a.ref_sketch, clean_prompt=("text:" + Path(a.prompt_file).read_text(encoding="utf-8").strip()) if a.prompt_file else "set" if a.set_prompt else "min" if a.min_prompt else a.clean_prompt,
-                                             ref_keep=keep)
+                                             ref_keep=keep,
+                                             fixed_pieces=gt)
                 tag = f"{post}__{o['id']}{'_' + comp if comp else ''}"
                 src = storage.BASE / "result" / res["result_name"]
                 if src.exists():
@@ -120,7 +148,7 @@ def main():
                 row = {"post": post, "object": o["id"], "label": o.get("label"), "composition": comp,
                        "main": names[main_id], "main_view": views.get(main_id), "planned_ref": planned[0] if planned else None,
                        "extras": [names[f] for f in extras], "all": [names[f] for f in o["photo_ids"]],
-                       "style_ref": ref[0] if ref else None, "ref_layout": layout, "model": os.environ.get("FAL_MODEL"), "prompt_used": res.get("prompt_used"), "gen_prompts": res.get("gen_prompts") or [], "count_mismatch": res.get("count_mismatch"), "result": f"{tag}_result.jpg",
+                       "style_ref": ref[0] if ref else None, "ref_layout": layout, "model": os.environ.get("FAL_MODEL"), "prompt_used": res.get("prompt_used"), "gen_prompts": res.get("gen_prompts") or [], "count_mismatch": res.get("count_mismatch"), "gt_pieces": gt, "result": f"{tag}_result.jpg",
                        "mode": res.get("mode"), "composite_reason": res.get("composite_reason"),
                        "gate_passed": res.get("gate_passed"), "added_text": res.get("added_text"),
                        "checks": res.get("checks"), "gen_attempts": res.get("gen_attempts"),

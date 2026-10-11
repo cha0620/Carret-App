@@ -81,6 +81,7 @@ class State(TypedDict, total=False):
     text_level: str | None     # analyze 가 본 물건 위 글자 수준: none | simple | dense(잔글씨·원본에서도 못 읽음) (실패면 None)
     item_box: dict | None      # 원본에서 물건 위치 (0-1000) — 오리기 범위 (배경 교체 · item_dino)
     item_cut_off: bool         # analyze: 판매 물건이 사진 밖으로 잘림 — 생성하지 않고 배경 교체(cut_off)
+    pieces_overlap: bool       # analyze: 세트 구성품끼리 겹쳐 가려짐 — 생성하지 않고 배경 교체(overlap), 다시 찍기 안내 (10-10)
     item_count: int            # 팔려는 물건 개수 — analyze 판단, 사용자가 고르면 고른 수, eval 은 정답.
                                #   2개 이상이면 생성하지 않고 배경 교체(multi_item) — 10-03, 개수 문장(count_lock)은 효과 없어 뺐다
     gate_retried: bool         # verify 게이트 실패로 재생성을 이미 1회 했나
@@ -90,7 +91,7 @@ class State(TypedDict, total=False):
     mode: str                  # "generate" | "composite"(원본 물건 + 배경만 교체) | "composite_failed"
                                #   | "original"(원본 그대로 — inside_view 등)
     composite_reason: str | None   # 생성하지 않은 이유: detect_failed | inside_view | document | text_dense
-                                   #   | cut_off(물건이 잘림) | multi_item(여러 개)
+                                   #   | cut_off(물건이 잘림) | overlap(구성품이 겹침) | multi_item(여러 개)
                                    #   | text_heavy | wear_heavy | gate_failed | verify_failed
     provided_result: bytes     # dev 그래프: generate 대신 쓸 결과 이미지
     composite_error: str | None
@@ -112,6 +113,11 @@ class State(TypedDict, total=False):
     set_views: int             # 세트 생성에 실제로 넣은 참고 사진 수 — 개수 게이트가 같은 범위만 센다 (10-09)
     count_mismatch: list       # 세트 개수 게이트에서 다른 종류 [{what, want, got}] (10-09)
     gen_prompts: list          # 시도마다 실제 보낸 생성 프롬프트 — 배경 교체로 끝나면 prompt_used 가 덮여서 (10-09)
+    rep_pieces: list           # 대표사진 조각 [(종류, 1)] — 본체 하나 (apply_selection, 10-11)
+    detail_pieces: list        # 대표사진에서 뺀 구성품 [{what, count}] — 상세 · 인증용 목록 (10-10)
+    user_mode: str | None      # 판매자가 고른 기능 — "generate" | "composite" | None(분석 판단대로) (10-11)
+    risk_reason: str | None    # 생성이 잘 안될 이유(_composite_first_reason)가 있는데 생성을 골랐다 — 실패율 기록용 (10-11)
+    fixed_pieces: list         # 정답에 미리 적어 둔 구성품 [(종류, 개수)] — 있으면 분석 objects 대신 (eval/data/posts, 10-10)
     extra_views_explicit: bool  # extra_view_ids 를 판매자가 화면에서 보냈다 (10-09) — multi_view 설정과 무관하게 쓴다
     extra_view_ids: list       # multi_view: 같은 물건의 다른 각도 원본 file_id (최대 2)
     ref_category: str | None   # style_ref: 참고 고르기용 종류 · 주 사진 각도 (묶음 화면에서 안다, 10-05)
@@ -281,6 +287,48 @@ def _inside(t: dict, b: dict) -> bool:
     return b["x1"] <= cx <= b["x2"] and b["y1"] <= cy <= b["y2"]
 
 
+BOX_RE = re.compile(r"\b(box|boxes|package|packaging)\b|상자|박스")
+
+
+def _is_box(o: dict) -> bool:
+    return bool(BOX_RE.search(f"{o.get('what') or ''} {o.get('name_ko') or ''}".lower()))
+
+
+def rep_split(objs: list, idx: list[int], mains: list | None = None) -> tuple[list[int], list[int]]:
+    """대표사진에 넣을 것 = 본체 하나 (10-11 사용자: "본체만 첫 사진으로, 구성품들은 밑에 검증용으로 넘기거나
+    원하면 따로 소규모로 생성"). 10-10 엔 본체 + 상자였다. 여러 개 한 장 생성은 개수 · 정체성을 못 지킨다 (캘린더 4번).
+    idx 중에서 고른다 — 대표 = 판매자가 고른 본품(mains) → 분석 본품 → 상자 아닌 첫 것. 반환: (대표 번호, 나머지 번호)."""
+    idx = [i for i in idx if 0 <= i < len(objs)]
+    if not idx:
+        return [], []
+    # 본품이 여럿(CD 두 장 · 게임 5장)이면 "여러 개"다 — 하나만 생성하면 파는 개수와 사진이 다르다. 예전대로 (multi_item)
+    n_main = len([i for i in (mains or []) if i in idx]) if mains else \
+        len([i for i in idx if objs[i].get("role") in (None, "main") and not _is_box(objs[i])])
+    if n_main >= 2:
+        return idx, []
+    main = next((i for i in (mains or []) if i in idx), None)
+    if main is None:
+        main = next((i for i in idx if objs[i].get("role") in (None, "main") and not _is_box(objs[i])), None)
+    if main is None:   # 분석이 상자를 본품으로 봤다(보드게임 상자) — 상자만 남으므로 구성품보다 그게 본체
+        main = next((i for i in idx if objs[i].get("role") == "main"), None)
+    if main is None:
+        main = next((i for i in idx if not _is_box(objs[i])), idx[0])
+    return [main], [i for i in idx if i != main]
+
+
+def _rep_info(objs: list, rep: list[int], rest: list[int]) -> dict:
+    """대표 조각(개수 게이트 · 세트 프롬프트 기준)과 상세로 넘긴 구성품 개수(인증용 목록).
+    indices 는 objects 번호 — 화면에서 구성품 하나만 따로 만들 때 sell 로 보낸다 (10-11)."""
+    pieces = [(f"main piece ({objs[rep[0]]['what']})", 1)] + [(objs[i]["what"], 1) for i in rep[1:]]
+    detail: dict[str, list[int]] = {}
+    for i in rest:
+        if objs[i].get("for_sale") or objs[i].get("role"):
+            k = re.sub(r"[\s#]*\d+$", "", (objs[i].get("what") or "").strip())
+            detail.setdefault(k, []).append(i)
+    return {"rep_pieces": pieces,
+            "detail_pieces": [{"what": k, "count": len(ix), "indices": ix} for k, ix in detail.items()]}
+
+
 def apply_selection(a: dict, sell: list | None, answer_count: int | None = None, mains: list | None = None) -> dict:
     """팔 물건 고르기 (10-03) — 사용자가 고른 objects 로 개수 · 위치 · 이름을 다시 정한다.
     고르지 않은 물건은 leave_out(생성에서 빼라) · leave_out_boxes(배경 교체에서 지운다)로,
@@ -294,6 +342,11 @@ def apply_selection(a: dict, sell: list | None, answer_count: int | None = None,
     objs = a.get("objects") or []
     if sell is not None and objs:
         idx = {i for i in sell if isinstance(i, int) and not isinstance(i, bool) and 0 <= i < len(objs)}
+        rep, rest = rep_split(objs, sorted(idx), mains)
+        if rep and rest:   # 고른 것 중 본체 하나만 사진에, 나머지는 상세(인증)로 (10-11)
+            # rest 가 비면 본품 여럿(multi_item)이거나 뺄 게 없다 — 고른 그대로 · 본품 수 그대로 (10-10 tester)
+            out.update(_rep_info(objs, rep, rest))
+            idx, mains = set(rep), [rep[0]]
         picked = [objs[i] for i in sorted(idx)]
         dropped = [o for i, o in enumerate(objs) if i not in idx]
         if picked:
@@ -334,18 +387,24 @@ def _drop_accessories(a: dict, objs: list) -> dict:
     개수(item_count)는 바꾸지 않는다 — 본품 + 본구성품(레고 차 + 피규어 + 설명서)을 세면 "여러 개"가 돼 배경 교체로 간다."""
     # 기준 사진(photo 0)의 것만 — 박스 · 글자 · 이름이 다 이 사진 기준이다 (10-09 리뷰)
     objs = [o for o in objs if o.get("photo", 0) == 0]
-    drop = [o for o in objs if o.get("for_sale") and o.get("role") == "accessory"]
-    keep = [o for o in objs if o.get("for_sale") and o.get("role") != "accessory"]
+    sale = [i for i, o in enumerate(objs) if o.get("for_sale")]
+    rep, rest = rep_split(objs, sale)
+    # 대표사진 = 본체 하나 (10-11 사용자) — 상자 · 구성품 · 부가품은 빼고 상세(인증)로
+    keep = [objs[i] for i in rep]
+    drop = [objs[i] for i in rest]
+    info = _rep_info(objs, rep, rest) if rep else {}
     if not drop or not keep:
-        return {}
+        return info
     names = {o["what"] for o in keep}
     # 박스는 기준 사진(photo 0)의 것만 — 게시글 구성품 목록엔 참고 사진에서 본 것도 있다 (10-09)
     here = keep
     out = {"leave_out": list(dict.fromkeys([*(a.get("leave_out") or []),
                                              *(o["what"] for o in drop if o["what"] not in names)])),
-           "leave_out_boxes": [*(a.get("leave_out_boxes") or []), *(o["box"] for o in drop)],
-           "item_box": {"x1": min(o["box"]["x1"] for o in here), "y1": min(o["box"]["y1"] for o in here),
-                        "x2": max(o["box"]["x2"] for o in here), "y2": max(o["box"]["y2"] for o in here)}}
+           "leave_out_boxes": [*(a.get("leave_out_boxes") or []), *(o["box"] for o in drop if o.get("box"))],
+           **({"item_box": {"x1": min(o["box"]["x1"] for o in here), "y1": min(o["box"]["y1"] for o in here),
+                            "x2": max(o["box"]["x2"] for o in here), "y2": max(o["box"]["y2"] for o in here)}}
+              if all(o.get("box") for o in here) else {}),
+           **info}
     if "item_texts" in a:
         out["item_texts"] = [t for t in a.get("item_texts") or []
                              if not (any(_inside(t, o["box"]) for o in drop)
@@ -380,6 +439,12 @@ def _composite_first_reason(s: State) -> str | None:
         # 물건이 사진 밖으로 잘렸다 — 정리하며 구도를 잡으면 안 보이던 부분을 지어낸다 (10-03 사용자 결정:
         # 전체가 안 나온 사진은 배경 제거만, 다시 찍으면 정리까지)
         return "cut_off"
+    whole = set_pieces(_seen(s, 0), s.get("sell"), s.get("mains"))
+    if s.get("pieces_overlap") and whole and sum(n for _, n in whole) > 2:
+        # 겹침은 기준 사진 한 장으로 본다 — 참고 사진에서만 보인 구성품은 세지 않는다 (10-10 리뷰)
+        # 세트 구성품이 겹쳐 서로 가린다 — 생성이 가려진 부분을 지어내고 같은 로고를 복제한다
+        # (10-10 시즌그리팅: 포토카드 · 달력이 겹친 사진). 원본 픽셀로 배경만, 펼쳐 다시 찍으면 정리까지
+        return "overlap"
     if (s.get("item_count") or 1) >= 2:
         # 여러 개 — 생성은 개수를 못 지킨다 (10-03 CD 2장: 개수 문장 없이 1장, 있어도 3장). 원본 픽셀로 배경만
         return "multi_item"
@@ -394,6 +459,16 @@ def plan(s: State) -> dict:
     if s.get("provided_result") is not None:
         return out   # dev 그래프 — 배경 교체로 가지 않는다 (inspect 에 엉뚱한 사유가 남지 않게)
     reason = _composite_first_reason(s)
+    # 배경 교체를 강제하지 않고 판매자가 고른다 (10-11 사용자). 위험 이유는 risk_reason 으로 남겨 실패율 기록에 쓴다.
+    # inside_view(원본 그대로) · detect_failed(생성을 검사할 기준이 없음)는 고를 수 없다
+    mode = s.get("user_mode")
+    if mode == "generate" and reason not in ("inside_view", "detect_failed"):
+        if reason:
+            logger.info(f"[plan] 생성 위험({reason})이지만 판매자가 생성을 골랐다")
+            out["risk_reason"] = reason
+        return out
+    if mode == "composite" and not reason:
+        reason = "user_choice"
     if reason:
         logger.info(f"[plan] 생성하지 않음: {reason}")
         out["composite_reason"] = reason
@@ -518,6 +593,16 @@ def _seen(s: State, views: int) -> list:
     return [o if o.get("photo", 0) <= views else {**o, "_unseen": True} for o in s.get("objects") or []]
 
 
+def _pieces(s: State, views: int) -> list[tuple[str, int]] | None:
+    """이 변환의 세트 구성품. 정답(fixed_pieces)이 있으면 그것 — 분석 이름("main piece", "photo pack")이 모호하고
+    개수가 틀려 개수 게이트가 엉뚱하게 셌다 (10-10 캘린더). 없으면 분석 objects 에서 (생성에 들어간 사진만)."""
+    fixed = [(str(k), int(n)) for k, n in (s.get("fixed_pieces") or s.get("rep_pieces") or []) if int(n) > 0]
+    if fixed:
+        # 정답이 한 개뿐이면 세트가 아니다 — 분석으로 넘어가지 않는다 (정답이 이긴다)
+        return fixed if sum(n for _, n in fixed) >= 2 else None
+    return set_pieces(_seen(s, views), s.get("sell"), s.get("mains"))
+
+
 def set_pieces(objects: list | None, sell: list | None = None, mains: list | None = None) -> list[tuple[str, int]] | None:
     """팔 물건(본체 + 구성품)을 종류별로 센다. 조각이 2개 미만이면 세트가 아니다 → None.
     종류 이름은 what 에서 끝 번호를 뗀 것 ("instruction booklet 2" → "instruction booklet").
@@ -546,6 +631,10 @@ def plan_layout(s: State, pieces: list[tuple[str, int]], extras: list[bytes]) ->
     판매자가 고른(또는 품목에 맞는 기본) 정답 사진의 배치를 이 구성품에 맞춘 한두 문장. 같은 구성 · 같은 정답 ·
     같은 참고 사진 수면 저장해 둔 걸 쓴다. 정답 사진이 없거나 호출이 실패하면 None (규칙 배치로)."""
     ref = s.get("ref_file")
+    # 정답마다 손으로 쓴 세트 구도 문장(set_layout)이 있으면 그걸 쓴다 — 모델이 정한 배치가 정답과 딴판이었다 (10-10 캘린더)
+    fixed = next((e.get("set_layout") for e in style_refs.load() if e["file"] == ref), None) if ref else None
+    if fixed:
+        return fixed
     answer = style_refs.answer_photo(ref) if ref else None
     if answer is None:
         return None
@@ -577,7 +666,7 @@ def set_prompt(pieces: list[tuple[str, int]], views: int = 0, background: str = 
     # 단어 단위로 본다 — "card" 가 "cardigan" 에 걸리지 않게 (10-09 리뷰)
     is_back = {k: bool(set(re.findall(r"[a-z]+", k)) & set(SET_BACK)) for k, _ in pieces}
     back = [plural(k, n) for k, n in pieces if is_back[k]]
-    front = [plural(k, n) for k, n in pieces if k != "main piece" and not is_back[k]]
+    front = [plural(k, n) for k, n in pieces if not k.startswith("main piece") and not is_back[k]]
     layout = ", ".join(([f"{' and '.join(back)} standing at the back"] if back else [])
                        + ["main piece large at front center"]
                        + ([f"{' and '.join(front)} in a row in front"] if front else []))
@@ -647,13 +736,13 @@ def generate(s: State) -> dict:
         extras = []   # 프롬프트를 통째로 받은 실험 (10-09 세트 JSON) — 메인 사진(+선 그림)만
         ref = ref if s.get("ref_sketch") else None   # 정답 원본 사진은 넣지 않는다
         preset = {**preset, "no_negative": True, "prompt": s["clean_prompt"][5:]}
-    elif s.get("clean_prompt") == "set" and set_pieces(_seen(s, len(extras[:2])), s.get("sell"), s.get("mains")):
+    elif s.get("clean_prompt") == "set" and _pieces(s, len(extras[:2])):
         # 세트면 종류 · 개수 JSON (선 그림은 넣지 않는다 — 그림 속 다른 레고를 베꼈다, 10-09).
         # 입력은 최대 3장(qwen 한도) — 메인 + 같은 세트의 다른 상품 사진 2장으로 구성품을 다 담는다.
         # 근거 사진(인증서 · 영수증 같은 문서, slot=proof)은 extra_view_ids 에 애초에 없다 (10-09 사용자)
         extras, ref = extras[:2], None
         set_views = len(extras)
-        pieces = set_pieces(_seen(s, len(extras)), s.get("sell"), s.get("mains"))
+        pieces = _pieces(s, len(extras))
         planned = plan_layout(s, pieces, extras)   # 정답 사진 기준 배치 (정답이 없거나 실패하면 규칙 배치)
         # 기능 문장은 남긴다 (10-09 리뷰): 판매자가 "안 팔아요"로 고른 물건 빼기 — 나열 · 금지 문장과 달리 지시 자체
         preset = {**preset, "no_negative": True,
@@ -902,21 +991,22 @@ def verify(s: State) -> dict:
     out = _verify_marks(s)
     # 세트 프롬프트(앱 기본, 10-09)면 개수 게이트도 같이
     if ((settings.count_gate or s.get("clean_prompt") == "set") and s.get("mode", "generate") == "generate"
-            and out.get("gate_passed") is not False and set_pieces(_seen(s, s.get("set_views", 0)), s.get("sell"), s.get("mains"))):
-        out = {**out, **_count_gate(s, set_pieces(_seen(s, s.get("set_views", 0)), s.get("sell"), s.get("mains")))}
+            and out.get("gate_passed") is not False and _pieces(s, s.get("set_views", 0))):
+        out = {**out, **_count_gate(s, _pieces(s, s.get("set_views", 0)))}
     return out
 
 
 def _count_gate(s: State, pieces: list) -> dict:
     """세트 구성품 개수 게이트 (settings.count_gate, 10-09) — 생성본에서 종류별로 다시 세어 원본과 다르면 탈락.
-    setjson-flash 2차가 설명서 3권으로 늘었는데 마크 · 글자 게이트를 통과했다. 호출 실패는 막지 않는다."""
+    setjson-flash 2차가 설명서 3권으로 늘었는데 마크 · 글자 게이트를 통과했다. 호출이 실패해도 막는다 (10-10)."""
     kinds = [k for k, _ in pieces]
     try:
         got = _with_retry(lambda: detector.count_pieces(
             s["original"], storage.load("result", s["result_name"]), kinds), "count_pieces", VERIFY_ATTEMPTS)
     except Exception as e:
-        logger.warning(f"[count_gate] 확인 못 함 — 막지 않음: {e}")
-        return {}
+        # 검사를 못 했으면 통과가 아니다 (10-10: 504 로 못 셌는데 카드 복제 · 스티커 지어낸 결과가 채택됐다)
+        logger.warning(f"[count_gate] 확인 못 함 — 통과시키지 않음: {e}")
+        return {"count_mismatch": [{"what": "(count check failed)", "want": None, "got": None}], "gate_passed": False}
     diff = [{"what": k, "want": n, "got": g} for (k, n), g in zip(pieces, got) if g != n]
     logger.info(f"[count_gate] {dict(zip(kinds, got))} · 다름 {diff}")
     return {"count_mismatch": diff, **({"gate_passed": False} if diff else {})}
@@ -1084,7 +1174,7 @@ def composite(s: State) -> dict:
                                      drop=s.get("leave_out_boxes"), keep=s.get("sell_boxes"),
                                      flat=reason == "document")
     except Exception as e:
-        if s.get("result") is None and reason in ("wear_heavy", "document", "cut_off", "multi_item"):
+        if s.get("result") is None and reason in ("wear_heavy", "document", "cut_off", "overlap", "multi_item"):
             # 하자가 넓어 "생성하면 지우거나 지어낸다"고 본 사진 / 책·음반처럼 한 글자만 바뀌어도
             # 다른 물건 — 오리기가 안 되면 생성하지 않고 원본을 그대로 보여준다
             # (생성으로 가면 하자·잔글씨 검사 없이 "보존됨" 배지가 붙는다)
@@ -1145,6 +1235,7 @@ def save_inspect(s: State) -> dict:
             "sell": s.get("sell"), "leave_out": s.get("leave_out") or [],
             "mode": s.get("mode", "generate"),
             "composite_reason": s.get("composite_reason"),
+            "user_mode": s.get("user_mode"), "risk_reason": s.get("risk_reason"),
             "gate_retried": s.get("gate_retried", False),
             "composite_error": s.get("composite_error"),
             "checks": s.get("checks", []),
@@ -1373,7 +1464,8 @@ def run_transform(file_id: str, preset_key: str, *, defer_signals: bool = False,
                   ref_view: str | None = None, ref_file: str | None = None,
                   ref_layout: str | None = None, ref_sketch: bool = False,
                   clean_prompt: bool | str = False, ref_keep: str | None = None,
-                  extra_views_explicit: bool = False, mains: list | None = None) -> dict:
+                  extra_views_explicit: bool = False, mains: list | None = None,
+                  fixed_pieces: list | None = None, user_mode: str | None = None) -> dict:
     """defer_signals=True: 누끼 비교를 하지 않고 결과에 item_signals_pending/trace_id 를 실어 보낸다 —
     호출부(transform 라우트)가 응답 뒤 item_signals_and_save() 를 돌린다.
     score_quality=True: 그래프 직후 judge 성적표를 채점 (eval · dev 만 — 운영 경로는 안 부른다)."""
@@ -1406,7 +1498,8 @@ def run_transform(file_id: str, preset_key: str, *, defer_signals: bool = False,
                                 "extra_views_explicit": extra_views_explicit,
                                 "ref_category": ref_category, "ref_view": ref_view, "ref_file": ref_file,
                                 "ref_layout": ref_layout, "ref_sketch": ref_sketch,
-                                "clean_prompt": clean_prompt, "ref_keep": ref_keep},
+                                "clean_prompt": clean_prompt, "ref_keep": ref_keep,
+                                "fixed_pieces": fixed_pieces or [], "user_mode": user_mode},
                                {"recursion_limit": RECURSION_LIMIT})
             # 채점할 때만: 그래프 도중에 같은 쌍을 돌던 다른 eval · dev 채점이 옛 점수를 저장했을 수
             # 있다 — 새로 채점하기 전에 한 번 더 지운다 (운영은 성적표를 만들지 않아 삭제 왕복을 아낀다).
@@ -1426,6 +1519,7 @@ def run_transform(file_id: str, preset_key: str, *, defer_signals: bool = False,
                 "gate_passed": out["gate_passed"],
                 "item": out.get("item", "object"),
                 "considered": out.get("considered", []),
+                "detail_pieces": out.get("detail_pieces") or [],   # 대표사진에서 뺀 구성품 — 상세 · 인증 (10-10)
                 "visual_similarity": out.get("visual_similarity"),
                 "item_similarity": out.get("item_similarity"),
                 "gen_attempts": out.get("gen_attempts"),
@@ -1433,6 +1527,7 @@ def run_transform(file_id: str, preset_key: str, *, defer_signals: bool = False,
                 "guard_report": out.get("guard_report", []),
                 "mode": out.get("mode", "generate"),
                 "composite_reason": out.get("composite_reason"),
+                "risk_reason": out.get("risk_reason"),
                 "photo_type": out.get("photo_type"),
                 "wear_level": out.get("wear_level"),
                 "watermark": out.get("watermark"),
@@ -1455,6 +1550,7 @@ def run_transform(file_id: str, preset_key: str, *, defer_signals: bool = False,
                     "photo_check": result["photo_check"],
                     "mode": result["mode"],
                     "composite_reason": result["composite_reason"],
+                    "risk_reason": result["risk_reason"],
                     "photo_type": result["photo_type"],
                     "wear_level": result["wear_level"],
                     "detect_failed": result["detect_failed"],

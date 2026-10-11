@@ -114,7 +114,7 @@ def fmt(v, d=2) -> str:
 
 
 PRE_REASONS = {"detect_failed", "inside_view", "document", "text_dense", "wear_heavy", "text_heavy",
-               "cut_off", "multi_item"}
+               "cut_off", "overlap", "multi_item"}
 
 
 def route_trace(r: dict) -> str:

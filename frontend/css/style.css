@@ -386,3 +386,14 @@ body {
 #obj-list { gap: 0; }
 .btn-sm { padding: 6px 12px; font-size: 12px; }
 @media (max-width: 560px) { #sell-objects .sell-obj { grid-template-columns: 1fr; } }
+
+/* 대표사진에서 뺀 구성품 — 검증용 목록 · 따로 만들기 (10-11) */
+#detail-pieces { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+.detail-piece { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.detail-piece .btn-small { padding: 2px 10px; font-size: 0.85em; }
+.detail-piece-img { width: 120px; height: 120px; object-fit: contain; border-radius: 6px; flex-basis: 100%; max-width: 120px; }
+
+/* 생성 · 배경 교체를 따로 고른다 (10-11) */
+.run-choice { display: flex; gap: 8px; }
+.run-choice .btn[hidden] { display: none; }
+.risk-note { color: #b9770e; font-size: 0.9em; margin: 6px 0; }

@@ -121,7 +121,7 @@ def _checked_extra_views(req: TransformRequest) -> list[str] | None:
 
 def _result_key(req: TransformRequest, extras: list[str] | None, ref: dict | None) -> str:
     """결과 이름 — 입력 조합(같이 넣은 사진 · 정답 · 고른 구성품 · 부가품)이 다르면 다른 이름 (10-09 리뷰: 덮어쓰기 방지)."""
-    key = style_key(req.preset, req.note)
+    key = style_key(req.preset, req.note) + ({"generate": "-g", "composite": "-c"}.get(req.mode or "", ""))
     if req.separate:
         return key + f"-o{req.sell[0]}"     # 물건마다 따로 — 같은 사진의 다른 물건 결과를 덮어쓰지 않게 (10-05)
     combo = {"v": sorted(extras or []), "r": ref["file"] if ref else None,
@@ -154,7 +154,7 @@ def transform(req: TransformRequest, background: BackgroundTasks):
         key = _result_key(req, extras, ref)
         out = pipeline.run_transform(req.file_id, key, defer_signals=True, note=req.note,
                                      composition=req.composition, sell=sell, mains=mains,
-                                     extra_view_ids=extras, extra_views_explicit=bool(extras),
+                                     extra_view_ids=extras, extra_views_explicit=bool(extras), user_mode=req.mode,
                                      clean_prompt="set",   # 앱 기본 (10-09): 세트면 종류 · 개수 JSON + 개수 게이트, 아니면 최소 문장
                                      # 정답 = 선 그림 + 구도 문장 (원본 정답 사진은 넣지 않는다 — 사용자 규칙)
                                      ref_file=ref["file"] if ref else None,
@@ -189,6 +189,8 @@ def transform(req: TransformRequest, background: BackgroundTasks):
         detect_failed=out.get("detect_failed", False),
         verify_failed=out.get("verify_failed", False),
         composite_reason=out.get("composite_reason"),
+        risk_reason=out.get("risk_reason"),
+        detail_pieces=out.get("detail_pieces") or [],
         photo_type=out.get("photo_type"),
         wear_level=out.get("wear_level"),
         watermark=out.get("watermark"),

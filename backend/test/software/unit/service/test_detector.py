@@ -210,7 +210,7 @@ def test_analyze_parses_full_response(monkeypatch):
         "item_box": {"x1": 200, "y1": 100, "x2": 800, "y2": 700},
         "photo_type": "product", "wear_level": "none", "watermark": "background",
         "text_level": "simple",
-        "item_count": 1, "item_cut_off": False, "objects": [],
+        "item_count": 1, "item_cut_off": False, "pieces_overlap": False, "objects": [],
     }
 
 

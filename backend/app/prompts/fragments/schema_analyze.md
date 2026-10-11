@@ -2,6 +2,7 @@ Output JSON only:
 {"item": str,
  "item_count": int,
  "item_cut_off": bool,
+ "pieces_overlap": bool,
  "objects": [{"what": str, "name_ko": str, "box_2d": [ymin, xmin, ymax, xmax], "for_sale": bool, "role": "main" | "component" | "accessory"}],
  "considered": [str],
  "item_box_2d": [ymin, xmin, ymax, xmax],

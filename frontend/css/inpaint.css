@@ -1,0 +1,18 @@
+/* 칠한 곳 고치기 (10-11) */
+.card { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px; margin: 12px 0; }
+.ip-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.ip-row input { flex: 1 1 160px; min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.ip-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 8px; }
+.ip-tools .on { background: var(--accent-soft); }
+.ip-stage { position: relative; width: 100%; touch-action: none; }
+.ip-stage img { display: block; width: 100%; border-radius: var(--radius-sm); }
+.ip-stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0.5; cursor: crosshair; }
+#ip-note { width: 100%; min-height: 64px; margin: 6px 0 10px; padding: 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); box-sizing: border-box; }
+.ip-ab { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+.ip-ab figure { margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.ip-ab img { width: 100%; border-radius: var(--radius-sm); background: var(--line); min-height: 80px; }
+.ip-ab figcaption { font-weight: 600; }
+#ip-prompt-text { white-space: pre-wrap; font-size: 0.85em; }
+.ip-history { padding-left: 20px; font-size: 0.9em; }
+.hidden { display: none !important; }
+@media (max-width: 480px) { .ip-ab { grid-template-columns: 1fr; } }

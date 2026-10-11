@@ -100,14 +100,14 @@ async function fetchRefs() {
 }
 
 async function requestTransform(fileId, preset, composition = null, sell = null, separate = false, accessories = null,
-                                extraViewIds = null, refFile = null, itemId = null, mains = null) {
+                                extraViewIds = null, refFile = null, itemId = null, mains = null, mode = null) {
   // 1) fetch → Response 객체 받기
   const resp = await fetch("/api/transform", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({ file_id: fileId, preset: preset, composition, sell, separate, accessories,
                            extra_view_ids: extraViewIds, ref_file: refFile,
-                           item_id: extraViewIds ? itemId : null, mains }),
+                           item_id: extraViewIds ? itemId : null, mains, mode }),
   });
 
   // 2) 실패면 throw (Response 상태에서)

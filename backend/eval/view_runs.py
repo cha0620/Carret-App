@@ -6,6 +6,8 @@
     python eval/view_runs.py --no-serve ...                           # 페이지만 만들기
 
 한국어 번역은 runs/<run_id>/prompt_ko.json ({"<post>__<object>": ["1차 번역", "2차 번역"]}) 이 있으면 같이 보인다.
+없는 번역은 무료 번역기(MyMemory, deep-translator)로 채워 prompt_ko.json 에 저장한다 (10-10). --no-translate 로 끈다.
+JSON 프롬프트는 키는 두고 값만 옮긴다. 프롬프트(상품 이름 · 읽은 글자 포함)가 MyMemory 로 나간다 — 싫으면 --no-translate.
 """
 import argparse
 import html
@@ -20,6 +22,48 @@ RUNS = HERE / "results" / "runs"
 IMAGES = HERE / "data" / "images"
 SKETCH = HERE / "data" / "refs" / "sketch"
 VIEW = RUNS / "_view"
+TRANSLATE = True
+
+
+def _mt(text: str) -> str:
+    """영어 → 한국어 한 덩어리. MyMemory 는 500자 제한이라 문단 · 문장으로 나눠 보낸다."""
+    from deep_translator import MyMemoryTranslator
+    tr = MyMemoryTranslator(source="en-US", target="ko-KR")
+    out = []
+    for para in text.split("\n"):
+        chunks, cur = [], ""
+        for sent in para.replace(". ", ".\x00").split("\x00"):
+            if len(cur) + len(sent) > 450 and cur:
+                chunks.append(cur); cur = ""
+            cur += sent
+        chunks.append(cur)
+        got = []
+        for c in chunks:
+            if not c.strip():
+                got.append(c); continue
+            t = tr.translate(c[:490]) or ""
+            # 한도를 넘으면 예외 대신 경고 문장을 번역인 척 돌려준다 — 저장되면 다시 번역하지 않는다 (10-10 리뷰)
+            if "MYMEMORY WARNING" in t or "QUERY LENGTH LIMIT" in t or not t:
+                raise RuntimeError(t[:80] or "빈 번역")
+            got.append(t + (" …" if len(c) > 490 else ""))
+        out.append(" ".join(got))
+    return "\n".join(out)
+
+
+def translate(prompt: str) -> str:
+    """생성 프롬프트 → 한국어 (기계 번역 — 뜻만 보는 용도). JSON 블록은 값만 옮긴다."""
+    blocks = []
+    for block in prompt.split("\n\n"):
+        try:
+            data = json.loads(block)
+        except ValueError:
+            blocks.append(_mt(block)); continue
+        def walk(v):
+            if isinstance(v, dict):
+                return {k: walk(x) for k, x in v.items()}
+            return _mt(v) if isinstance(v, str) else v
+        blocks.append(json.dumps(walk(data), ensure_ascii=False, indent=1))
+    return "\n\n".join(blocks)
 
 CSS = """body{font-family:sans-serif;margin:16px;background:#f4f4f4;color:#222}
 section{background:#fff;padding:16px;margin-bottom:24px;border-radius:8px}h2 small{color:#888;font-weight:normal;font-size:13px}
@@ -71,6 +115,16 @@ def _section(run: str) -> str:
                          + (f" · {r['composite_reason']}" if r.get("composite_reason") else "") + ")", res_cls))
         prompts = r.get("gen_prompts") or ([r["prompt_used"]] if r.get("mode") == "generate" else [])
         ko = ko_all.get(tag) or []
+        if TRANSLATE and prompts and len(ko) < len(prompts):
+            for p in prompts[len(ko):]:
+                try:
+                    ko = ko + [translate(p)]
+                except Exception as e:   # 번역기가 막혀도 페이지는 만든다 — 앞에서 된 것까지만 저장
+                    print(f"번역 실패 {tag}: {e}")
+                    break
+            if ko:
+                ko_all[tag] = ko
+                ko_file.write_text(json.dumps(ko_all, ensure_ascii=False, indent=1), encoding="utf-8")
         pr = ""
         for i, p in enumerate(prompts or [None]):
             k = ko[i] if i < len(ko) else "(번역 없음 — prompt_ko.json)"
@@ -90,7 +144,10 @@ def main():
     ap.add_argument("runs", nargs="*")
     ap.add_argument("--port", type=int, default=8001)
     ap.add_argument("--no-serve", action="store_true")
+    ap.add_argument("--no-translate", action="store_true", help="없는 번역을 번역기로 채우지 않는다")
     a = ap.parse_args()
+    global TRANSLATE
+    TRANSLATE = not a.no_translate
     runs = a.runs or [p.name for p in sorted((p for p in RUNS.iterdir() if (p / "posts.json").exists()),
                                              key=lambda p: p.stat().st_mtime, reverse=True)[:3]]
     VIEW.mkdir(exist_ok=True)
