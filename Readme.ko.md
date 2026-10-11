@@ -102,6 +102,7 @@ pytest test/software/unit -q  # 무료 유닛 테스트 (CI 와 같음)
 
 | | |
 |---|---|
+| [`docs/how-it-works.ko.md`](docs/how-it-works.ko.md) | **지금 동작 한 장 정리** — 화면 흐름 · 파이프라인 단계 · 검사 · DB · eval 도구 (README 보다 자세히) |
 | [`study/`](study/) | 날짜별 개발 노트 — 무엇을 왜 정했고 무엇을 뒤집었나 (README 의 근거) |
 | [`study/honesty-metric/`](study/honesty-metric/README.md) | "보증할 수 있는" 정직함 지표 — 논문 · 통계 정리와 설계안 |
 | [`docs/lessons.ko.md`](docs/lessons.ko.md) | 설계 결정 · 실패와 교훈 (버그 30여 건과 거기서 배운 것) |

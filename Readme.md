@@ -100,6 +100,7 @@ pytest test/software/unit -q  # free unit tests (same as CI)
 
 | | |
 |---|---|
+| [`docs/how-it-works.ko.md`](docs/how-it-works.ko.md) | **How it works now**, in detail — screens, pipeline steps, checks, DB, eval tools (Korean) |
 | [`study/`](study/) | Dated dev notes (Korean) — why each decision was made and which were reversed |
 | [`docs/lessons.ko.md`](docs/lessons.ko.md) | Design decisions, failures and lessons (Korean) |
 | [`CHANGELOG.md`](CHANGELOG.md) | Change log (Korean) |
