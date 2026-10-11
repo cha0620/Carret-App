@@ -45,7 +45,7 @@ photos that differ ≤ ε" with a confidence interval — item-similarity scores
 ```mermaid
 flowchart LR
   U["Upload photos · video"] --> L["Item list<br/>pick main · parts · extras"]
-  L --> R["Pick a reference<br/>composition (line drawing)"]
+  L --> R["Pick a reference<br/>composition (line drawing,<br/>CLIP suggests top 3)"]
   R --> C{"Seller's choice"}
   C -->|Tidy with AI| G["Generate → check → (1 retry)"]
   C -->|Background only| B["Cut out original item, new background"]

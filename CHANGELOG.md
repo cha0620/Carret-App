@@ -12,6 +12,10 @@
 - **최종본 확정** (`finals`) · **피드백 태그** ("원본에 이 구도 사진이 없음" 등)
 - **정직함 라벨 페이지** (`eval/label_honesty.py`) · 정직함 지표 공부 (`study/honesty-metric/`)
 - **파이프라인을 9개 파일로** (`app/services/pipeline/`) — 한 파일 1,658줄 → 역할별
+- **정답 구도 추천** (`ref_matcher`, 로컬 CLIP): 사진을 올리면 대표 사진과 닮은 정답을 최대 3개 "추천" 배지로, 닮은 게 없으면 추천 없음 (게시글 11개 11/11)
+- **더 필요한 사진을 정답 기준으로** (`photo_review_v3`): 고른 정답의 선 그림 + 글(배치 · 필요한 부위)을 넣고 "그 정답을 만들려면 더 올릴 사진". 상자에 [사진 더 올리기]
+- **규칙 각도 코드 삭제**: 필수 면(`coverage.REQUIRED`) · 예시 구도(`compositions.py`) · `composition` 인자. `eval/refs.py` 는 `style_refs.json` 의 needs 를 보여 줌
+- **실패 레포트** ([`study/failure-report.md`](study/failure-report.md)) · 안 쓰는 eval 데이터 삭제 (`text_check` · `locks` 등)
 
 **2026-10-09**
 - **앱 생성 프롬프트를 최소로**: 긴 지시 · 목록 · 금지 문장이 오히려 흔한 모양과 글자를 끌어왔다 (qwen 코트 0/2 → 최소 문장 1차 통과).
