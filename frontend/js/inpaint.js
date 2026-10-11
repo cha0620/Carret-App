@@ -25,6 +25,8 @@ function load(fid, key) {
   };
   base.onerror = () => { statusEl.textContent = '사진을 불러오지 못했어요 — file_id · 결과 키를 확인해 주세요'; };
   base.src = `/storage/result/${fid}_${key}.jpg?t=${Date.now()}`;
+  const fb = $('ip-final');
+  fb.disabled = false; fb.textContent = '✅ 이 사진을 최종본으로';
   $('paint-card').classList.remove('hidden');
   loadStats();
 }
@@ -139,3 +141,19 @@ if (q.get('file_id') && q.get('preset')) {
   $('ip-file').value = q.get('file_id'); $('ip-preset').value = q.get('preset');
   load(q.get('file_id'), q.get('preset'));
 } else loadStats();
+
+// 최종본 확정 (10-11) — 지금 바탕 사진을. 칠해서 고친 결과면 source=inpaint
+$('ip-final').onclick = async () => {
+  if (!fileId) return;
+  const fb = $('ip-final');
+  fb.disabled = true;
+  try {
+    const r = await fetch('/api/final', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_id: fileId, preset_key: preset, source: /-ip[0-9a-f]{8}[ab]$/.test(preset) ? 'inpaint' : 'app' }) });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.status);
+    fb.textContent = '✅ 최종본으로 정했어요';
+  } catch (e) {
+    fb.disabled = false;
+    statusEl.textContent = '확정 실패: ' + e.message;
+  }
+};

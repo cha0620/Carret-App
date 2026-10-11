@@ -137,3 +137,20 @@ def inpaint_stats(file_id=None) -> dict:
     with db.get_conn() as c:
         rows = c.execute(q + (" WHERE file_id=?" if file_id else "") + " GROUP BY k", (file_id,) if file_id else ()).fetchall()
     return {r["k"]: r["n"] for r in rows}
+
+
+# ── 최종본 확정 (10-11) ──
+def confirm_final(file_id, preset_key, source):
+    """source: app(변환 결과 그대로) | inpaint(칠해서 고친 결과)."""
+    with db.get_conn() as c:
+        c.execute("""
+            INSERT INTO finals(file_id, preset_key, source) VALUES (?,?,?)
+            ON CONFLICT(file_id) DO UPDATE SET preset_key=excluded.preset_key, source=excluded.source,
+              updated_at=CURRENT_TIMESTAMP
+        """, (file_id, preset_key, source))
+
+
+def get_final(file_id):
+    with db.get_conn() as c:
+        r = c.execute("SELECT * FROM finals WHERE file_id=?", (file_id,)).fetchone()
+    return dict(r) if r else None

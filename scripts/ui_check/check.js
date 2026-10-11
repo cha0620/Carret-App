@@ -62,7 +62,7 @@ async function shoot(browser, name, width) {
     // UI_RESULT=1 — 결과 화면(대표 본체 + 구성품 검증 목록 · 따로 만들기) 확인용 가짜 변환 (10-11)
     if (u.pathname === '/api/transform' && process.env.UI_RESULT) {
       const sent = JSON.parse(r.postData() || '{}');
-      return j({ result_url: '/fake/' + (sent.separate ? 1 : 0), route: 'generate', detail_pieces: sent.separate ? [] : [
+      return j({ file_id: sent.file_id, preset: 'studio_white', result_url: '/fake/' + (sent.separate ? 1 : 0), route: 'generate', detail_pieces: sent.separate ? [] : [
         { what: 'minifigure', count: 3, indices: [1, 2, 3] },
         { what: 'instruction booklet', count: 2, indices: [4, 5] },
         { what: 'box', count: 1, indices: [6] }] });
@@ -91,6 +91,8 @@ async function shoot(browser, name, width) {
   counts.transform = st;
   if (process.env.UI_RESULT) {
     await new Promise(res => setTimeout(res, 1500));
+    counts.finalBtn = await p.evaluate(() => !document.getElementById('final-btn').hidden);
+    if (!counts.finalBtn) problems.push('이대로 쓰기 버튼 없음');
     counts.detailPieces = await p.evaluate(() => document.querySelectorAll('#detail-pieces .detail-piece').length);
     if (!counts.detailPieces) problems.push('비어 있음: detailPieces');
     await p.evaluate(() => document.querySelector('#detail-pieces .detail-piece button')?.click());

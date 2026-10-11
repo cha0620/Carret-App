@@ -397,3 +397,5 @@ body {
 .run-choice { display: flex; gap: 8px; }
 .run-choice .btn[hidden] { display: none; }
 .risk-note { color: #b9770e; font-size: 0.9em; margin: 6px 0; }
+
+a.btn { text-decoration: none; text-align: center; display: inline-flex; align-items: center; justify-content: center; }

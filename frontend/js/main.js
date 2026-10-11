@@ -973,6 +973,26 @@ function showResult(data) {
   const ip = document.getElementById('inpaint-link');
   ip.hidden = !(data.file_id && data.preset);
   if (!ip.hidden) ip.href = `/inpaint.html?file_id=${encodeURIComponent(data.file_id)}&preset=${encodeURIComponent(data.preset)}`;
+  setupFinal(document.getElementById('final-btn'), data.file_id, data.preset, 'app');
+}
+
+// 최종본 확정 (10-11) — 판매자가 "이대로 쓴다"고 한 사진. 정직률(고치지 않고 쓴 비율)의 분모
+function setupFinal(btn, fid, key, source) {
+  btn.hidden = !(fid && key);
+  btn.disabled = false;
+  btn.textContent = '✅ 이대로 쓰기';
+  btn.onclick = async () => {
+    btn.disabled = true;
+    try {
+      const r = await fetch('/api/final', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_id: fid, preset_key: key, source }) });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.status);
+      btn.textContent = '✅ 최종본으로 정했어요';
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = '확정 실패 — 다시';
+    }
+  };
 }
 
 // 대표사진은 본체 하나 (10-11) — 뺀 구성품(상자 포함)은 개수와 함께 아래에 (검증용).

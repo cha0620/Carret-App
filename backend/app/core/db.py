@@ -43,6 +43,14 @@ CREATE TABLE IF NOT EXISTS feedbacks (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(file_id, preset_key, source)
 );
+-- 판매자가 확정한 최종본 (10-11) — 사진(file_id)마다 하나, 다시 확정하면 덮는다. 정직률의 분모
+CREATE TABLE IF NOT EXISTS finals (
+    file_id TEXT PRIMARY KEY,
+    preset_key TEXT NOT NULL,
+    source TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 -- 칠한 곳 고치기 A/B (10-11) — 판매자가 칠한 곳 · 설명 · 고른 쪽도 피드백이다. 마스크 그림은 storage(quality)에
 CREATE TABLE IF NOT EXISTS inpaint_rounds (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
