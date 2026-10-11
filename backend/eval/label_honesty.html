@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>정직함 라벨</title>
+<style>
+  :root { --ink: #1c2129; --muted: #6b7280; --line: #e6e5e2; --bg: #faf9f7; --card: #fff;
+          --accent: #ff6a1a; --soft: #fff1e8; --green: #1a9c53; --red: #d0392a; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, sans-serif; }
+  header { position: sticky; top: 0; z-index: 2; background: var(--card); border-bottom: 1px solid var(--line);
+           padding: 10px 16px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  header b { font-size: 1.05em; }
+  .bar { flex: 1 1 200px; height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--accent); }
+  main { max-width: 1400px; margin: 0 auto; padding: 12px 16px 40px; }
+  .meta { color: var(--muted); font-size: 0.9em; margin-bottom: 8px; word-break: break-all; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .pair figure { margin: 0; background: var(--card); border-radius: 10px; padding: 6px; }
+  .pair img { width: 100%; max-height: 72vh; object-fit: contain; display: block; cursor: zoom-in; }
+  .pair figcaption { font-weight: 600; text-align: center; padding: 4px; }
+  .zoom .pair { grid-template-columns: 1fr; }
+  .zoom .pair img { max-height: none; }
+  .labels { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+  .labels button { border: 1px solid var(--line); background: var(--card); border-radius: 8px; padding: 8px 14px;
+                   font: inherit; cursor: pointer; }
+  .labels button.on { border-color: var(--accent); background: var(--soft); font-weight: 600; }
+  .labels button[data-k="same"].on { border-color: var(--green); }
+  kbd { font-size: 0.8em; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+  textarea { width: 100%; box-sizing: border-box; min-height: 48px; border: 1px solid var(--line); border-radius: 8px; padding: 8px; font: inherit; }
+  .nav { display: flex; gap: 8px; margin-top: 10px; }
+  .nav button { flex: 1; padding: 10px; border-radius: 8px; border: 0; font: inherit; cursor: pointer; }
+  .save { background: var(--accent); color: #fff; font-weight: 600; }
+  .ghost { background: var(--card); border: 1px solid var(--line) !important; }
+  .help { color: var(--muted); font-size: 0.85em; margin-top: 10px; }
+  #status { color: var(--muted); }
+  @media (max-width: 700px) { .pair { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <b>정직함 라벨</b>
+  <span id="count"></span>
+  <div class="bar"><i id="bar"></i></div>
+  <label><input type="checkbox" id="skip-done" checked> 단 것 건너뛰기</label>
+</header>
+<main id="main">
+  <p class="meta" id="meta"></p>
+  <div class="pair">
+    <figure><img id="orig" alt="원본"><figcaption>원본</figcaption></figure>
+    <figure><img id="res" alt="결과"><figcaption>결과 (AI 생성)</figcaption></figure>
+  </div>
+  <p><b>결과 속 물건이 원본과 같은가?</b> 배경 · 조명 · 각도 정리는 괜찮다 — 물건 자체만 본다.</p>
+  <div class="labels">
+    <button data-k="same"><kbd>1</kbd> 같음</button>
+    <button data-k="added"><kbd>2</kbd> 추가 (없던 것이 생김)</button>
+    <button data-k="missing"><kbd>3</kbd> 누락 (있던 것이 사라짐)</button>
+    <button data-k="changed"><kbd>4</kbd> 변형 (로고 · 글자 · 색 · 모양이 바뀜)</button>
+    <button data-k="unsure"><kbd>5</kbd> 모르겠음</button>
+  </div>
+  <textarea id="memo" placeholder="어디가 다른지 (선택) — 예: 왼쪽 로고 글자 E→F"></textarea>
+  <div class="nav">
+    <button class="ghost" id="prev">← 이전 <kbd>←</kbd></button>
+    <button class="save" id="save">저장하고 다음 <kbd>Enter</kbd></button>
+    <button class="ghost" id="next">건너뛰기 <kbd>→</kbd></button>
+  </div>
+  <p id="status"></p>
+  <p class="help">사진을 누르면 크게(위아래로) 보기 · <kbd>Z</kbd> 같은 기능. 같음을 누르면 나머지가 꺼지고, 다른 칸을 누르면 같음이 꺼진다.
+    자동 검사 결과는 일부러 보여 주지 않는다 (판단이 흐려지지 않게).</p>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let cases = [], labels = {}, i = 0, cur = {};
+
+function setFlags(f) {
+  cur = { same: false, added: false, missing: false, changed: false, unsure: false, ...f };
+  document.querySelectorAll('.labels button').forEach(b => b.classList.toggle('on', !!cur[b.dataset.k]));
+}
+function toggle(k) {
+  const v = !cur[k];
+  if (k === 'same' && v) setFlags({ same: true });
+  else if (k === 'unsure') setFlags({ ...cur, unsure: v });
+  else setFlags({ ...cur, [k]: v, ...(v && k !== 'same' ? { same: false } : {}) });
+}
+function show() {
+  const done = cases.filter(c => labels[c.id]).length;
+  $('count').textContent = `${done} / ${cases.length} 장`;
+  $('bar').style.width = (cases.length ? 100 * done / cases.length : 0) + '%';
+  if (!cases.length) { $('meta').textContent = '라벨 대상이 없어요'; return; }
+  if (document.activeElement) document.activeElement.blur();   // 저장 뒤 숫자 키가 메모에 들어가지 않게
+  window.scrollTo(0, 0);
+  const c = cases[i];
+  $('meta').textContent = `${i + 1}번째 · ${c.item || '물건'} · ${c.source || '원본 이름 없음'} · ${c.id}`;
+  $('orig').src = '/runs/' + c.original;
+  $('res').src = '/runs/' + c.result;
+  const l = labels[c.id] || {};
+  setFlags(l);
+  $('memo').value = l.memo || '';
+  $('status').textContent = labels[c.id] ? '이미 단 라벨 — 고치면 덮어써요' : '';
+}
+function go(step) {
+  const n = cases.length;
+  for (let k = 1; k <= n; k++) {
+    const j = (i + step * k + n) % n;
+    if (!$('skip-done').checked || step < 0 || !labels[cases[j].id]) { i = j; return show(); }
+  }
+  $('status').textContent = '모두 달았어요 🎉 — 터미널에서 python eval/label_honesty.py --summary';
+}
+async function save() {
+  const c = cases[i];
+  if (!['same', 'added', 'missing', 'changed', 'unsure'].some(k => cur[k])) {
+    $('status').textContent = '하나는 골라 주세요 (같음 · 추가 · 누락 · 변형 · 모르겠음)'; return;
+  }
+  try {
+    const r = await fetch('/api/label', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: c.id, ...cur, memo: $('memo').value }) });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || r.status);
+    labels[c.id] = j;
+    go(1);
+  } catch (e) { $('status').textContent = '저장 실패: ' + e.message; }
+}
+document.querySelectorAll('.labels button').forEach(b => b.onclick = () => toggle(b.dataset.k));
+$('save').onclick = save; $('next').onclick = () => go(1); $('prev').onclick = () => go(-1);
+document.querySelectorAll('.pair img').forEach(im => im.onclick = () => $('main').classList.toggle('zoom'));
+document.addEventListener('keydown', e => {
+  if (e.target === $('memo')) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); save(); } return; }
+  const k = { 1: 'same', 2: 'added', 3: 'missing', 4: 'changed', 5: 'unsure' }[e.key];
+  if (k) toggle(k);
+  else if (e.key === 'Enter') save();
+  else if (e.key === 'ArrowRight') go(1);
+  else if (e.key === 'ArrowLeft') go(-1);
+  else if (e.key === 'z' || e.key === 'Z') $('main').classList.toggle('zoom');
+});
+fetch('/api/cases').then(r => r.json()).then(d => {
+  cases = d.cases; labels = d.labels;
+  const first = cases.findIndex(c => !labels[c.id]);
+  i = first < 0 ? 0 : first;
+  show();
+});
+</script>
+</body>
+</html>
