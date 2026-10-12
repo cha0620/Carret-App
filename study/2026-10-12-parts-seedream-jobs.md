@@ -306,9 +306,9 @@ PS5 · 셔츠는 `seedream-ps5shirt-1012` 로 이어서. 합계 약 $0.85 (레�
 | PR | 브랜치 | 상태 |
 |---|---|---|
 | #40 앱 생성 프롬프트 최소화 · 세트 JSON … | `feat/style-ref-roles` | 머지 (10-09) |
-| — | `feat/honesty-labels` | 10-11 커밋 + **10-12 변경 전부 커밋 안 함** (PR 안 만듦) |
+| #41 정직함 라벨 · 파이프라인 정리 · 결과 먼저 보여 주기 … | `feat/honesty-labels` | open (10-11 + 10-12, 커밋 `32d357b`) |
 
-10-12 변경 (커밋 전): `parse_json` · 사진 모으기 [다 올렸어요] · 판매자 요청 칸 · Seedream 분기 · 결과 먼저(작업 + 미리보기) ·
+10-12 변경: `parse_json` · 사진 모으기 [다 올렸어요] · 판매자 요청 칸 · Seedream 분기 · 결과 먼저(작업 + 미리보기) ·
 `view_pipeline.py` · `run_posts --inputs` · `fixed_inputs`. 단위 812개 통과, `ui_check` 넓은 화면 · 모바일 통과.
 
 ### 17-2. 남은 일 (최종 목록)
@@ -336,7 +336,7 @@ PS5 · 셔츠는 `seedream-ps5shirt-1012` 로 이어서. 합계 약 $0.85 (레�
 - [ ] verify 를 lite · 낮은 생각 상한으로 — 라벨로 확인 뒤
 - [ ] 헤드폰 대표사진 쿠션 · p04 같은 물건인지 — §5
 - [ ] 물건 정답 11개 사용자 확인 (`objects_editor.py`) — §1
-- [ ] `feat/honesty-labels` 커밋 · PR (10-11 + 10-12)
+- [x] `feat/honesty-labels` 커밋 · PR (10-11 + 10-12) → #41
 
 ### 17-3. 교훈 세 줄
 
