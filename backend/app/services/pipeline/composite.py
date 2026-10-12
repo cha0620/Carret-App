@@ -3,6 +3,7 @@ import logging
 from app.services.ai import compositor
 from app.services.persistence import storage
 
+from app.services.pipeline import progress
 from app.services.pipeline.state import State
 
 logger = logging.getLogger("carret.pipeline")
@@ -20,6 +21,7 @@ def composite(s: State) -> dict:
     """배경 교체 모드: 원본 물건을 오려 프리셋 배경 위에 합성 (물건 픽셀 보존).
 
     들어오는 길: plan — 판매자가 [배경만 바꾸기]를 골랐을 때만 (10-11). 오리기가 안 되면 생성으로 넘어가지 않고 원본 그대로."""
+    progress.publish(s.get("job_id"), "composite", clear_preview=True)   # 검사에 떨어진 생성본은 내린다
     reason = s.get("composite_reason") or "user_choice"
     doc = s.get("photo_type") == "document"   # 10-11: 사유가 아니라 분석의 사진 유형으로 본다 (생성 전 판단은 지웠다)
     try:

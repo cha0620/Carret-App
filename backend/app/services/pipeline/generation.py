@@ -10,6 +10,7 @@ from app.services import style_refs
 from app.services.ai.generator import _generate_ai
 from app.services.persistence import storage
 
+from app.services.pipeline import progress
 from app.services.pipeline.state import State, VERIFY_ATTEMPTS, _result_name, _with_retry
 from app.services.pipeline.selection import SET_BACK, _pieces
 
@@ -98,8 +99,20 @@ MIN_PROMPT = ("Image 1 is the item.{sketch} Photograph the item from image 1 exa
               "front view, centered. {background}")
 DEFAULT_BACKGROUND = "Pure white studio background."
 MIN_ROLE_SKETCH = " Image {k} is a line drawing that only shows the framing."
+# 사람이 정해 준 인풋일 때만 (fixed_inputs, 10-12) — 다른 각도 사진을 버리지 않고 번호를 붙인다
+MIN_ROLE_VIEWS = " Images 2-{n} show the same item from other angles."
+MIN_ROLE_VIEW = " Image 2 shows the same item from another angle."
 # 세트 프롬프트 (10-09) — 좌표 없이 종류 · 개수 · 대략 배치만 JSON 으로 (setjson 실험: 설명서 2 · 피규어 3 그대로).
 # 물건 이름 대신 분석의 what 을 종류로 쓰고, 본체(main)는 "main piece" — 이름을 쓰면 흔한 모양으로 끌려간다
+ARRANGE_NOTE = " Seller's request for the arrangement: {arrange}."
+
+
+def _with_arrange(prompt: str, arrange: str) -> str:
+    """판매자 요청(놓는 방법 · 구도, 10-12)을 붙인다 — 재시도 사유(IMPORTANT …)가 있으면 그 앞에."""
+    head, sep, tail = prompt.partition("\n\nIMPORTANT: a previous attempt")
+    return head + ARRANGE_NOTE.format(arrange=arrange) + sep + tail
+
+
 def plan_layout(s: State, pieces: list[tuple[str, int]], extras: list[bytes]) -> str | None:
     """세트 배치를 모델이 정한다 (10-09 사용자: 규칙으로 위 · 아래를 정하긴 애매 — 정답 사진 기준으로).
     판매자가 고른(또는 품목에 맞는 기본) 정답 사진의 배치를 이 구성품에 맞춘 한두 문장. 같은 구성 · 같은 정답 ·
@@ -163,6 +176,9 @@ REF_LAYOUT_NOTE = (
 
 
 def generate(s: State) -> dict:
+    # 다시 만들면 떨어진 생성본은 내린다 (검사 전 사진을 계속 보여 주지 않게, 10-12 리뷰)
+    progress.publish(s.get("job_id"), "regenerating" if s.get("gen_attempts") else "generating",
+                     attempt=s.get("gen_attempts", 0) + 1, clear_preview=bool(s.get("gen_attempts")))
     preset = s["preset"]
     set_views = 0
     extra = (leave_out(s.get("leave_out") or []) + text_lock(s.get("item_texts") or []))
@@ -224,9 +240,11 @@ def generate(s: State) -> dict:
                   + leave_out(kept_lo)}
     elif s.get("clean_prompt") in ("min", "set"):
         ref = ref if s.get("ref_sketch") else None   # "line drawing" 이라 부르니 선 그림만 (원본 정답 사진 금지)
-        extras = []   # 최소: 메인 사진 + 선 그림만
+        # 최소: 메인 사진 + 선 그림만. 사람이 정해 준 인풋이면 그 사진 그대로 (생성기가 메인 · 다른 각도 · 선 그림 순으로 넣는다)
+        extras = extras if s.get("fixed_inputs") else []
+        views = (MIN_ROLE_VIEWS.format(n=1 + len(extras)) if len(extras) > 1 else MIN_ROLE_VIEW if extras else "")
         preset = {**preset, "no_negative": True,
-                  "prompt": MIN_PROMPT.format(sketch=MIN_ROLE_SKETCH.format(k=2) if ref else "",
+                  "prompt": MIN_PROMPT.format(sketch=views + (MIN_ROLE_SKETCH.format(k=2 + len(extras)) if ref else ""),
                                              background=preset.get("background") or DEFAULT_BACKGROUND)
                   # 정답 구도 = 선 그림 + 문장 (사용자 고정 규칙) · 뺄 물건 (10-09 리뷰)
                   + (f" Layout: {s['ref_layout']}" if ref and s.get("ref_layout") else "")
@@ -245,10 +263,14 @@ def generate(s: State) -> dict:
             template = CLEAN_PROMPT
         preset = {**preset, "prompt": template.format(roles=roles, layout=s["ref_layout"], keep=s.get("ref_keep") or "")
                   + ("\n\nIMPORTANT: a previous attempt" + retry[1].split("\n\n")[0] if len(retry) > 1 else "")}
+    if s.get("arrange"):
+        preset = {**preset, "prompt": _with_arrange(preset["prompt"], s["arrange"])}
     kw = {**({"style_ref": ref[1]} if ref else {}), **({"extra_views": extras} if extras else {})}
     gen = _generate_ai(s["original"], preset, **kw)
     result_name = _result_name(s)
     n = s.get("gen_attempts", 0) + 1
+    # 먼저 보여 준다 (10-12) — 검사 전이라 화면이 "검사 중" 배지를 단다. 메모리에만 (progress.py)
+    progress.publish(s.get("job_id"), "checking", attempt=n, preview=gen)
     if settings.keep_attempts:
         # 게이트에 걸려 배경 교체로 가면 생성본이 덮여 무엇이 바뀌었는지 볼 수 없다 (10-01) — eval 에서만 켠다
         try:

@@ -211,6 +211,22 @@ def clean_note(note) -> str:
     return t
 
 
+ARRANGE_MAX_CHARS = 80
+
+
+def clean_arrange(text) -> str:
+    """판매자 요청 한 줄 (10-12 사용자) → 생성 프롬프트에 붙일 문구. 놓는 방법 · 구도만 받는다
+    ("쿠션 떼고 본체만", "세워서") — 물건을 바꾸거나 지우는 요청은 분위기 칸과 같은 규칙으로 거절."""
+    t = prompt_safe(text or "", limit=10_000)   # 자르기 전에 길이를 본다 — 기본 limit(80)이 먼저 잘라 조용히 통과했다 (10-12 tester)
+    if not t:
+        return ""
+    if len(t) > ARRANGE_MAX_CHARS:
+        raise ValueError(f"요청은 {ARRANGE_MAX_CHARS}자까지 적어 주세요")
+    if _NOTE_BLOCK.search(t):
+        raise ValueError("놓는 방법 · 구도만 적어 주세요 — 물건을 바꾸거나 지우는 요청은 받지 않아요")
+    return t
+
+
 def style_key(mood: str, note: str = "") -> str:
     """저장 파일 이름·DB 키에 쓰는 스타일 이름 — 무드만이면 무드 키, 한 줄이 있으면 뒤에 해시 6자리
     (같은 사진을 다른 분위기로 다시 만들어도 앞 결과를 덮지 않게)."""

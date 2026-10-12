@@ -25,6 +25,12 @@
     </div>
     <input type="file" id="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,.jpg,.jpeg,.png,.webp,.mp4,.mov,.m4v,.webm" multiple hidden>
 
+    <!-- 올릴 사진 모으기 (10-12) — 한 장씩 넣어도 쌓이고, [다 올렸어요] 를 눌러야 서버 · 모델을 부른다 -->
+    <div id="stage" class="stage hidden">
+      <div id="stage-list" class="stage-list"></div>
+      <button id="stage-done" type="button" class="btn btn-primary btn-block">다 올렸어요</button>
+    </div>
+
     <!-- 무엇을 파나요 (10-11) — 쓰는 동안 사진 분석이 돌고, 먼저 끝나면 AI 추천을 띄운다 (당근마켓처럼) -->
     <section id="sell-name-wrap" class="sell-name hidden">
       <label for="sell-name" class="step-label">무엇을 파나요?</label>
@@ -106,6 +112,11 @@
       <p class="note-help">배경과 조명만 바뀌어요. 물건의 색·흠집·글자는 그대로 둬요.</p>
     </div>
     <p id="risk-note" class="risk-note" hidden></p>
+    <!-- 판매자 요청 (10-12) — 놓는 방법 · 구도만 생성 프롬프트에 붙는다. 물건을 바꾸는 요청은 서버가 거절 -->
+    <label for="arrange" class="step-label">어떻게 놓을까요? <span class="muted">(선택)</span></label>
+    <input id="arrange" class="note-input" maxlength="80" autocomplete="off"
+           placeholder="예: 쿠션 떼고 본체만, 세워서, 케이스 빼고">
+    <p class="note-help">놓는 방법·구도만 반영해요. 물건의 색·흠집·글자는 바꾸지 않아요.</p>
     <div class="run-choice">
       <button id="run" class="btn btn-primary btn-block" disabled>AI로 정리하기</button>
       <button id="run-bg" class="btn btn-ghost btn-block" disabled>배경만 바꾸기</button>

@@ -73,6 +73,7 @@ def main():
                          "composite: 배경 교체만 · auto: 예전처럼 분석이 정함")
     ap.add_argument("--view-check", action="store_true",
                     help="생성 전에 구도 검사(VLM 1회, detector.composition_check) — 모델이 정답 구도로 못 만든다고 하면 생성하지 않고 '구도 부족(어느 방면)' 으로 기록 (10-11)")
+    ap.add_argument("--inputs", help='정해 준 인풋 JSON {post: {"photos": [주 사진, 다른 각도...], "sketch": "선 그림 파일"}} (10-12 사용자: 넣을 이미지 · 선 그림을 내가 정한다) — 그 사진만 올리고 고르기 · 빼기 없이 그대로 생성에 넣는다')
     ap.add_argument("--picks", help="고른 물건 JSON {post: [what, ...]} (10-11) — 첫 번째가 본체, 고른 것 전부를 생성")
     ap.add_argument("--no-gt-pieces", action="store_true", help="세트 구성품을 정답(data/posts/<post>/objects.json) 대신 분석에서")
     ap.add_argument("--set-prompt", action="store_true", help="세트면 종류 · 개수 JSON, 아니면 최소 프롬프트 (10-09) + 개수 게이트")
@@ -103,10 +104,18 @@ def main():
     client = TestClient(app)
 
     dataset = json.loads((HERE / "data" / "dataset.json").read_text(encoding="utf-8"))
+    fixed = json.loads(Path(a.inputs).read_text(encoding="utf-8")) if a.inputs else {}
     out = []
     for post in [p.strip() for p in a.posts.split(",")]:
         photos = sorted((e for e in dataset if e.get("post") == post and e.get("slot") == "product"),
                         key=lambda e: e.get("post_index") or 0)
+        fx = fixed.get(post)
+        if fx:   # 정해 준 사진만, 정해 준 순서대로 (첫 장이 주 사진)
+            by_name = {e["file"]: e for e in dataset}
+            missing = [f for f in fx["photos"] if f not in by_name]
+            if missing:
+                raise SystemExit(f"{post}: dataset 에 없는 사진 {missing}")
+            photos = [by_name[f] for f in fx["photos"]]
         if not photos:
             print(f"{post}: 상품 사진 없음"); continue
         files = [("files", (e["file"], (IMAGES / e["file"]).read_bytes(), "application/octet-stream")) for e in photos]
@@ -139,11 +148,24 @@ def main():
                     storage.load_original, detector.prep_check)
             else:
                 planned = None
-            for main_id in [planned[1] if planned else o["photo_ids"][0]]:
+            if fx:
+                # 정해 준 인풋 그대로 — 주 사진 · 다른 각도 · 선 그림을 고르지 않는다. 문장은 그 선 그림의 정답 문장 (선 그림 + 문장 기본 조합)
+                ids = {names[p["file_id"]]: p["file_id"] for p in item["photos"]}
+                order = [ids[f] for f in fx["photos"] if f in ids]
+                sk = fx.get("sketch")
+                entry = next((e for e in style_refs.load() if sk and Path(e["file"]).stem == Path(sk).stem), None) if sk else None
+                if sk and entry is None:
+                    raise SystemExit(f"{post}: style_refs.json 에 없는 선 그림 {sk}")
+                planned = (entry["file"], order[0]) if entry else None
+                layout = entry.get("layout") if entry else None
+                keep = entry.get("keep") if entry else None
+            for main_id in [order[0]] if fx else [planned[1] if planned else o["photo_ids"][0]]:
                 rest = [f for f in o["photo_ids"] if f != main_id]
                 rest.sort(key=lambda f: views.get(f) == views.get(main_id))   # 각도가 다른 것 먼저
-                extras = rest[:2]
-                if a.ref_sketch and o.get("category") == "clothing":
+                extras = order[1:] if fx else rest[:2]
+                if fx:
+                    pass
+                elif a.ref_sketch and o.get("category") == "clothing":
                     # 옷은 다른 각도를 넣지 않는다 — 각도마다 모양이 달라 선 그림체로 옆에 콜라주했다 (10-08)
                     extras = []
                 t0 = time.time()
@@ -167,7 +189,8 @@ def main():
                                              ref_sketch=a.ref_sketch, clean_prompt=("text:" + Path(a.prompt_file).read_text(encoding="utf-8").strip()) if a.prompt_file else "set" if a.set_prompt else "min" if a.min_prompt else a.clean_prompt,
                                              ref_keep=keep,
                                              fixed_pieces=gt,
-                                             user_mode=None if a.mode == "auto" else a.mode)
+                                             user_mode=None if a.mode == "auto" else a.mode,
+                                             fixed_inputs=bool(fx))
                 tag = f"{post}__{o['id']}"
                 src = storage.BASE / "result" / res["result_name"]
                 if src.exists():
@@ -180,12 +203,14 @@ def main():
                        "mode": res.get("mode"), "composite_reason": res.get("composite_reason"),
                        "gate_passed": res.get("gate_passed"), "added_text": res.get("added_text"),
                        "checks": res.get("checks"), "gen_attempts": res.get("gen_attempts"),
-                       "elapsed_s": round(time.time() - t0, 1)}
+                       "elapsed_s": round(time.time() - t0, 1), "fixed_inputs": fx or None}
                 # 생성 시도(KEEP_ATTEMPTS)도 옮겨 둔다
                 for i, att in enumerate(sorted((storage.BASE / "attempts").glob(f"{main_id}_*")), 1):
                     shutil.copy(att, run_dir / "files" / f"{tag}_try{i}{att.suffix}")
                     row.setdefault("tries", []).append(f"{tag}_try{i}{att.suffix}")
                 out.append(row)
+                # 게시글마다 바로 저장 — 중간에 죽어도(10-12 seedream 콘텐츠 검사 422) 앞 결과가 남게
+                (run_dir / "posts.json").write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
                 print(json.dumps(row, ensure_ascii=False)[:300], flush=True)
     (run_dir / "posts.json").write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
 

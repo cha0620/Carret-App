@@ -8,15 +8,19 @@
 import hashlib
 import json
 import logging
+import threading
+from functools import partial
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import Path as Path_
+from fastapi.responses import FileResponse, Response
 
 from app.prompts.presets import NOTE_MAX_CHARS, PRESETS, PURPOSES, style_key
 from app.schemas.image import (AnalyzeRequest, AnalyzeResponse, ComponentsRequest, StylesResponse,
                                TransformRequest, TransformResponse)
 from app.services import pipeline, style_refs
+from app.services.pipeline import progress
 from app.services.persistence import storage
 
 
@@ -122,7 +126,8 @@ def _result_key(req: TransformRequest, extras: list[str] | None, ref: dict | Non
     if req.separate:
         return key + f"-o{req.sell[0]}"     # 물건마다 따로 — 같은 사진의 다른 물건 결과를 덮어쓰지 않게 (10-05)
     combo = {"v": sorted(extras or []), "r": ref["file"] if ref else None,
-             "s": sorted(req.sell or []), "a": sorted(req.accessories or []), "m": sorted(req.mains or [])}
+             "s": sorted(req.sell or []), "a": sorted(req.accessories or []), "m": sorted(req.mains or []),
+             "q": req.arrange}
     if any(combo.values()):
         key += "-" + hashlib.sha1(json.dumps(combo, sort_keys=True).encode()).hexdigest()[:10]
     return key
@@ -131,6 +136,16 @@ def _result_key(req: TransformRequest, extras: list[str] | None, ref: dict | Non
 @router.post("/transform", response_model=TransformResponse)
 def transform(req: TransformRequest, background: BackgroundTasks):
     # def = 스레드풀 실행 (rembg 같은 블로킹 작업용 ✅)
+    resp, signals = _transform(req)
+    if signals:
+        background.add_task(signals)
+    return resp
+
+
+def _transform(req: TransformRequest, job_id: str | None = None):
+    """변환 본체 — 동기 POST /transform 과 작업(POST /transform/jobs)이 같이 쓴다.
+    반환: (응답, 응답 뒤에 돌릴 관측 신호 — 인자 없는 호출 — 또는 None). job_id 는 파이프라인 상태로 넘겨 노드가 진행을 알린다.
+    안에서 난 예외는 여기서 HTTPException 으로 바꾼다 (로그도 여기서)."""
     try:
         ref = next((e for e in style_refs.load() if e["file"] == req.ref_file), None) if req.ref_file else None
         if req.ref_file and (ref is None or style_refs.sketch_path(ref["file"]) is None):
@@ -149,7 +164,7 @@ def transform(req: TransformRequest, background: BackgroundTasks):
                     logger.warning("[transform] 구성품 목록이 바뀌어 고른 번호를 버림 — 분석 판단대로")
                 sell, accessories, mains = None, None, None
         key = _result_key(req, extras, ref)
-        out = pipeline.run_transform(req.file_id, key, defer_signals=True, note=req.note,
+        out = pipeline.run_transform(req.file_id, key, defer_signals=True, note=req.note, arrange=req.arrange, job_id=job_id,
                                      sell=sell, mains=mains,
                                      extra_view_ids=extras, extra_views_explicit=bool(extras), user_mode=req.mode,
                                      clean_prompt="set",   # 앱 기본 (10-09): 세트면 종류 · 개수 JSON + 개수 게이트, 아니면 최소 문장
@@ -167,12 +182,12 @@ def transform(req: TransformRequest, background: BackgroundTasks):
 
     # 관측 신호는 응답을 보낸 뒤 (사용자가 기다리지 않게) — 누끼 비교는 inspect 에.
     # judge 성적표는 운영에서 부르지 않는다 (10-05 — eval · dev 만)
+    signals = None
     if out.get("item_signals_pending"):
-        background.add_task(pipeline.item_signals_and_save, req.file_id, key,
-                            trace_id=out.get("trace_id"),
-                            parent_span_id=out.get("trace_span_id"))
+        signals = partial(pipeline.item_signals_and_save, req.file_id, key, trace_id=out.get("trace_id"),
+                          parent_span_id=out.get("trace_span_id"))
 
-    return TransformResponse(
+    resp = TransformResponse(
         file_id=req.file_id,
         preset=key,
         result_path=f"storage/result/{out['result_name']}",
@@ -192,4 +207,63 @@ def transform(req: TransformRequest, background: BackgroundTasks):
         wear_level=out.get("wear_level"),
         watermark=out.get("watermark"),
     )
+    return resp, signals
 
+
+
+# ── 작업으로 돌리기 (10-12 사용자: "결과 먼저 보여 주고 검사는 뒤에서") ──
+# 시작하면 작업 id 를 바로 돌려주고, 화면은 GET 으로 물어 생성본을 "검사 중" 으로 먼저 보여 준다.
+# 끝나면 result 가 동기 /transform 응답과 같은 모양. 미리보기는 메모리에만 (progress.py).
+
+def _run_job(job_id: str, req: TransformRequest) -> None:
+    try:
+        resp, signals = _transform(req, job_id)
+    except HTTPException as e:
+        progress.finish(job_id, error={"status": e.status_code, "detail": e.detail})
+        return
+    except Exception:
+        logger.exception("변환 작업 실패")
+        progress.finish(job_id, error={"status": 500, "detail": "변환 중 오류가 발생했습니다"})
+        return
+    progress.finish(job_id, result=resp.model_dump())
+    if signals:   # 결과를 알린 뒤 — 사용자가 기다리지 않게 (동기 경로의 background 와 같은 자리)
+        try:
+            signals()
+        except Exception:
+            logger.exception("관측 신호 실패(무시)")
+
+
+@router.post("/transform/jobs")
+def start_transform_job(req: TransformRequest):
+    """같은 사진으로 이미 도는 작업이 있으면 그 id 를 돌려준다. 동시에 도는 작업이 상한이면 429."""
+    try:
+        job, new = progress.create(req.file_id)
+    except progress.Busy:
+        raise HTTPException(status_code=429, detail="지금 만드는 사진이 많아요 — 잠시 뒤 다시 눌러 주세요")
+    if new:
+        progress.publish(job.id, "preparing")
+        threading.Thread(target=_run_job, args=(job.id, req), daemon=True).start()
+    return {"job_id": job.id}
+
+
+JOB_ID = r"^[a-f0-9]{32}$"
+
+
+@router.get("/transform/jobs/{job_id}")
+def transform_job(job_id: str = Path_(pattern=JOB_ID)):
+    j = progress.get(job_id)
+    if j is None:
+        raise HTTPException(status_code=404, detail="작업을 찾을 수 없어요 (서버가 다시 켜졌을 수 있어요)")
+    return {"job_id": j.id, "stage": j.stage, "attempt": j.attempt,
+            "preview_url": f"/api/transform/jobs/{j.id}/preview?n={j.attempt}" if j.preview else None,
+            "result": j.result, "error": j.error}
+
+
+@router.get("/transform/jobs/{job_id}/preview")
+def transform_job_preview(job_id: str = Path_(pattern=JOB_ID)):
+    j = progress.get(job_id)
+    if j is None or j.preview is None:
+        raise HTTPException(status_code=404, detail="미리보기 없음")
+    p = j.preview
+    media = "image/png" if p[:8] == b"\x89PNG\r\n\x1a\n" else "image/webp" if p[8:12] == b"WEBP" else "image/jpeg"
+    return Response(content=p, media_type=media, headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})

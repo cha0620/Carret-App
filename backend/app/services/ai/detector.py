@@ -19,7 +19,7 @@ from google.genai import types
 
 from app.core.tracing import gemini_usage as _usage
 from app.core.tracing import observe
-from app.core.vlm import get_client, image_part, thinking
+from app.core.vlm import get_client, image_part, parse_json, thinking
 from app.core.vlm import model as vlm_model
 from app import prompts as P
 from app.prompts.presets import prompt_safe
@@ -46,7 +46,7 @@ def _call(image_bytes: bytes, prompt: str, name: str = "vlm_call") -> dict:
             ),
         )
         try:
-            data = json.loads(resp.text)
+            data = parse_json(resp.text)
         except json.JSONDecodeError:
             logger.warning(f"[detector] JSON 파싱 실패: {resp.text[:200]}")
             data = {}
@@ -98,7 +98,7 @@ def classify_views(images: list[bytes]) -> dict:
             config=types.GenerateContentConfig(temperature=0, response_mime_type="application/json",
                                                thinking_config=thinking("views")),
         )
-        data = json.loads(resp.text)
+        data = parse_json(resp.text)
         if obs is not None:
             obs.update(output=data, usage_details=_usage(resp))
     if isinstance(data, list) and data and isinstance(data[0], dict):
@@ -141,7 +141,7 @@ def group_objects(images: list[bytes], slots: list[str | None] | None = None) ->
             config=types.GenerateContentConfig(temperature=0, response_mime_type="application/json",
                                                thinking_config=thinking("objects")),
         )
-        data = json.loads(resp.text)
+        data = parse_json(resp.text)
         if obs is not None:
             obs.update(output=data, usage_details=_usage(resp))
     return listing.normalize(data, len(images), slots)
@@ -190,7 +190,7 @@ def components(images: list[bytes]) -> dict:
                                                thinking_config=thinking("components")),
         )
         try:
-            data = json.loads(resp.text)
+            data = parse_json(resp.text)
         except json.JSONDecodeError:
             data = {}
         if obs is not None:
@@ -229,7 +229,7 @@ def layout_plan(answer: bytes, photos: list[bytes], pieces: list[tuple[str, int]
                                                thinking_config=thinking("layout_plan")),
         )
         try:
-            data = json.loads(resp.text)
+            data = parse_json(resp.text)
         except json.JSONDecodeError:
             data = {}
         if obs is not None:
@@ -262,7 +262,7 @@ def photo_review(images: list[bytes], answer: bytes | None = None, ref: dict | N
             config=types.GenerateContentConfig(temperature=0, response_mime_type="application/json",
                                                thinking_config=thinking("photo_review")))
         try:
-            data = json.loads(resp.text)
+            data = parse_json(resp.text)
         except json.JSONDecodeError:
             data = {}
         if obs is not None:
@@ -301,7 +301,7 @@ def composition_check(images: list[bytes], answer: bytes) -> dict:
             model=vlm_model("composition_check"), contents=[*parts, prompt],
             config=types.GenerateContentConfig(temperature=0, response_mime_type="application/json",
                                                thinking_config=thinking("composition_check")))
-        data = json.loads(resp.text)
+        data = parse_json(resp.text)
         if obs is not None:
             obs.update(output=data, usage_details=_usage(resp))
     if not isinstance(data, dict) or not isinstance(data.get("ok"), bool):
@@ -532,7 +532,7 @@ def _call_pair(original: bytes, result: bytes, prompt: str, name: str, others: l
             config=types.GenerateContentConfig(temperature=0, response_mime_type="application/json",
                                                thinking_config=thinking(name)),
         )
-        data = json.loads(resp.text)
+        data = parse_json(resp.text)
         if obs is not None:
             obs.update(output=data, usage_details=_usage(resp))
     if isinstance(data, list) and data and isinstance(data[0], dict):

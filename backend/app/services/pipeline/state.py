@@ -77,6 +77,9 @@ class State(TypedDict, total=False):
     ref_sketch: bool           # 문장과 함께 정답 선 그림도 넣는다 (10-08 실험)
     clean_prompt: bool         # 정리한 프롬프트(CLEAN_PROMPT)로 통째로 (10-08 실험)
     ref_keep: str | None       # CLEAN_PROMPT 의 물건별 "지킬 것" 예시
+    fixed_inputs: bool         # 사람이 정해 준 인풋 (eval --inputs, 10-12) — 다른 각도 사진을 버리지 않는다
+    job_id: str | None         # 작업으로 돌 때 (progress.py, 10-12) — 노드가 진행 상황 · 미리보기를 알린다
+    arrange: str               # 판매자 요청 한 줄 (clean_arrange 통과, 10-12) — 놓는 방법 · 구도만
 
 
 ANALYZE_ATTEMPTS = 2

@@ -18,6 +18,7 @@
 | [09-ebay-background-swap.md](09-ebay-background-swap.md) | eBay 배경 교체 | 물건은 다시 그리지 않음 |
 | [10-conformal-guarantee.md](10-conformal-guarantee.md) | Conformal risk control · Conf-Gen · CRC-Derive | 보증을 만드는 통계 + 필요한 표본 수 |
 | [11-carret-design.md](11-carret-design.md) | (우리 설계안) | 위를 Carret 에 맞춘 것 |
+| [12-small-verifier-plan.md](12-small-verifier-plan.md) | (계획, 10-13 시작) | 원본 · 결과 쌍이 다른가를 맞히는 작은 모델 — DINO 위 작은 머리 |
 
 ## 결론 세 줄
 

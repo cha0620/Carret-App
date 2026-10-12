@@ -61,14 +61,68 @@ proofZone.ondrop = e => {
 };
 
 // ---- 업로드: 파일 ----
+// 바로 올리지 않고 모은다 (10-12 사용자: "다 올렸는지 체크하고 그다음에 모델 호출") — 한 장씩 넣어도 쌓인다.
+// 물건 묶음이 이미 있으면 [다 올렸어요] 가 그 묶음에 더한다
+const stageEl = document.getElementById('stage');
+const stageList = document.getElementById('stage-list');
+const stageDone = document.getElementById('stage-done');
+let staged = [];
+
+function renderStage() {
+  stageEl.classList.toggle('hidden', !staged.length);
+  stageDone.textContent = item ? `${staged.length}장 더 보내기` : `다 올렸어요 (${staged.length}장)`;
+  for (const img of stageList.querySelectorAll('img')) URL.revokeObjectURL(img.src);
+  stageList.replaceChildren(...staged.map((f, i) => {
+    const box = document.createElement('div');
+    box.className = 'stage-item';
+    if (f.type.startsWith('video/')) {
+      const v = document.createElement('span');
+      v.className = 'stage-video';
+      v.textContent = '동영상';
+      box.append(v);
+    } else {
+      const img = document.createElement('img');
+      img.src = URL.createObjectURL(f);
+      img.alt = f.name;
+      box.append(img);
+    }
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.className = 'stage-remove';
+    x.textContent = '×';
+    x.setAttribute('aria-label', `${f.name} 빼기`);
+    x.onclick = () => { staged.splice(i, 1); renderStage(); };
+    box.append(x);
+    return box;
+  }));
+}
+
+function stageFiles(files) {
+  files = files.filter(Boolean);
+  if (!files.length || busy) return;
+  staged = [...staged, ...files];
+  statusEl.textContent = '';
+  renderStage();
+}
+
+stageDone.onclick = async () => {
+  if (busy || !staged.length) return;
+  const append = !!item;
+  if (append && draftDirty) { statusEl.textContent = '고친 물건 묶음을 먼저 저장해 주세요'; return; }
+  const files = staged;
+  staged = [];
+  renderStage();
+  await handleFiles(files, append);
+};
+
 dropzone.onclick = () => { if (!busy) fileInput.click(); };
-fileInput.onchange = () => handleFiles([...fileInput.files]);
+fileInput.onchange = () => { stageFiles([...fileInput.files]); fileInput.value = ''; };
 dropzone.ondragover  = e => { e.preventDefault(); dropzone.classList.add('over'); };
 dropzone.ondragleave = () => dropzone.classList.remove('over');
 dropzone.ondrop = e => {
   e.preventDefault();
   dropzone.classList.remove('over');
-  handleFiles([...e.dataTransfer.files]);
+  stageFiles([...e.dataTransfer.files]);
 };
 
 // ---- 업로드: 사진 여러 장 · 동영상 → 물건 묶음 ----
@@ -87,7 +141,7 @@ let uploadToken = 0;             // 늦게 도착한 업로드 응답을 버리�
 
 function setBusy(on) {
   busy = on;
-  for (const el of [dropzone, proofZone, addBtn, urlBtn]) {
+  for (const el of [dropzone, proofZone, addBtn, urlBtn, stageDone]) {
     el.classList.toggle('disabled', on);
     if ('disabled' in el) el.disabled = on;
   }
@@ -985,6 +1039,66 @@ function askMulti(n) {
   });
 }
 
+// 결과 먼저, 검사는 뒤에서 (10-12) — 생성본이 나오면 "검사 중" 배지로 먼저 보여 주고,
+// 검사가 끝나면 showResult 가 진짜 결과 · 배지로 바꾼다. 검사 전엔 확정 · 칠하기를 숨긴다
+const STAGE_TEXT = {
+  queued: '시작하는 중...', preparing: '준비하는 중...', analyzing: '원본 사진 살펴보는 중...', generating: 'AI로 정리하는 중...',
+  checking: '먼저 보여드려요 — 원본과 같은지 검사하는 중...', regenerating: '검사에서 다른 점이 보여 다시 만드는 중...',
+  composite: '배경 바꾸는 중...',
+};
+const POLL_MS = 1500;
+
+async function waitTransformJob(jobId) {
+  let shown = '';
+  let misses = 0;
+  for (;;) {
+    let j;
+    try {
+      j = await fetchTransformJob(jobId);
+      misses = 0;
+    } catch (e) {
+      if (++misses >= 3) throw e;        // 잠깐 끊긴 건 다시 묻는다
+      await new Promise(r => setTimeout(r, POLL_MS));
+      continue;
+    }
+    if (j.stage === 'done') return j.result;
+    if (j.stage === 'error') { hidePreview(); throw new Error((j.error && j.error.detail) || '변환 실패'); }
+    statusEl.textContent = STAGE_TEXT[j.stage] || 'AI로 정리하는 중...';
+    if (j.preview_url && j.preview_url !== shown) {
+      shown = j.preview_url;
+      showPreview(j);
+    } else if (shown && !j.preview_url) {
+      // 검사에 떨어진 생성본은 서버가 내렸다 (다시 만들기 · 배경 교체) — 화면에서도 내린다
+      shown = '';
+      hidePreview();
+      gateBadge.hidden = false;
+      gateBadge.textContent = j.stage === 'composite'
+        ? '🔁 검사에서 원본과 다른 점이 보여 배경만 바꾸는 중이에요'
+        : '🔁 검사에서 원본과 다른 점이 보여 다시 만드는 중이에요';
+      gateBadge.style.color = '#b9770e';
+    }
+    await new Promise(r => setTimeout(r, POLL_MS));
+  }
+}
+
+function showPreview(j) {
+  afterImg.onload = null;
+  afterImg.onerror = null;
+  afterImg.src = j.preview_url;
+  afterImg.hidden = false;
+  gateBadge.hidden = false;
+  gateBadge.textContent = `🔎 검사 중이에요 — 아직 확정 전이에요${j.attempt > 1 ? ` (${j.attempt}번째로 만든 사진)` : ''}`;
+  gateBadge.style.color = '#5d6d7e';
+  document.getElementById('final-btn').hidden = true;
+  document.getElementById('inpaint-link').hidden = true;
+}
+
+function hidePreview() {
+  afterImg.hidden = true;
+  afterImg.removeAttribute('src');
+  gateBadge.hidden = true;
+}
+
 function showResult(data) {
   afterImg.onload = null;
   afterImg.onerror = () => { statusEl.textContent = '결과 이미지를 불러오지 못했습니다'; };
@@ -1158,7 +1272,9 @@ async function runWith(mode) {
   }
   statusEl.textContent = mode === 'composite' ? '배경 바꾸는 중...' : 'AI로 정리하는 중... (몇 초 걸려요)';
   try {
-    const data = await requestTransform(fileId_, PRESET, sell_, false, acc_, extraViewIds(), refFile, item && item.item_id, mains_, mode);
+    const jobId = await startTransformJob(fileId_, PRESET, sell_, acc_, extraViewIds(), refFile, item && item.item_id, mains_, mode,
+                                          document.getElementById('arrange').value.trim());
+    const data = await waitTransformJob(jobId);
     showResult(data);
 
     // 피드백: 우선 빈 박스 표시, 기존 피드백 있으면 채워넣기

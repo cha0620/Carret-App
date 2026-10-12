@@ -180,3 +180,14 @@ def test_generate_ai_qwen_no_negative_drops_negative_prompt(monkeypatch):
     _generate_ai(b"img", {**_preset(), "no_negative": True})
     args = fake_fal.subscribe_calls[0]["arguments"]
     assert "negative_prompt" not in args and args["enable_prompt_expansion"] is False
+
+
+def test_generate_ai_seedream_uses_1k_and_sends_no_seed(monkeypatch):
+    # 10-12: seedream 은 seed 인자가 없다 · 비용 때문에 auto_1K
+    fake_fal, fake_httpx = FakeFalClient(), FakeHttpx()
+    monkeypatch.setattr(generator_mod, "fal_client", fake_fal)
+    monkeypatch.setattr(generator_mod, "httpx", fake_httpx)
+    monkeypatch.setattr(generator_mod.settings, "fal_model", "fal-ai/bytedance/seedream/v5/pro/edit")
+    _generate_ai(b"img", _preset(), seed=7)
+    args = fake_fal.subscribe_calls[0]["arguments"]
+    assert args["image_size"] == "auto_1K" and "seed" not in args

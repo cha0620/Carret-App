@@ -6,6 +6,7 @@ from app.prompts.presets import get_preset
 from app.services.ai import detector
 from app.services.persistence import storage
 
+from app.services.pipeline import progress
 from app.services.pipeline.state import ANALYZE_ATTEMPTS, State, _with_retry
 from app.services.pipeline.selection import apply_selection
 
@@ -126,6 +127,7 @@ def analyze(s: State) -> dict:
     실패는 "지킬 것 없음"과 다르다 — 빈 앵커로 넘기면 verify 가 검사할 게 없다며
     게이트를 통과시킨다. 재시도까지 실패하면 detect_failed 로 남겨 plan 이 배경 교체로 보낸다
     (생성 결과를 확인 없이 내보내지 않음)."""
+    progress.publish(s.get("job_id"), "analyzing")
     cached = load_analysis(s["file_id"])
     fresh = cached is None or cached.get("detect_failed")
     out = analyze_original(s["file_id"], s["original"]) if fresh else cached

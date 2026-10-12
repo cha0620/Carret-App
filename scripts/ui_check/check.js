@@ -47,6 +47,7 @@ async function shoot(browser, name, width) {
   const p = await browser.newPage();
   await p.setViewport({ width, height: 1000 });
   const problems = [];
+  let itemCalls = 0, itemFiles = 0, jobPolls = 0, jobBody = '{}';
   p.on('pageerror', e => problems.push('pageerror: ' + e.message));
   // 네트워크 실패 줄(Failed to load resource)은 요청 상태로 따로 본다 — 가짜 물건의 변환 400 은 정상
   p.on('console', m => { if (['error', 'warn'].includes(m.type()) && !m.text().startsWith('Failed to load resource')) problems.push(`console.${m.type()}: ${m.text()}`); });
@@ -57,12 +58,25 @@ async function shoot(browser, name, width) {
     if (u.pathname.startsWith('/fake/')) {
       return r.respond({ status: 200, contentType: 'image/webp', body: fs.readFileSync(IMG + files[+u.pathname.split('/')[2]]) });
     }
-    if (u.pathname === '/api/items' && r.method() === 'POST') return j(item);
+    if (u.pathname === '/api/items' && r.method() === 'POST') { itemCalls++; itemFiles = (r.postData() || '').split('filename=').length - 1; return j(item); }
     if (u.pathname === '/api/components') return j({ objects: objs, contents_hidden: false, extras: [] });
     if (u.pathname === '/api/analyze') return j({ item: 'lego set', item_count: 1, objects: objs });
     if (u.pathname.endsWith('/review')) return j(review);
     // 변환은 서버의 요청 검증만 거치게 — 가짜 물건이라 400(같은 물건 아님)·404 는 정상, 422(형식 오류)는 실패 (10-09 accessories:null 422)
     // UI_RESULT=1 — 결과 화면(대표 본체 + 구성품 검증 목록 · 따로 만들기) 확인용 가짜 변환 (10-11)
+    // 작업 흐름 (10-12) — UI_RESULT 면 가짜: 첫 조회는 "검사 중" 미리보기, 두 번째는 완료
+    if (u.pathname === '/api/transform/jobs' && r.method() === 'POST' && process.env.UI_RESULT) {
+      jobBody = r.postData() || '{}';
+      return j({ job_id: 'e'.repeat(32) });
+    }
+    if (u.pathname === '/api/transform/jobs/' + 'e'.repeat(32) && process.env.UI_RESULT) {
+      const sent = JSON.parse(jobBody);
+      if (++jobPolls === 1) return j({ job_id: 'e'.repeat(32), stage: 'checking', attempt: 1, preview_url: '/fake/2', result: null, error: null });
+      return j({ job_id: 'e'.repeat(32), stage: 'done', attempt: 1, preview_url: null, error: null,
+        result: { file_id: sent.file_id, preset: 'studio_white', result_url: '/fake/0', route: 'generate', gate_passed: true, mode: 'generate',
+                  item: 'lego set', considered: [], prompt_used: '', detail_pieces: [
+          { what: 'minifigure', count: 3, indices: [1, 2, 3] }, { what: 'box', count: 1, indices: [6] }] } });
+    }
     if (u.pathname === '/api/transform' && process.env.UI_RESULT) {
       const sent = JSON.parse(r.postData() || '{}');
       return j({ file_id: sent.file_id, preset: 'studio_white', result_url: '/fake/' + (sent.separate ? 1 : 0), route: 'generate', detail_pieces: sent.separate ? [] : [
@@ -74,8 +88,19 @@ async function shoot(browser, name, width) {
     return r.continue();
   });
   await p.goto(BASE + '/', { waitUntil: 'networkidle0' });
-  await (await p.$('#file')).uploadFile(...files.map(f => IMG + f));
+  // 한 장씩 넣어도 쌓이고, [다 올렸어요] 전에는 서버 · 모델을 부르지 않는다 (10-12)
+  for (const f of files) {
+    await (await p.$('#file')).uploadFile(IMG + f);
+    await new Promise(res => setTimeout(res, 300));
+  }
+  const stagedN = await p.evaluate(() => document.querySelectorAll('#stage-list .stage-item').length);
+  if (stagedN !== files.length) problems.push(`모은 사진 ${stagedN}장 (기대 ${files.length})`);
+  if (itemCalls) problems.push(`[다 올렸어요] 전에 /api/items 호출 ${itemCalls}번`);
+  await p.screenshot({ path: path.join(OUT, 'staged_' + name), fullPage: true });
+  await p.evaluate(() => document.getElementById('stage-done').click());
   await new Promise(res => setTimeout(res, 4000));
+  if (itemCalls !== 1) problems.push(`/api/items 호출 ${itemCalls}번 (기대 1)`);
+  else if (itemFiles && itemFiles !== files.length) problems.push(`한 번에 보낸 사진 ${itemFiles}장 (기대 ${files.length})`);
   // 단계마다 내용이 있어야 한다 — 10-09 처럼 제목만 있고 목록이 빈 걸 잡는다
   const counts = await p.evaluate(() => ({
     photos: document.querySelectorAll('#item-photos > *').length,
@@ -87,13 +112,21 @@ async function shoot(browser, name, width) {
   for (const [k, v] of Object.entries(counts)) if (!v) problems.push(`비어 있음: ${k}`);
   await p.screenshot({ path: path.join(OUT, name), fullPage: true });
   const tx = new Promise(res => p.on('response', async x => {
-    if (x.url().endsWith('/api/transform')) res([x.status(), (await x.text()).slice(0, 300)]);
+    if (x.url().endsWith('/api/transform/jobs')) res([x.status(), (await x.text()).slice(0, 300)]);
   }));
   await p.evaluate(() => document.getElementById('run').click());
   const [st, body] = await Promise.race([tx, new Promise(res => setTimeout(() => res([0, '변환 요청이 안 나감']), 5000))]);
   counts.transform = st;
   if (process.env.UI_RESULT) {
-    await new Promise(res => setTimeout(res, 1500));
+    await new Promise(res => setTimeout(res, 700));
+    // 먼저 보여 주기 — 미리보기 + "검사 중" 배지, 확정 버튼은 숨김
+    const pv = await p.evaluate(() => ({ badge: document.getElementById('gate-badge').textContent,
+                                         src: document.getElementById('after').getAttribute('src'),
+                                         final: !document.getElementById('final-btn').hidden }));
+    counts.preview = pv.badge.includes('검사 중') && (pv.src || '').startsWith('/fake/2') && !pv.final;
+    if (!counts.preview) problems.push('미리보기(검사 중) 안 보임: ' + JSON.stringify(pv));
+    await p.screenshot({ path: path.join(OUT, 'preview_' + name), fullPage: true });
+    await new Promise(res => setTimeout(res, 2500));
     counts.finalBtn = await p.evaluate(() => !document.getElementById('final-btn').hidden);
     if (!counts.finalBtn) problems.push('이대로 쓰기 버튼 없음');
     counts.detailPieces = await p.evaluate(() => document.querySelectorAll('#detail-pieces .detail-piece').length);

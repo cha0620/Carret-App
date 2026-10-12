@@ -102,7 +102,8 @@ def run_transform(file_id: str, preset_key: str, *, defer_signals: bool = False,
                   ref_layout: str | None = None, ref_sketch: bool = False,
                   clean_prompt: bool | str = False, ref_keep: str | None = None,
                   extra_views_explicit: bool = False, mains: list | None = None,
-                  fixed_pieces: list | None = None, user_mode: str | None = None) -> dict:
+                  fixed_pieces: list | None = None, user_mode: str | None = None, arrange: str = "",
+                  job_id: str | None = None, fixed_inputs: bool = False) -> dict:
     """defer_signals=True: 누끼 비교를 하지 않고 결과에 item_signals_pending/trace_id 를 실어 보낸다 —
     호출부(transform 라우트)가 응답 뒤 item_signals_and_save() 를 돌린다.
     score_quality=True: 그래프 직후 judge 성적표를 채점 (eval · dev 만 — 운영 경로는 안 부른다)."""
@@ -136,7 +137,8 @@ def run_transform(file_id: str, preset_key: str, *, defer_signals: bool = False,
                                 "ref_category": ref_category, "ref_view": ref_view, "ref_file": ref_file,
                                 "ref_layout": ref_layout, "ref_sketch": ref_sketch,
                                 "clean_prompt": clean_prompt, "ref_keep": ref_keep,
-                                "fixed_pieces": fixed_pieces or [], "user_mode": user_mode},
+                                "fixed_pieces": fixed_pieces or [], "user_mode": user_mode, "arrange": arrange, "job_id": job_id,
+                                "fixed_inputs": fixed_inputs},
                                {"recursion_limit": RECURSION_LIMIT})
             # 채점할 때만: 그래프 도중에 같은 쌍을 돌던 다른 eval · dev 채점이 옛 점수를 저장했을 수
             # 있다 — 새로 채점하기 전에 한 번 더 지운다 (운영은 성적표를 만들지 않아 삭제 왕복을 아낀다).

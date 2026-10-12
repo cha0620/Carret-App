@@ -38,6 +38,8 @@ class TransformRequest(BaseModel):
     )
     note: str = Field(default="", max_length=200,
                       description="원하는 분위기 한 줄 (선택, 40자) — 배경에만. 물건을 바꾸는 요청은 422")
+    arrange: str = Field(default="", max_length=200,
+                         description="판매자 요청 한 줄 (선택, 80자, 10-12) — 놓는 방법 · 구도만. 물건을 바꾸는 요청은 422")
     purpose: Literal["secondhand", "feed", "shop"] | None = Field(
         default=None, description="어디에 올릴 사진인가 — 무드 추천용, 결과는 바꾸지 않는다")
 
@@ -124,6 +126,12 @@ class TransformRequest(BaseModel):
     def _clean_note(cls, v: str) -> str:
         from app.prompts.presets import clean_note
         return clean_note(v)
+
+    @field_validator("arrange")
+    @classmethod
+    def _clean_arrange(cls, v: str) -> str:
+        from app.prompts.presets import clean_arrange
+        return clean_arrange(v)
     gate_passed: bool | None = None
 
 
