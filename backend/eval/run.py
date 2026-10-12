@@ -106,45 +106,7 @@ def _analyze_row(detector, e: dict, data: bytes) -> dict:
     return {k: out.get(k) for k in ("item", "photo_type", "wear_level", "watermark", "text_level")}
 
 
-def composition_for(e: dict, mode: str) -> str | None:
-    """--composition: "" = 안 씀, "auto" = dataset.json 의 target_composition, 그 밖 = 그 구도 키 하나."""
-    if not mode:
-        return None
-    return e.get("target_composition") or None if mode == "auto" else mode
-
-
-def gate_composition(key: str | None, view: str | None) -> tuple[str | None, str | None]:
-    """구도는 그 각도로 찍힌 사진에만 붙인다 — 다른 각도면 생성이 안 보이던 면을 지어낸다 (study 10-01 §4,
-    10-03 시험). 앱은 구도 고르는 화면(compositions.options)에서 막고, eval 은 여기서 막는다.
-    반환: (붙일 구도, 안 붙인 이유)."""
-    from app.services import compositions
-    if not key:
-        return None, None
-    views = compositions.BY_KEY.get(key, {}).get("views", set())
-    if view is None:
-        return None, f"각도를 모름 — {key} 안 붙임"
-    if view not in views:
-        return None, f"각도 {view} 는 {key} 구도 각도({' · '.join(sorted(views))})가 아님 — 안 붙임"
-    return key, None
-
-
-def _view_of(data: bytes) -> str | None:
-    """사진 한 장의 각도 (앱의 여러 장 업로드와 같은 classify_views, VLM 1회 · 낮은 해상도). 실패면 None."""
-    from app.services.ai import detector
-    try:
-        return detector.classify_views([data])["photos"][0]["view"]
-    except Exception as ex:
-        print(f"  각도 분류 실패: {type(ex).__name__}: {str(ex)[:100]}")
-        return None
-
-
-def _composition_in(key: str, prompt: str | None) -> bool:
-    from app.services import compositions
-    text = compositions.BY_KEY.get(key, {}).get("prompt")
-    return bool(text and prompt and text in prompt)
-
-
-def _full_row(e: dict, data: bytes, rep: int, preset: str, files_dir: Path, composition: str | None = None) -> dict:
+def _full_row(e: dict, data: bytes, rep: int, preset: str, files_dir: Path) -> dict:
     from app.services import pipeline
     from app.services.persistence import storage, store
     fid = uuid.uuid4().hex
@@ -153,7 +115,7 @@ def _full_row(e: dict, data: bytes, rep: int, preset: str, files_dir: Path, comp
     store.record_original(fid, ext, "eval", original_name=e["file"], size_bytes=len(data))
     t0 = time.time()
     # 팔 물건을 고르는 화면이 없다 — 정답 개수(dataset.json item_count)가 있으면 그대로 (10-03)
-    out = pipeline.run_transform(fid, preset, score_quality=True, composition=composition,
+    out = pipeline.run_transform(fid, preset, score_quality=True,
                                 answer_count=e.get("item_count"))
     elapsed = time.time() - t0
     name = f"{fid}_{preset}"
@@ -183,8 +145,6 @@ def _full_row(e: dict, data: bytes, rep: int, preset: str, files_dir: Path, comp
         "checks": inspect.get("checks") or [],
         "judge": {k: quality.get(k) for k in ("fidelity", "realism", "trust")} if quality else None,
         "prompt_used": out.get("prompt_used"),
-        # 실제로 붙었나 — 파이프라인이 더 빼는 경우가 있다 (물건 여러 개 · 생성 안 하는 경로)
-        "composition": composition if composition and _composition_in(composition, out.get("prompt_used")) else None,
     }
 
 
@@ -276,9 +236,6 @@ def main() -> int:
     ap.add_argument("--run-id", default="")
     ap.add_argument("--note", default="", help="이 실행에서 바꾼 것 (meta.json 에 남는다 — 코드에 없는 임시 변경은 꼭 적는다)")
     ap.add_argument("--yes", action="store_true", help="비용 확인을 건너뛴다")
-    ap.add_argument("--composition", default="",
-                    help="정석 구도 프롬프트를 붙인다 — auto = 사진마다 dataset.json 의 target_composition, 또는 구도 키 하나. "
-                         "사진 각도(classify_views)가 그 구도 각도일 때만 붙는다")
     ap.add_argument("--lock-file", default="", help="잠금 문구를 이 파일 내용으로 바꿔 돌린다 (프롬프트 실험용)")
     a = ap.parse_args()
     lock = ""
@@ -333,7 +290,7 @@ def main() -> int:
         return 1
 
     meta = {"run_id": run_id, "full": full, "repeat": reps, "preset": a.preset,
-            "split": a.split or "all", "set": a.set_ or "all", "only": a.only, "composition": a.composition or None, "note": a.note, "lock_file": Path(a.lock_file).name if a.lock_file else None,
+            "split": a.split or "all", "set": a.set_ or "all", "only": a.only, "note": a.note, "lock_file": Path(a.lock_file).name if a.lock_file else None,
             "dataset_sha": dataset_sha(dataset, IMAGES),
             "created": datetime.now().isoformat(timespec="seconds"), **_conditions()}
     (run_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -343,20 +300,10 @@ def main() -> int:
     streak = 0
     for e in dataset:
         data = (IMAGES / e["file"]).read_bytes()
-        comp, skipped, view = None, None, None
-        if full and a.composition:
-            want = composition_for(e, a.composition)
-            view = _view_of(data) if want else None
-            comp, skipped = gate_composition(want, view)
-            if skipped:
-                print(f"  [{e['file']}] {skipped}")
         for rep in range(1, reps + 1):
             row = {"file": e["file"], "repeat": rep}
-            if full and a.composition:
-                row.update(view=view, composition_wanted=composition_for(e, a.composition),
-                           composition_skipped=skipped)
             try:
-                row.update(_full_row(e, data, rep, a.preset, files_dir, comp) if full
+                row.update(_full_row(e, data, rep, a.preset, files_dir) if full
                            else _analyze_row(detector, e, data))
             except Exception as ex:
                 row["error"] = f"{type(ex).__name__}: {ex}"

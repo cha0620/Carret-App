@@ -99,15 +99,48 @@ async function fetchRefs() {
   return (await resp.json()).refs || [];
 }
 
-async function requestTransform(fileId, preset, composition = null, sell = null, separate = false, accessories = null,
-                                extraViewIds = null, refFile = null, itemId = null, mains = null, mode = null) {
+// 작업으로 변환 (10-12) — 시작하면 id 를 바로 받고, 물어서 생성본을 "검사 중" 으로 먼저 보여 준다
+async function startTransformJob(fileId, preset, sell = null, accessories = null, extraViewIds = null,
+                                 refFile = null, itemId = null, mains = null, mode = null, arrange = '') {
+  const resp = await fetch('/api/transform/jobs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ file_id: fileId, preset, sell, separate: false, accessories,
+                           extra_view_ids: extraViewIds, ref_file: refFile,
+                           item_id: extraViewIds ? itemId : null, mains, mode, arrange }),
+  });
+  if (!resp.ok) {
+    const e = await resp.json().catch(() => ({}));
+    throw new Error(_detail(e) || `변환 실패 (${resp.status})`);
+  }
+  return (await resp.json()).job_id;
+}
+
+async function fetchTransformJob(jobId) {
+  const resp = await fetch(`/api/transform/jobs/${jobId}`);
+  if (!resp.ok) {
+    const e = await resp.json().catch(() => ({}));
+    throw new Error(_detail(e) || `진행 상황을 못 읽었어요 (${resp.status})`);
+  }
+  return resp.json();
+}
+
+// 422 는 detail 이 배열 (pydantic) — 첫 메시지만 사람 말로
+function _detail(e) {
+  if (Array.isArray(e.detail)) return (e.detail[0] && e.detail[0].msg || '').replace(/^Value error, /, '');
+  return e.detail;
+}
+
+async function requestTransform(fileId, preset, sell = null, separate = false, accessories = null,
+                                extraViewIds = null, refFile = null, itemId = null, mains = null, mode = null,
+                                arrange = '') {
   // 1) fetch → Response 객체 받기
   const resp = await fetch("/api/transform", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({ file_id: fileId, preset: preset, composition, sell, separate, accessories,
+    body: JSON.stringify({ file_id: fileId, preset: preset, sell, separate, accessories,
                            extra_view_ids: extraViewIds, ref_file: refFile,
-                           item_id: extraViewIds ? itemId : null, mains, mode }),
+                           item_id: extraViewIds ? itemId : null, mains, mode, arrange }),
   });
 
   // 2) 실패면 throw (Response 상태에서)
@@ -125,11 +158,11 @@ async function requestTransform(fileId, preset, composition = null, sell = null,
   return res;
 }
 
-async function submitFeedback(fileId, presetKey, rating, comment) {
+async function submitFeedback(fileId, presetKey, rating, comment, tags = []) {
   const resp = await fetch('/api/feedback', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ file_id: fileId, preset_key: presetKey, rating, comment }),
+    body: JSON.stringify({ file_id: fileId, preset_key: presetKey, rating, comment, tags }),
   });
   if (!resp.ok) {
     const e = await resp.json().catch(() => ({}));

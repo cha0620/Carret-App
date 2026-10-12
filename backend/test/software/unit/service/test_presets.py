@@ -69,3 +69,24 @@ def test_leave_out_never_names_the_objects():
     """10-03: 이름을 쓰면 그 이름의 물건을 지운다 ("CD case" → 고른 CD 의 케이스까지) — 이름 없는 한 문장."""
     out = leave_out(["keyboard", "CD case", ' mouse "pad"\n'])
     assert out == LEAVE_OUT and "keyboard" not in out and "CD" not in out and "case" not in out.lower()
+
+
+# ── 판매자 요청 한 줄 clean_arrange (10-12) ──
+from app.prompts.presets import ARRANGE_MAX_CHARS, clean_arrange  # noqa: E402
+
+
+def test_clean_arrange_accepts_layout_request_and_empty():
+    assert clean_arrange("쿠션 떼고 본체만 세워서") == "쿠션 떼고 본체만 세워서"
+    assert clean_arrange("") == "" and clean_arrange(None) == ""
+
+
+@pytest.mark.parametrize("text", ["흠집 지워줘", "로고 없애고 세워서", "remove the scratch"])
+def test_clean_arrange_rejects_change_requests(text):
+    with pytest.raises(ValueError):
+        clean_arrange(text)
+
+
+def test_clean_arrange_rejects_too_long():
+    clean_arrange("가" * ARRANGE_MAX_CHARS)
+    with pytest.raises(ValueError):
+        clean_arrange("가" * (ARRANGE_MAX_CHARS + 1))

@@ -1,31 +1,5 @@
-import difflib, io
-import numpy as np
-from PIL import Image
+import difflib
 
-def _rgb(b): return Image.open(io.BytesIO(b)).convert("RGB")
-
-def _bbox(mask_bytes):
-    a = np.asarray(Image.open(io.BytesIO(mask_bytes)).convert("L"), float) > 128
-    ys, xs = np.where(a)
-    return (xs.min(), ys.min(), xs.max(), ys.max())
-
-def product_sim(orig, result, orig_mask, result_mask) -> float:
-    """상품 영역만 크롭 → 크기 정렬 → 픽셀 보존율"""
-    ob = _rgb(orig).crop(_bbox(orig_mask))
-    rb = _rgb(result).crop(_bbox(result_mask)).resize(ob.size)
-    diff = np.abs(np.asarray(ob, float) - np.asarray(rb, float)).mean() / 255
-    return float(1 - diff)
-
-def bg_whiteness(result, result_mask) -> float:
-    """스튜디오 프리셋용: 배경이 얼마나 흰가"""
-    r = np.asarray(_rgb(result), float)
-    m = np.asarray(Image.open(io.BytesIO(result_mask)).convert("L"), float) > 128
-    bg = r[~m]
-    return float(bg.mean() / 255) if len(bg) else 0.0
-
-def text_recall(expected, transcript) -> float:
-    return difflib.SequenceMatcher(
-        None, expected.lower(), transcript.lower()).ratio()
 
 def _norm(t: str) -> str:
     """보고용 표기: 소문자 + 공백 하나로."""
@@ -63,7 +37,7 @@ def _fragment_of(y: str, keys: list[str]) -> bool:
 def text_match(before: list[str], after: list[str], added_below: float = 0.6) -> dict:
     """줄 단위, 순서 무관 텍스트 비교 (띄어쓰기·구두점·대소문자 무시 — _key 로 비교).
 
-    text_recall 은 줄을 이어붙인 문자열 하나끼리 비교해서 읽는 순서만 달라도
+    (예전 text_recall 은) 줄을 이어붙인 문자열 하나끼리 비교해서 읽는 순서만 달라도
     (예: 날짜 '29' 가 목록 끝으로 감) 점수가 깎인다. 여기서는 원본 줄마다
     결과에서 가장 비슷한 줄을 찾아 그 유사도를 평균낸다. 한 줄을 둘·셋으로 쪼개 읽은
     경우("00 3060" → "00" + "3060", 순서 무관)는 조각을 이으면 정확히 같을 때만 그대로 남은 것으로 본다.
@@ -92,6 +66,3 @@ def text_match(before: list[str], after: list[str], added_below: float = 0.6) ->
     recall = sum(scores) / len(scores) if scores else 1.0
     return {"recall": round(recall, 3), "changed": changed, "added": added}
 
-
-def wear_ratio(checks) -> float:
-    return (sum(c["preserved"] for c in checks) / len(checks)) if checks else 1.0

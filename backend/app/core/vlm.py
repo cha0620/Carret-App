@@ -8,7 +8,9 @@ gemini-3.x flash 는 답하기 전에 속으로 생각하는데, 이 생각 토�
     또는 정수 = 생각 토큰 상한(thinking_budget) — 생각은 하되 폭주만 막을 때.
 .env 의 VLM_THINKING='{"verify": "default"}' 처럼 호출별로 덮어쓸 수 있다.
 """
+import json
 import logging
+import re
 from functools import lru_cache
 
 from google.genai import types
@@ -50,7 +52,7 @@ DEFAULT_THINKING: dict[str, str | int] = {
 #   classify, check_photo → 3.5-flash-lite: 품목 16/17 같은 뜻, valid 15/17 (3.8-flash 도 15/17), 단가 ~1/5
 #   item_text: 3.8-flash 기준 글자 71%, lite 13%(JSON 깨짐 6건) / detect: 앵커 32→24(3.8)·17(lite)
 #   verify: 둘 다 게이트 판정 11/15
-# 같은 날 진짜 하자 세트(19장, eval/data/real_defects) detect: 3.8 은 진짜 하자를 3.5 만큼 찾고, 3.5 가 잡은
+# 같은 날 진짜 하자 세트(19장, 10-11 지움 — study/failure-report.md) detect: 3.8 은 진짜 하자를 3.5 만큼 찾고, 3.5 가 잡은
 #   헛하자(부엉이 찻잔 물결 테두리, 빈티지 마감 찬장)는 잡지 않았다 → 기본 모델(VLM_MODEL)을 3.8-flash 로.
 #   judge 도 3.8 로 바뀌어 성적표 점수의 기준선이 이날부터 달라진다 (이전 점수와 직접 비교 금지).
 # 주의: 3.8-flash 는 thinking_level "minimal" 을 400 으로 거부한다 — 모델을 바꿀 땐 DEFAULT_THINKING 도 확인.
@@ -137,3 +139,23 @@ def retryable(e: Exception) -> bool:
     if isinstance(e, errors.ClientError):
         return getattr(e, "code", None) == 429
     return not isinstance(e, (TypeError, AttributeError, KeyError))
+
+
+_BAD_U = re.compile(r"\\u(?![0-9a-fA-F]{4})")
+
+
+def parse_json(text: str):
+    """VLM 응답 JSON 읽기. 모델이 가끔 \\u 뒤에 16진수 4자리가 아닌 걸 써서(사진 속 글자 옮기다)
+    json.loads 가 깨진다 — 10-05 · 10-11 · 10-12 묶기 7번, 셔츠 · 시즌그리팅이 물건 0개로 빠졌다.
+    그런 \\u 만 글자 그대로(\\\\u)로 바꿔 한 번 더 읽고, 그래도 안 되면 원문 앞부분을 남기고 예외."""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        fixed = _BAD_U.sub(r"\\\\u", text or "")
+        if fixed != text:
+            try:
+                return json.loads(fixed)
+            except json.JSONDecodeError:
+                pass
+        logger.warning(f"[vlm] JSON 못 읽음 ({e}): {(text or '')[max(0, e.pos - 80):e.pos + 80]!r}")
+        raise

@@ -28,7 +28,7 @@ from app.core.config import settings
 from app.prompts.presets import PRESETS
 from app.schemas.image import ArrangeRequest, ArrangeResponse, ItemObjectsUpdate, ItemResponse
 from app.services import coverage, listing, pipeline, video
-from app.services.ai import compositor, detector
+from app.services.ai import compositor, detector, ref_matcher
 from app.services.persistence import storage, store
 from app.util.img_util import MAX_PIXELS
 
@@ -172,6 +172,13 @@ def _state_label(item: dict, p: dict) -> str | None:
     return coverage.STATES.get(sub or "", {}).get(p.get("state"))
 
 
+def _ref_suggest(row: dict, photos: list[dict]) -> list[dict]:
+    """물건의 대표 사진과 닮은 정답 구도 (CLIP, 사진마다 한 번 — ref_matcher 가 기억한다). 사진을 못 읽으면 없음."""
+    fid = listing.best_photo(row, photos)
+    data = storage.load_original(fid) if fid else None
+    return ref_matcher.suggest(fid, data) if data else []
+
+
 def _response(item: dict) -> ItemResponse:
     listing.ensure_objects(item)
     photos = item["photos"]
@@ -181,19 +188,19 @@ def _response(item: dict) -> ItemResponse:
     product_ids = {r["id"] for r in rows if r["kind"] == "product" and r["for_sale"]}   # 파는 물건 사진만
     retake = [{"file_id": p["file_id"], "reason": " · ".join(coverage.problems(p))}
               for p in photos if p.get("object") in product_ids and coverage.problems(p)]
+    for r in rows:
+        r["ref_suggest"] = _ref_suggest(r, photos) if r["kind"] == "product" else []
     return ItemResponse(
         item_id=item["item_id"], item=main["name"] if main else item.get("item", "object"),
         category=main["category"] if main else item.get("category", "other"),
         photos=[{**p, "url": f"/storage/original/{p['file_id']}.jpg",
-                 "view_label": None,   # 규칙 각도 라벨 대신 AI 사진 검토 (10-09 사용자)
                  "state_label": _state_label(item, p)} for p in photos],
-        missing=[],   # 규칙 필수 면 대신 AI 사진 검토(/review)의 "더 올리면 좋은 사진" (10-09 사용자)
         retake=retake,
         complete=bool(main) and not retake and not failed,
         views_failed=failed,
-        compositions=[],   # 각도로 고르던 예시 구도 대신 정답 구도 고르기 (10-09 사용자)
         objects=rows, main_object=main["id"] if main else None,
         user_edited=item.get("user_edited", False), needs_review=item.get("needs_review", False))
+
 
 
 @router.post("/items", response_model=ItemResponse)
@@ -310,17 +317,20 @@ def review_photos(item_id: str = Path(pattern=ITEM_ID), object_id: str | None = 
         raise HTTPException(status_code=400, detail="고른 정답 구도를 찾을 수 없어요")
     needs = (ref or {}).get("needs") or []   # 정답이 필요로 하는 부위 · 면 — 각도 대신 (10-09)
     ids = [p["file_id"] for p in photos]
-    key = json.dumps([ids, ref_file, needs], ensure_ascii=False).encode()
+    # 정답 글(note · layout · needs)이 바뀌면 다시 본다 — review3: 더 필요한 사진이 정답 기준 (10-11)
+    key = json.dumps([ids, ref_file, needs, (ref or {}).get("note"), (ref or {}).get("layout"), "sketch"],
+                     ensure_ascii=False).encode()
     import hashlib
-    name = f"{item_id}_review_{hashlib.sha1(key).hexdigest()[:12]}.json"
+    name = f"{item_id}_review3_{hashlib.sha1(key).hexdigest()[:12]}.json"
     with _lock(item_id):   # 같은 물건 · 같은 조합이 동시에 오면 VLM 을 두 번 부르지 않게 (10-09 리뷰)
         cached = storage.load("quality", name)
         if cached:
             return json.loads(cached)
-        return _review_fresh(item_id, name, ids, ref_file, main, needs)
+        return _review_fresh(item_id, name, ids, ref_file, main, needs, ref)
 
 
-def _review_fresh(item_id: str, name: str, ids: list, ref_file: str | None, main: dict, needs: list) -> dict:
+def _review_fresh(item_id: str, name: str, ids: list, ref_file: str | None, main: dict, needs: list,
+                  ref: dict | None = None) -> dict:
     from app.services import style_refs
     # 원본이 없는 사진은 빼고 번호를 맞춘다 — 하나만 빠져도 설명 · base · with 가 다른 사진을 가리켰다 (10-09 리뷰)
     loaded = [(i, storage.load_original(i)) for i in ids]
@@ -329,13 +339,17 @@ def _review_fresh(item_id: str, name: str, ids: list, ref_file: str | None, main
     if not images:
         raise HTTPException(status_code=404, detail="상품 사진이 없어요")
     try:
-        got = detector.photo_review(images, style_refs.answer_photo(ref_file) if ref_file else None, needs)
+        sk = style_refs.sketch(ref_file) if ref_file else None   # 생성이 따르는 선 그림 기준 (10-11)
+        answer = sk[1] if sk else None
+        got = detector.photo_review(images, answer, ref if answer else None)
     except Exception:
         logger.warning("사진 검토(AI) 실패 — 규칙 경고 그대로", exc_info=True)
         raise HTTPException(status_code=503, detail="사진 검토를 하지 못했어요")
     out = {"object_id": main["id"], "ref_file": ref_file, "needs": needs,
            "photos": [{"file_id": i, "shows": t} for i, t in zip(ids, got["photos"])], "missing": got["missing"],
            "base_file_id": ids[got["base"]] if got["base"] < len(ids) else ids[0],
-           "with_ids": [ids[i] for i in got["with"] if i < len(ids)]}
+           "with_ids": [ids[i] for i in got["with"] if i < len(ids)],
+           # 정답 구도를 만들 사진이 다 있나 — 분석을 기다리지 않고 바로 안내 (10-11)
+           "fit": got.get("fit")}
     storage.save("quality", name, json.dumps(out, ensure_ascii=False).encode("utf-8"))
     return out

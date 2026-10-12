@@ -5,7 +5,7 @@ VLM OCR hard 가드(ocr_match·no_added_text)·run_output_guards·decide 는 09-
 
 embedder.cosine_similarity 는 실제 DINO 모델을 로드하므로 전부
 monkeypatch - 가드의 로직(임계값 비교, block/pass 판정)만 검증한다.
-metric.text_recall 은 순수 difflib 라 실제 함수를 그대로 쓴다(모델 없음).
+metric.text_match 는 순수 difflib 라 실제 함수를 그대로 쓴다(모델 없음).
 """
 import pytest
 

@@ -61,14 +61,68 @@ proofZone.ondrop = e => {
 };
 
 // ---- 업로드: 파일 ----
+// 바로 올리지 않고 모은다 (10-12 사용자: "다 올렸는지 체크하고 그다음에 모델 호출") — 한 장씩 넣어도 쌓인다.
+// 물건 묶음이 이미 있으면 [다 올렸어요] 가 그 묶음에 더한다
+const stageEl = document.getElementById('stage');
+const stageList = document.getElementById('stage-list');
+const stageDone = document.getElementById('stage-done');
+let staged = [];
+
+function renderStage() {
+  stageEl.classList.toggle('hidden', !staged.length);
+  stageDone.textContent = item ? `${staged.length}장 더 보내기` : `다 올렸어요 (${staged.length}장)`;
+  for (const img of stageList.querySelectorAll('img')) URL.revokeObjectURL(img.src);
+  stageList.replaceChildren(...staged.map((f, i) => {
+    const box = document.createElement('div');
+    box.className = 'stage-item';
+    if (f.type.startsWith('video/')) {
+      const v = document.createElement('span');
+      v.className = 'stage-video';
+      v.textContent = '동영상';
+      box.append(v);
+    } else {
+      const img = document.createElement('img');
+      img.src = URL.createObjectURL(f);
+      img.alt = f.name;
+      box.append(img);
+    }
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.className = 'stage-remove';
+    x.textContent = '×';
+    x.setAttribute('aria-label', `${f.name} 빼기`);
+    x.onclick = () => { staged.splice(i, 1); renderStage(); };
+    box.append(x);
+    return box;
+  }));
+}
+
+function stageFiles(files) {
+  files = files.filter(Boolean);
+  if (!files.length || busy) return;
+  staged = [...staged, ...files];
+  statusEl.textContent = '';
+  renderStage();
+}
+
+stageDone.onclick = async () => {
+  if (busy || !staged.length) return;
+  const append = !!item;
+  if (append && draftDirty) { statusEl.textContent = '고친 물건 묶음을 먼저 저장해 주세요'; return; }
+  const files = staged;
+  staged = [];
+  renderStage();
+  await handleFiles(files, append);
+};
+
 dropzone.onclick = () => { if (!busy) fileInput.click(); };
-fileInput.onchange = () => handleFiles([...fileInput.files]);
+fileInput.onchange = () => { stageFiles([...fileInput.files]); fileInput.value = ''; };
 dropzone.ondragover  = e => { e.preventDefault(); dropzone.classList.add('over'); };
 dropzone.ondragleave = () => dropzone.classList.remove('over');
 dropzone.ondrop = e => {
   e.preventDefault();
   dropzone.classList.remove('over');
-  handleFiles([...e.dataTransfer.files]);
+  stageFiles([...e.dataTransfer.files]);
 };
 
 // ---- 업로드: 사진 여러 장 · 동영상 → 물건 묶음 ----
@@ -87,7 +141,7 @@ let uploadToken = 0;             // 늦게 도착한 업로드 응답을 버리�
 
 function setBusy(on) {
   busy = on;
-  for (const el of [dropzone, proofZone, addBtn, urlBtn]) {
+  for (const el of [dropzone, proofZone, addBtn, urlBtn, stageDone]) {
     el.classList.toggle('disabled', on);
     if ('disabled' in el) el.disabled = on;
   }
@@ -110,7 +164,6 @@ function needsSave() {
   return !!item && draftDirty;   // 설명을 고쳤을 때만 (묶음 확인 단계는 없앴다, 10-09)
 }
 
-let composition = null;          // 고른 정석 구도 키 (신발만 — 없으면 null)
 let sell = null;                 // 고른 팔 물건 번호 (analyze objects) — 목록이 없으면 null (분석 판단대로)
 let contentsHidden = false;      // 세트인데 안의 구성품이 어느 사진에도 안 보인다 (10-09)
 let analysisObjects = null;      // 분석이 준 사진 속 물건 (따로 만들 때 이름 표시용)
@@ -210,13 +263,13 @@ async function loadSellObjects(fid, refreshOnly = false) {
     return;
   }
   resetSell();
+  refreshRisk();
   const token = analyzeToken;
   fullPending = true;
   const quick = loadComponents(fid);
   try {
     const a = await analyzePhoto(fid);
     if (token !== analyzeToken || fid !== fileId) return;
-    showRisk(a.reason);
     await quick;
     // 빠른 목록이 실패했을 때만 분석 목록으로 (서버가 분석 objects 를 구성품 목록으로 맞춰 주므로 번호가 같다)
     if (!compApplied && !compPending && fid === fileId) applyObjects(a.objects || [], !!a.contents_hidden);
@@ -229,28 +282,28 @@ async function loadSellObjects(fid, refreshOnly = false) {
   }
 }
 
-// 생성이 잘 안될 수 있는 사진 — 강제로 배경 교체하지 않고 이유를 알려 판매자가 고르게 한다 (10-11 사용자).
-// 실패 가능성 %는 기록(생성을 고른 결과의 risk_reason)이 쌓이면 붙인다 — 아직 정하지 않음
-const RISK = {
-  cut_off: '물건이 사진에 다 안 나와서, AI가 안 보이는 부분을 지어낼 수 있어요',
-  overlap: '구성품이 서로 겹쳐 있어서, AI가 가려진 부분을 지어내거나 복제할 수 있어요',
-  multi_item: '물건이 여러 개라 AI가 개수를 바꿀 수 있어요 — 한 개만 팔면 아래에서 하나만 고르세요',
-  text_dense: '잔글씨가 많아서 AI가 글자를 뭉갤 수 있어요',
-  wear_heavy: '사용감이 많아서 AI가 흠집을 지우거나 과장할 수 있어요',
-  document: '글자가 곧 물건(문서 · 책)이라 한 글자만 바뀌어도 다른 물건이 돼요',
-};
-const FIXED = { inside_view: '물건 내부 · 일부를 찍은 사진이라 원본 그대로 보여드려요',
-                detect_failed: '사진 분석을 못 해서 배경만 바꿀 수 있어요' };
-function showRisk(reason) {
-  const fixed = FIXED[reason];
-  riskNote.hidden = !(RISK[reason] || fixed);
-  riskNote.textContent = fixed ? 'ℹ️ ' + fixed
-    : RISK[reason] ? `⚠️ AI 생성이 잘 안될 수 있어요 — ${RISK[reason]}. 원본을 지키려면 [배경만 바꾸기]를 추천해요` : '';
-  runBtn.classList.toggle('btn-primary', !reason);
-  runBtn.classList.toggle('btn-ghost', !!reason);
-  runBgBtn.classList.toggle('btn-primary', !!reason);
-  runBgBtn.classList.toggle('btn-ghost', !reason);
-  runBtn.hidden = !!fixed;           // 고를 수 없는 경우 — 서버도 생성을 받지 않는다
+// 사진 쪽 확인은 "고른 정답 구도를 만들 사진이 다 있나"(사진 검토 fit) 하나만 (10-11 사용자). 잘림 · 겹침 · 여러 개 ·
+// 사용감 · 문서 · 내부 같은 생성 전 판단은 지웠다 — 먼저 생성해 보고 얼마나 깨지는지 본다
+function refreshRisk() {
+  const o = currentObject();
+  // 지금 사진 · 지금 물건 · 지금 고른 정답의 검토만 (낡은 검토의 안내가 남지 않게)
+  const rv = review && review.base_file_id === fileId && o && review.object_id === o.id
+    && (review.ref_file || null) === (refFile || null) ? review : null;
+  showFit(rv && rv.fit && rv.fit.ok === false ? rv.fit.need : '');
+}
+
+function showFit(need) {
+  riskNote.hidden = !need;
+  riskNote.replaceChildren();
+  if (!need) return;
+  const msg = document.createElement('span');
+  msg.textContent = `📐 고른 구도로 만들려면 이 사진이 더 필요해요: ${need}`;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn btn-ghost risk-upload';
+  btn.textContent = '사진 더 올리기';
+  btn.onclick = () => document.getElementById('item-add').click();
+  riskNote.append(msg, btn);
 }
 
 // 구성품 종류 — 서버 set_pieces 와 같은 규칙 (끝 번호를 뗀 이름). 본품(main)은 따로 한 줄
@@ -266,17 +319,13 @@ function nameOf(o) {
 // ---- 정답 구도 고르기 · 같이 넣을 사진 (10-09) ----
 let refs = null;                 // GET /api/refs — 선 그림이 있는 정답 구도
 let refFile = null;              // 고른 정답 (null = 고르지 않음)
-let refPicked = false;           // 판매자가 직접 골랐나 — 아니면 품목에 맞는 정답이 기본 (10-09 사용자)
+let refPicked = false;           // 판매자가 직접 골랐나 — 아니면 추천 1등이 기본 (10-11)
 
-// 품목에 맞는 정답 — 물건 이름(묶음 · 분석의 본품)에 정답의 품목 낱말이 있으면 그것, 없으면 같은 종류의 첫 정답
-function defaultRef(list) {
+// 대표 사진과 닮은 정답 (서버 CLIP, 최대 3 · 좋은 것 먼저 · 닮은 게 없으면 빈 목록 — 10-11)
+function suggestedRefs() {
   const o = currentObject();
-  const main = (analysisObjects || []).find(x => x.role === 'main') || {};
-  const text = [o && o.label, item && item.item, main.what, main.name_ko].filter(Boolean).join(' ').toLowerCase();
-  const hit = list.find(r => (r.items || []).some(k => text.includes(String(k).toLowerCase())));
-  if (hit) return hit.file;
-  const same = o && o.category ? list.find(r => r.category === o.category) : null;
-  return same ? same.file : null;
+  const full = o && item ? (item.objects || []).find(x => x.id === o.id) : null;
+  return ((full && full.ref_suggest) || []).map(s => s.file).filter(f => refs.some(r => r.file === f));
 }
 
 function currentObject() {
@@ -301,12 +350,17 @@ async function renderRefs() {
   if (token !== refsToken) return;             // 그사이 사진이 바뀌었다 — 늦은 그리기는 버린다
   if (!refs) { wrap.classList.add('hidden'); return; }
   const o = currentObject();
+  const sugg = suggestedRefs();
   const mine = o && o.category ? refs.filter(r => r.category === o.category) : [];
   const shown = mine.length ? mine : refs;      // 종류가 맞는 게 없으면 전부
-  if (refFile && !shown.some(r => r.file === refFile)) { refFile = null; refPicked = false; }
-  if (!refPicked) refFile = defaultRef(refs);   // 품목에 맞는 정답이 기본 — 이름이 맞으면 종류가 달라도 (보드게임 → 세트)
+  if (refFile && !shown.some(r => r.file === refFile) && !sugg.includes(refFile)) { refFile = null; refPicked = false; }
+  if (!refPicked) refFile = sugg[0] || null;    // 추천 1등이 기본, 추천이 없으면 고르지 않음
   loadReview();   // 정답이 정해졌으니 그 기준으로 사진 검토
-  const shownAll = refFile && !shown.some(r => r.file === refFile) ? [refs.find(r => r.file === refFile), ...shown] : shown;
+  // 추천을 맨 앞에 (순위대로), 나머지는 같은 종류 — 고른 게 목록 밖이면 그것도
+  const byFile = f => refs.find(r => r.file === f);
+  const rest = shown.filter(r => !sugg.includes(r.file));
+  const extra = refFile && !sugg.includes(refFile) && !rest.some(r => r.file === refFile) ? [byFile(refFile)] : [];
+  const shownAll = [...sugg.map(byFile), ...extra, ...rest];
   list.innerHTML = '';
   wrap.querySelectorAll('.ref-note').forEach(x => x.remove());
   wrap.classList.toggle('hidden', !fileId || !shown.length);
@@ -314,6 +368,13 @@ async function renderRefs() {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'ref-card';
+    const rank = sugg.indexOf(file);
+    if (rank >= 0) {
+      const tag = document.createElement('span');
+      tag.className = 'ref-sugg';
+      tag.textContent = sugg.length > 1 ? `추천 ${rank + 1}` : '추천';
+      b.append(tag);
+    }
     b.setAttribute('role', 'radio');
     b.setAttribute('aria-checked', String(refFile === file));
     if (src) {
@@ -364,10 +425,13 @@ async function loadReview() {
   const key = `${item.item_id}|${o.id}|${refFile || ''}|${item.photos.length}`;
   if (key === reviewKey) return;
   reviewKey = key;
+  review = null;
+  refreshRisk();
   try {
     const r = await fetchReview(item.item_id, o.id, refFile);
     if (key !== reviewKey) return;
     review = r;
+    refreshRisk();   // 위험 이유 · 구도 가능 여부를 분석보다 먼저 (10-11)
     // 기준 사진 · 같이 넣을 사진도 AI 추천으로 — 판매자가 이미 직접 고른 건 바꾸지 않는다 (10-09 사용자: 규칙 각도 대신)
     // AI 가 추천을 비워 주면 "같이 넣지 않음"으로 받지 않는다 — 자동(같은 물건 다른 사진 2장)으로 둔다
     const aiWith = (r.with_ids || []).filter(id => id !== fileId);
@@ -379,7 +443,9 @@ async function loadReview() {
     drawItem();
     drawObjects();
     renderContents();
-  } catch (_) { /* 실패 — 규칙 라벨 · 경고 그대로 */ }
+  } catch (_) {                  // 실패 — 규칙 라벨 · 경고 그대로. 다음에 다시 묻게 키를 되돌린다
+    if (key === reviewKey) reviewKey = '';
+  }
 }
 
 // 같은 물건의 다른 상품 사진 (근거 사진 제외) — 메인 포함 3장까지, 각도가 다른 것 먼저
@@ -445,7 +511,9 @@ function renderContents() {
   head.className = 'contents-title';
   head.textContent = '대표사진에 담길 것';
   el.append(head);
-  const [repObjs, restObjs] = repSplit((analysisObjects || []).filter(o => sell && sell.includes(o.index)));
+  // 판매자가 고쳐 골랐으면 고른 것 전부가 사진에 (서버 apply_selection 과 같게, 10-11). 기본값일 때만 본체 하나
+  const picked = (analysisObjects || []).filter(o => sell && sell.includes(o.index));
+  const [repObjs, restObjs] = sellDirty ? [picked, []] : repSplit(picked);
   const objs = repObjs.map(o => ({ ...o, role: mains.includes(o.index) ? 'main' : 'component' }));
   if (!objs.length) {
     const p = document.createElement('p');
@@ -689,9 +757,8 @@ objSaveBtn.onclick = async () => {
   }
   const p = item.photos.find(p => p.file_id === fileId);
   resetArrange(true);
-  if (p && wasRunnable !== canRun()) selectPhoto(p);  // 변환 가능 여부가 바뀐 때만 — 결과 · 고른 구도는 둔다
+  if (p && wasRunnable !== canRun()) selectPhoto(p);  // 변환 가능 여부가 바뀐 때만 — 결과는 둔다
   else {
-    if (composition && !compsForPhoto(fileId).some(c => c.key === composition)) composition = compOfPhoto(fileId);
     drawItem();
     drawObjects();
     drawArrange();
@@ -701,17 +768,15 @@ objSaveBtn.onclick = async () => {
 // 사진 목록 · 빠진 면 · 구도 · 대표컷 물건 — 고른 사진의 물건 기준
 function drawItem() {
   const o = objectOfPhoto(fileId);
-  document.getElementById('comp-title').textContent = o && sellingObjects(item).length > 1
-    ? `예시 구도 고르기 — ${o.label}` : '예시 구도 고르기';
   // AI 사진 검토가 있으면 각도 라벨 · 빠진 면을 그걸로 (10-09 사용자: "위에서 본 사진" 같은 규칙 라벨이 애매)
   const rv = review && o && review.object_id === o.id ? review : null;
   const shows = new Map(rv ? rv.photos.map(x => [x.file_id, x.shows]) : []);
   const view = rv
     ? { ...item, photos: item.photos.map(p => shows.get(p.file_id) ? { ...p, view_label: shows.get(p.file_id), state_label: null } : p),
-        missing: rv.missing.map(m => ({ label: m.what, hint: m.hint })) }
-    : { ...item, missing: o && o.kind === 'product' ? o.missing : item.missing };
+        missing: rv.missing.map(m => ({ label: m.what, hint: m.hint })),
+        missing_title: rv.ref_file ? '고른 정답 사진처럼 만들려면 이 사진이 더 필요해요' : null }
+    : { ...item, missing: [] };
   renderItem(view, fileId, p => { basePicked = true; selectPhoto(p); }, extraViewIds() || [], canWith, toggleWith);
-  renderComps({ compositions: compsForPhoto(fileId) }, composition, pickComp);
   renderTargets(item, o ? o.id : null, pickTarget);
 }
 
@@ -727,29 +792,13 @@ function objectOfPhoto(fid) {
   return p ? (item.objects || []).find(o => o.id === p.object) || null : null;
 }
 
-// 구도 후보는 고른 사진의 물건 기준 (10-04) — 물건이 여럿이면 물건마다 구도가 다르다
-function compsForPhoto(fid) {
-  const o = objectOfPhoto(fid);
-  return o && o.kind === 'product' ? (o.compositions || []) : [];
-}
-
-// 사진에 맞는 구도를 자동으로 — 종류가 기타면 하지 않는다 (기타의 구도는 시계 · 책 · 음반이라 상자 사진에 "시계" 문장이 붙는다)
-function compOfPhoto(fid) {
-  const o = objectOfPhoto(fid);
-  if (!o || o.category === 'other') return null;
-  const c = compsForPhoto(fid).find(c => c.photo_ids.includes(fid));
-  return c ? c.key : null;
-}
-
 const chosenPhoto = {};          // 물건 id → 그 물건으로 고른 사진 (배치에도 이 사진을 쓴다)
 
 function pickTarget(o) {
   if (busy) return;
-  const c = (o.compositions || []).find(c => c.available);
-  const fid = chosenPhoto[o.id] && o.photo_ids.includes(chosenPhoto[o.id]) ? chosenPhoto[o.id]
-    : c ? c.photo_ids[0] : o.photo_ids[0];
+  const fid = chosenPhoto[o.id] && o.photo_ids.includes(chosenPhoto[o.id]) ? chosenPhoto[o.id] : o.photo_ids[0];
   const p = item.photos.find(p => p.file_id === fid);
-  if (p) selectPhoto(p, c && fid === c.photo_ids[0] && o.category !== 'other' ? c.key : undefined);
+  if (p) selectPhoto(p);
 }
 
 // ---- 여러 물건을 한 장에 (10-04) — 원본에서 오려 코드로 놓는다 ----
@@ -814,20 +863,8 @@ arrangeBtn.onclick = async () => {
   }
 };
 
-function pickComp(c) {
+function selectPhoto(p) {
   if (busy) return;
-  if (!c.available) {                    // 그 각도 사진이 없음 → 찍어 올리게
-    statusEl.textContent = c.hint;
-    addInput.click();
-    return;
-  }
-  const p = item.photos.find(p => p.file_id === c.photo_ids[0]);
-  selectPhoto(p, c.key);
-}
-
-function selectPhoto(p, comp) {
-  if (busy) return;
-  composition = comp !== undefined ? comp : compOfPhoto(p.file_id);
   fileId = p.file_id;
   if (withIds) withIds = withIds.filter(id => id !== fileId);   // 기준이 된 사진은 같이 넣기에서 뺀다
   if (p.object) chosenPhoto[p.object] = p.file_id;
@@ -857,13 +894,54 @@ function selectPhoto(p, comp) {
 }
 
 function firstGoodPhoto(it) {
-  // 대표컷 구도에 맞는 사진이 있으면 그것부터 (구도 목록의 첫 번째가 대표컷)
-  const first = (it.compositions || []).find(c => c.available);
-  if (first) return it.photos.find(p => p.file_id === first.photo_ids[0]);
   const bad = new Set(it.retake.map(r => r.file_id));
   const mine = it.main_object ? it.photos.filter(p => p.object === it.main_object) : it.photos;   // 대표 물건 사진부터
   return mine.find(p => !bad.has(p.file_id)) || mine[0] || it.photos[0];
 }
+
+// ---- 무엇을 파나요 (10-11 사용자: 당근마켓처럼) ----
+// 판매자가 쓰는 동안 업로드 · 물건 묶기(AI)가 돌고, 먼저 끝나면 사진에서 본 물건 이름을 추천으로 띄운다.
+// 쓴 이름(또는 고른 추천)은 그 물건의 이름(④ 상품 설명과 같은 값)이 되고, 추천을 누르면 그 물건으로 대표컷을 만든다
+const sellNameWrap = document.getElementById('sell-name-wrap');
+const sellNameInput = document.getElementById('sell-name');
+const sellNameSugg = document.getElementById('sell-name-sugg');
+
+function startSellName() {
+  sellNameWrap.classList.remove('hidden');
+  sellNameSugg.textContent = '✨ AI가 사진을 보는 중이에요 — 먼저 적어도 돼요';
+}
+
+function showSellNameSugg() {
+  sellNameSugg.replaceChildren();
+  const objs = (item && item.objects || []).filter(o => o.kind === 'product' && o.for_sale !== false && o.label);
+  if (!objs.length) return;
+  const typed = sellNameInput.value.trim();
+  sellNameSugg.append('✨ AI 추천');
+  for (const o of objs) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = o.label;                       // textContent — VLM 이 만든 이름
+    b.setAttribute('aria-pressed', String(typed === o.label));
+    b.onclick = () => {
+      sellNameInput.value = o.label;
+      pickTarget(o);
+      showSellNameSugg();
+    };
+    sellNameSugg.append(b);
+  }
+  // 분석보다 먼저 적었으면 그 이름을 지금 물건에 — 추천은 그대로 띄워 둔다
+  if (typed) applySellName(typed);
+}
+
+function applySellName(name) {
+  const o = currentObject();
+  if (o && name && o.label !== name) objHandlers.setField(o.id, 'label', name);
+}
+
+sellNameInput.onchange = () => {
+  const name = sellNameInput.value.trim();
+  if (item) { applySellName(name); showSellNameSugg(); }
+};
 
 async function handleFiles(files, append = false, proof = null) {
   if (!append && proof === null) proof = pendingProof;   // 먼저 골라 둔 근거 사진은 새 물건과 같이
@@ -874,10 +952,11 @@ async function handleFiles(files, append = false, proof = null) {
   const hasVideo = files.some(f => f.type.startsWith('video/'));
   statusEl.textContent = hasVideo ? '동영상에서 장면 고르는 중... (조금 걸려요)' : '업로드하고 사진 확인 중...';
   if (!append) {
-    fileId = null; item = null; composition = null; resetSell(); clearResults(); hideItem();
+    fileId = null; item = null; resetSell(); clearResults(); hideItem();
     afterImg.hidden = true; beforeImg.hidden = true;
   }
   urlInput.value = '';
+  if (!append) startSellName();
   setBusy(true);
   try {
     const res = await uploadItem(files, append && item ? item.item_id : null, proof || []);
@@ -891,13 +970,13 @@ async function handleFiles(files, append = false, proof = null) {
     resetArrange(append);
     const keep = append && item.photos.find(p => p.file_id === fileId);
     setBusy(false);
-    const keepComp = keep && compsForPhoto(keep.file_id).some(c => c.key === composition) ? composition : undefined;
-    selectPhoto(keep || firstGoodPhoto(item), keepComp);
-    if (item.missing.length || item.retake.length) {
-      statusEl.textContent = '구도를 고르세요 — 빠진 면이나 다시 찍을 사진이 있으면 더 올려도 돼요';
+    selectPhoto(keep || firstGoodPhoto(item));
+    showSellNameSugg();
+    if (item.retake.length) {
+      statusEl.textContent = '다시 찍으면 좋은 사진이 있어요 — 더 올려도 돼요';
     }
   } catch (e) {
-    if (token === uploadToken) statusEl.textContent = e.message;
+    if (token === uploadToken) { statusEl.textContent = e.message; sellNameSugg.textContent = ''; }
   } finally {
     if (token === uploadToken) setBusy(false);
     fileInput.value = '';
@@ -927,7 +1006,6 @@ urlBtn.onclick = async () => {
     setPendingProof([]);         // 한 장 업로드는 물건 묶음이 아니라 근거를 붙일 곳이 없다
     fileId = data.file_id;
     item = null;
-    composition = null;
     resetSell();                 // 이전 사진의 팔 물건 고르기를 남기지 않는다
     hideItem();
     beforeImg.src = url;
@@ -961,6 +1039,66 @@ function askMulti(n) {
   });
 }
 
+// 결과 먼저, 검사는 뒤에서 (10-12) — 생성본이 나오면 "검사 중" 배지로 먼저 보여 주고,
+// 검사가 끝나면 showResult 가 진짜 결과 · 배지로 바꾼다. 검사 전엔 확정 · 칠하기를 숨긴다
+const STAGE_TEXT = {
+  queued: '시작하는 중...', preparing: '준비하는 중...', analyzing: '원본 사진 살펴보는 중...', generating: 'AI로 정리하는 중...',
+  checking: '먼저 보여드려요 — 원본과 같은지 검사하는 중...', regenerating: '검사에서 다른 점이 보여 다시 만드는 중...',
+  composite: '배경 바꾸는 중...',
+};
+const POLL_MS = 1500;
+
+async function waitTransformJob(jobId) {
+  let shown = '';
+  let misses = 0;
+  for (;;) {
+    let j;
+    try {
+      j = await fetchTransformJob(jobId);
+      misses = 0;
+    } catch (e) {
+      if (++misses >= 3) throw e;        // 잠깐 끊긴 건 다시 묻는다
+      await new Promise(r => setTimeout(r, POLL_MS));
+      continue;
+    }
+    if (j.stage === 'done') return j.result;
+    if (j.stage === 'error') { hidePreview(); throw new Error((j.error && j.error.detail) || '변환 실패'); }
+    statusEl.textContent = STAGE_TEXT[j.stage] || 'AI로 정리하는 중...';
+    if (j.preview_url && j.preview_url !== shown) {
+      shown = j.preview_url;
+      showPreview(j);
+    } else if (shown && !j.preview_url) {
+      // 검사에 떨어진 생성본은 서버가 내렸다 (다시 만들기 · 배경 교체) — 화면에서도 내린다
+      shown = '';
+      hidePreview();
+      gateBadge.hidden = false;
+      gateBadge.textContent = j.stage === 'composite'
+        ? '🔁 검사에서 원본과 다른 점이 보여 배경만 바꾸는 중이에요'
+        : '🔁 검사에서 원본과 다른 점이 보여 다시 만드는 중이에요';
+      gateBadge.style.color = '#b9770e';
+    }
+    await new Promise(r => setTimeout(r, POLL_MS));
+  }
+}
+
+function showPreview(j) {
+  afterImg.onload = null;
+  afterImg.onerror = null;
+  afterImg.src = j.preview_url;
+  afterImg.hidden = false;
+  gateBadge.hidden = false;
+  gateBadge.textContent = `🔎 검사 중이에요 — 아직 확정 전이에요${j.attempt > 1 ? ` (${j.attempt}번째로 만든 사진)` : ''}`;
+  gateBadge.style.color = '#5d6d7e';
+  document.getElementById('final-btn').hidden = true;
+  document.getElementById('inpaint-link').hidden = true;
+}
+
+function hidePreview() {
+  afterImg.hidden = true;
+  afterImg.removeAttribute('src');
+  gateBadge.hidden = true;
+}
+
 function showResult(data) {
   afterImg.onload = null;
   afterImg.onerror = () => { statusEl.textContent = '결과 이미지를 불러오지 못했습니다'; };
@@ -973,6 +1111,26 @@ function showResult(data) {
   const ip = document.getElementById('inpaint-link');
   ip.hidden = !(data.file_id && data.preset);
   if (!ip.hidden) ip.href = `/inpaint.html?file_id=${encodeURIComponent(data.file_id)}&preset=${encodeURIComponent(data.preset)}`;
+  setupFinal(document.getElementById('final-btn'), data.file_id, data.preset, 'app');
+}
+
+// 최종본 확정 (10-11) — 판매자가 "이대로 쓴다"고 한 사진. 정직률(고치지 않고 쓴 비율)의 분모
+function setupFinal(btn, fid, key, source) {
+  btn.hidden = !(fid && key);
+  btn.disabled = false;
+  btn.textContent = '✅ 이대로 쓰기';
+  btn.onclick = async () => {
+    btn.disabled = true;
+    try {
+      const r = await fetch('/api/final', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_id: fid, preset_key: key, source }) });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.status);
+      btn.textContent = '✅ 최종본으로 정했어요';
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = '확정 실패 — 다시';
+    }
+  };
 }
 
 // 대표사진은 본체 하나 (10-11) — 뺀 구성품(상자 포함)은 개수와 함께 아래에 (검증용).
@@ -980,14 +1138,21 @@ function showResult(data) {
 function renderDetailPieces(data) {
   const dp = document.getElementById('detail-pieces');
   const pieces = data.detail_pieces || [];
-  dp.hidden = !pieces.length;
+  const reqs = data.detail_requests || [];       // 따로 받을 검증 사진 — 글자 근접 등 (10-11)
+  dp.hidden = !pieces.length && !reqs.length;
   dp.replaceChildren();
+  for (const t of reqs) {
+    const r = document.createElement('p');
+    r.className = 'muted';
+    r.textContent = '📷 상세 사진으로 올려 주세요: ' + t;
+    dp.append(r);
+  }
   if (!pieces.length) return;
   const head = document.createElement('p');
   head.className = 'muted';
   head.textContent = '대표사진엔 본체만 — 같이 들어 있는 구성품 (원본 사진을 상세 사진으로 올리면 검증용으로 충분해요):';
   dp.append(head);
-  const fileId_ = fileId, comp_ = composition;
+  const fileId_ = fileId;
   for (const p of pieces) {
     const row = document.createElement('div');
     row.className = 'detail-piece';
@@ -1007,7 +1172,7 @@ function renderDetailPieces(data) {
         btn.textContent = '만드는 중...';
         try {
           // 같은 종류가 여럿(카드 3장)이면 그 묶음만 — 따로: 다른 구성품이 섞인 참고 사진은 넣지 않는다
-          const out = await requestTransform(fileId_, PRESET, comp_, ix, true, null, null, refFile, null, [ix[0]]);
+          const out = await requestTransform(fileId_, PRESET, ix, true, null, null, refFile, null, [ix[0]]);
           if (fileId_ !== fileId) return;
           const img = document.createElement('img');
           img.className = 'detail-piece-img';
@@ -1057,7 +1222,7 @@ function renderMultiResults(list) {
   });
 }
 
-async function runSeparate(fileId_, comp_, picked, mode = null) {
+async function runSeparate(fileId_, picked, mode = null) {
   const names = new Map((analysisObjects || []).map(o => [o.index, o.what || `물건 ${o.index + 1}`]));
   const ok = [], failed = [];
   for (const [k, i] of picked.entries()) {
@@ -1065,7 +1230,7 @@ async function runSeparate(fileId_, comp_, picked, mode = null) {
     const label = names.get(i) || `물건 ${i + 1}`;
     try {
       // 따로: 다른 사진은 다른 구성품이 섞여 넣지 않는다 (10-09 리뷰)
-      ok.push({ label, data: await requestTransform(fileId_, PRESET, comp_, [i], true, null, null, refFile, null, null, mode) });
+      ok.push({ label, data: await requestTransform(fileId_, PRESET, [i], true, null, null, refFile, null, null, mode) });
     } catch (e) {
       failed.push(label);
     }
@@ -1082,7 +1247,6 @@ async function runSeparate(fileId_, comp_, picked, mode = null) {
 async function runWith(mode) {
   if (busy || !canRun()) return;
   const fileId_ = fileId;        // 변환 중 사진을 바꿔도 이 결과 · 피드백은 이 사진에
-  const comp_ = composition;
   const sell_ = sellDirty ? sell : null;   // 기본 체크 그대로면 보내지 않는다 — 분석 판단대로
   const acc_ = sellDirty && accessories.length ? [...accessories] : null;
   const mains_ = sellDirty && mains.length ? [...mains] : null;
@@ -1103,12 +1267,14 @@ async function runWith(mode) {
   renderMultiResults([]);
   setBusy(true);
   if (how === 'separate') {
-    try { await runSeparate(fileId_, comp_, picked, mode); } finally { setBusy(false); }
+    try { await runSeparate(fileId_, picked, mode); } finally { setBusy(false); }
     return;
   }
   statusEl.textContent = mode === 'composite' ? '배경 바꾸는 중...' : 'AI로 정리하는 중... (몇 초 걸려요)';
   try {
-    const data = await requestTransform(fileId_, PRESET, comp_, sell_, false, acc_, extraViewIds(), refFile, item && item.item_id, mains_, mode);
+    const jobId = await startTransformJob(fileId_, PRESET, sell_, acc_, extraViewIds(), refFile, item && item.item_id, mains_, mode,
+                                          document.getElementById('arrange').value.trim());
+    const data = await waitTransformJob(jobId);
     showResult(data);
 
     // 피드백: 우선 빈 박스 표시, 기존 피드백 있으면 채워넣기
@@ -1152,7 +1318,7 @@ feedbackSubmitBtn.onclick = async () => {
   feedbackSubmitBtn.disabled = true;
   feedbackStatus.textContent = '전송 중...';
   try {
-    await submitFeedback(fileId, PRESET, currentRating, feedbackComment.value.trim() || null);
+    await submitFeedback(fileId, PRESET, currentRating, feedbackComment.value.trim() || null, feedbackTags());
     feedbackStatus.textContent = '피드백 감사합니다! 🙏';
   } catch (e) {
     feedbackStatus.textContent = e.message;

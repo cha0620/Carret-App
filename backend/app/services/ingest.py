@@ -21,7 +21,7 @@ def ingest_and_feedback(file_id: str, data: bytes, ext: str, preset: str,
                                size_bytes=size_bytes)
     except Exception:
         # 메타데이터 기록 실패로 이미 저장된 원본 + 뒤이은 실호출(fal.ai/VLM)까지
-        # 통째로 날릴 이유는 없다 — pipeline.py의 detect/verify/judge와 같은 원칙.
+        # 통째로 날릴 이유는 없다 — pipeline 의 detect/verify/judge와 같은 원칙.
         logger.exception("원본 메타데이터 기록 실패(무시)")
     pipeline.run_transform(file_id, preset, score_quality=True)   # dev 일괄 실행 — 결과 목록에 judge 칩
     original = storage.load_original(file_id)

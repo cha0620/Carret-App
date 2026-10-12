@@ -5,7 +5,7 @@ from google.genai import types
 
 from app.core.config import settings
 from app.core.prompt_registry import get_prompt_text
-from app.core.vlm import get_client, image_part, thinking
+from app.core.vlm import get_client, image_part, parse_json, thinking
 from app.core.vlm import model as vlm_model
 from app.core.tracing import gemini_usage, observe
 from app.prompts.rubric import AXES, rubric_text
@@ -46,7 +46,7 @@ def judge(original: bytes, result: bytes) -> dict:
                 thinking_config=thinking("judge"),
             ),
         )
-        report = _validate(json.loads(resp.text))
+        report = _validate(parse_json(resp.text))
         if obs is not None:
             obs.update(output=report, usage_details=gemini_usage(resp))
         return report

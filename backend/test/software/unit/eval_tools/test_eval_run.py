@@ -275,16 +275,8 @@ def full_row(run_mod, tmp_path, monkeypatch, make_png):
         return {"prompt_used": st.prompt}
 
     monkeypatch.setattr(pipeline, "run_transform", run_transform)
-    st.call = lambda entry, composition=None: run_mod._full_row(entry, png, 1, "studio_white", files, composition)
+    st.call = lambda entry: run_mod._full_row(entry, png, 1, "studio_white", files)
     return st
-
-
-def test_full_row_composition_recorded_only_when_in_prompt(full_row):
-    from app.services.compositions import BY_KEY
-    full_row.prompt = "bg " + BY_KEY["shoes_side"]["prompt"] + " lock"
-    assert full_row.call({"file": "cd.png"}, "shoes_side")["composition"] == "shoes_side"
-    full_row.prompt = "bg lock"                          # 파이프라인이 뺐다 (물건 여러 개 등)
-    assert full_row.call({"file": "cd.png", "item_count": 2}, "shoes_side")["composition"] is None
 
 
 def test_main_skips_extras_unless_named(run_mod, tmp_path, monkeypatch, capsys):

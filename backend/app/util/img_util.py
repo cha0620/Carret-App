@@ -4,13 +4,6 @@ from PIL import Image, ImageOps
 
 from app.core.config import settings
 
-def downscale(image_bytes: bytes, max_side: int = 1024) -> bytes:
-    img = Image.open(io.BytesIO(image_bytes))
-    img.thumbnail((max_side, max_side))
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=85)
-    return buf.getvalue()
-
 MAX_PIXELS = 60_000_000   # 약 7700x7700 — 휴대폰 사진(최대 2억 화소 모드 제외)은 들어온다
 
 

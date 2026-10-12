@@ -135,3 +135,18 @@ def test_analyze_fresh_runs_detector_and_returns_objects(client, monkeypatch):
         "objects": [{"what": "CD", "box": {"x1": 1, "y1": 1, "x2": 9, "y2": 9}, "for_sale": True}]})
     body = client.post("/api/analyze", json={"file_id": FID}).json()
     assert body["item_count"] == 2 and body["objects"][0]["index"] == 0
+
+
+def test_transform_arrange_passed_and_changes_result_key(client, fake_pipeline):
+    """판매자 요청(10-12)은 파이프라인에 넘어가고, 요청이 다르면 결과 이름도 달라 덮어쓰지 않는다."""
+    for a in ["", "세워서", "눕혀서"]:
+        r = client.post("/api/transform", json={"file_id": FID, "preset": "studio_white", "arrange": a})
+        assert r.status_code == 200
+    keys = [run[1] for run in fake_pipeline["run"]]
+    assert len(set(keys)) == 3 and fake_pipeline["run"][1][2]["arrange"] == "세워서"
+
+
+@pytest.mark.parametrize("arrange", ["흠집 지워줘", "가" * 81])
+def test_transform_bad_arrange_is_422(client, fake_pipeline, arrange):
+    r = client.post("/api/transform", json={"file_id": FID, "preset": "studio_white", "arrange": arrange})
+    assert r.status_code == 422 and fake_pipeline["run"] == []

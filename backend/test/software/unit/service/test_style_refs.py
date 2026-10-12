@@ -38,3 +38,13 @@ def test_plan_check_error_means_not_picked(refs):
     def boom(img, things):
         raise ValueError("bad")
     assert _plan(boom) is None
+
+
+def test_plan_text_name_hit_with_wrong_views_does_not_fall_to_other_item(monkeypatch):
+    """10-11: 폰 정답(앞 · 뒤 두 면)을 못 쓰면 같은 전자기기의 헤드폰 정답으로 넘어가지 않는다."""
+    from app.services import style_refs
+    monkeypatch.setattr(style_refs, "load", lambda: [
+        {"file": "head.jpg", "items": ["headphone"], "category": "electronics", "view": ["front_34"], "layout": "H"},
+        {"file": "phone.jpg", "items": ["phone"], "category": "electronics", "view": ["back", "front"], "layout": "P"}])
+    assert style_refs.plan_text("smartphone", "electronics", [None]) is None
+    assert style_refs.plan_text("speaker", "electronics", [None]) == ("head.jpg", "H")   # 이름이 맞는 게 없으면 종류로

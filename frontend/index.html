@@ -25,6 +25,19 @@
     </div>
     <input type="file" id="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,.jpg,.jpeg,.png,.webp,.mp4,.mov,.m4v,.webm" multiple hidden>
 
+    <!-- 올릴 사진 모으기 (10-12) — 한 장씩 넣어도 쌓이고, [다 올렸어요] 를 눌러야 서버 · 모델을 부른다 -->
+    <div id="stage" class="stage hidden">
+      <div id="stage-list" class="stage-list"></div>
+      <button id="stage-done" type="button" class="btn btn-primary btn-block">다 올렸어요</button>
+    </div>
+
+    <!-- 무엇을 파나요 (10-11) — 쓰는 동안 사진 분석이 돌고, 먼저 끝나면 AI 추천을 띄운다 (당근마켓처럼) -->
+    <section id="sell-name-wrap" class="sell-name hidden">
+      <label for="sell-name" class="step-label">무엇을 파나요?</label>
+      <input id="sell-name" maxlength="40" autocomplete="off" placeholder="예: 레고 스콜피온 세트">
+      <div id="sell-name-sugg" class="sell-name-sugg" aria-live="polite"></div>
+    </section>
+
     <div id="proof-zone" class="proof-zone" role="button" tabindex="0">
       <span>🧾 보증서 · 정품 마크 · 영수증 <span class="muted">(선택)</span></span>
       <span class="dropzone-help">상품 사진과 따로 올려 주세요 — 판매 글에 근거 사진으로 붙어요. 사진만</span>
@@ -60,7 +73,7 @@
       <!-- ③ 정답 구도: 품목에 맞는 정답이 기본 -->
       <section id="ref-wrap" class="step hidden">
         <p class="step-label"><span class="step-no">3</span>정답 구도</p>
-        <p class="step-help">이렇게 찍은 것처럼 만들어요. 품목에 맞는 정답이 먼저 골라져 있어요.</p>
+        <p class="step-help">이렇게 찍은 것처럼 만들어요. 올린 사진과 닮은 정답을 추천해요.</p>
         <div id="ref-list" class="ref-list" role="radiogroup" aria-label="정답 구도"></div>
       </section>
 
@@ -77,10 +90,6 @@
       <div id="target-wrap" class="hidden">
         <p class="step-label">대표컷 만들 물건 <span class="step-sub">— 물건마다 따로 만들어요</span></p>
         <div id="targets" class="targets" role="radiogroup" aria-label="대표컷 만들 물건"></div>
-      </div>
-      <div id="comp-wrap" class="hidden">
-        <p id="comp-title" class="step-label">예시 구도 고르기</p>
-        <div id="item-comps" class="item-comps" role="radiogroup" aria-label="구도"></div>
       </div>
       <div id="arrange-wrap" class="arrange-wrap hidden">
         <p class="step-label">여러 물건을 한 장에 <span class="step-sub">— 사진마다 물건을 오려 그대로 놓아요 (다시 그리지 않아요)</span></p>
@@ -103,6 +112,11 @@
       <p class="note-help">배경과 조명만 바뀌어요. 물건의 색·흠집·글자는 그대로 둬요.</p>
     </div>
     <p id="risk-note" class="risk-note" hidden></p>
+    <!-- 판매자 요청 (10-12) — 놓는 방법 · 구도만 생성 프롬프트에 붙는다. 물건을 바꾸는 요청은 서버가 거절 -->
+    <label for="arrange" class="step-label">어떻게 놓을까요? <span class="muted">(선택)</span></label>
+    <input id="arrange" class="note-input" maxlength="80" autocomplete="off"
+           placeholder="예: 쿠션 떼고 본체만, 세워서, 케이스 빼고">
+    <p class="note-help">놓는 방법·구도만 반영해요. 물건의 색·흠집·글자는 바꾸지 않아요.</p>
     <div class="run-choice">
       <button id="run" class="btn btn-primary btn-block" disabled>AI로 정리하기</button>
       <button id="run-bg" class="btn btn-ghost btn-block" disabled>배경만 바꾸기</button>
@@ -149,7 +163,10 @@
       </div>
 
       <p id="gate-badge" hidden></p>
-      <a id="inpaint-link" class="btn btn-ghost btn-block" hidden>🖌️ 틀린 곳 칠해서 고치기</a>
+      <div class="run-choice">
+        <button id="final-btn" type="button" class="btn btn-primary btn-block" hidden>✅ 이대로 쓰기</button>
+        <a id="inpaint-link" class="btn btn-ghost btn-block" hidden>🖌️ 틀린 곳 칠해서 고치기</a>
+      </div>
       <div id="detail-pieces" hidden></div>
 
       <div id="detail-wrap" class="hidden">
@@ -165,6 +182,14 @@
           <button type="button" class="star" data-value="3">★</button>
           <button type="button" class="star" data-value="4">★</button>
           <button type="button" class="star" data-value="5">★</button>
+        </div>
+        <div id="feedback-tags" class="fb-tags">
+          <button type="button" data-tag="view_missing">📷 원본에 이 구도 사진이 없음</button>
+          <button type="button" data-tag="shape_changed">모양이 바뀜</button>
+          <button type="button" data-tag="added">없던 것 생김</button>
+          <button type="button" data-tag="defect_lost">하자 · 부품 사라짐</button>
+          <button type="button" data-tag="color_changed">색이 바뀜</button>
+          <button type="button" data-tag="good">좋음</button>
         </div>
         <textarea id="feedback-comment" placeholder="코멘트 (선택)"></textarea>
         <button id="feedback-submit" class="btn btn-primary">피드백 보내기</button>
