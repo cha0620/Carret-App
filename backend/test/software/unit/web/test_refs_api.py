@@ -110,7 +110,7 @@ def test_review_uses_product_photos_and_answer_then_caches(client, refs, monkeyp
     monkeypatch.setattr(items_route.storage, "save", lambda kind, name, data: saved.__setitem__(name, data))
     monkeypatch.setattr(items_route.storage, "load_original", lambda fid: b"img")
 
-    def review(images, answer=None, needs=None):
+    def review(images, answer=None, ref=None):
         calls.append((len(images), answer is not None))
         return {"photos": ["상자 앞면"], "missing": [{"what": "구성품을 펼쳐 찍은 사진", "hint": "판 위에 다 놓고"}],
                 "base": 0, "with": []}
@@ -123,7 +123,7 @@ def test_review_uses_product_photos_and_answer_then_caches(client, refs, monkeyp
 
 
 def test_review_passes_ref_needs_and_returns_base_with_ids(client, refs, monkeypatch, tmp_path):
-    """정답의 needs 를 넘기고 캐시 키에 포함 · base/with 는 file_id 로 (10-09). 없는 정답이면 400."""
+    """정답 항목(needs · note · layout)을 넘기고 캐시 키에 포함 · base/with 는 file_id 로 (10-09 · 10-11). 없는 정답이면 400."""
     from app.api.routes import items as items_route
     from app.services import style_refs
     from app.services.ai import detector
@@ -136,11 +136,12 @@ def test_review_passes_ref_needs_and_returns_base_with_ids(client, refs, monkeyp
     monkeypatch.setattr(items_route.storage, "load", lambda kind, name: saved.get(name))
     monkeypatch.setattr(items_route.storage, "save", lambda kind, name, data: saved.__setitem__(name, data))
     monkeypatch.setattr(items_route.storage, "load_original", lambda fid: b"img")
-    monkeypatch.setattr(style_refs, "answer_photo", lambda f: b"ans")
+    monkeypatch.setattr(style_refs, "sketch", lambda f: (f, b"sketch"))   # 검토는 선 그림 기준 (10-11)
     monkeypatch.setattr(items_route.listing, "summary", lambda it: [{"id": "o1", "kind": "product", "for_sale": True}])
 
-    def review(images, answer=None, needs=None):
-        seen.append(needs)
+    def review(images, answer=None, ref=None):
+        assert answer == b"sketch"
+        seen.append(ref["needs"])
         return {"photos": ["a", "b"], "missing": [], "base": 1, "with": [0]}
     monkeypatch.setattr(detector, "photo_review", review)
     r = client.post(f"/api/items/{ITEM}/review", params={"object_id": "o1", "ref_file": "lego.jpg"})
@@ -149,6 +150,10 @@ def test_review_passes_ref_needs_and_returns_base_with_ids(client, refs, monkeyp
     p.write_text(json.dumps([{"file": "lego.jpg", "category": "toy", "needs": ["뒷면"]}]), encoding="utf-8")
     client.post(f"/api/items/{ITEM}/review", params={"object_id": "o1", "ref_file": "lego.jpg"})
     assert seen == [["앞면"], ["뒷면"]]   # needs 가 바뀌면 캐시를 안 쓴다
+    p.write_text(json.dumps([{"file": "lego.jpg", "category": "toy", "needs": ["뒷면"], "layout": "box at the back"}]),
+                 encoding="utf-8")
+    client.post(f"/api/items/{ITEM}/review", params={"object_id": "o1", "ref_file": "lego.jpg"})
+    assert len(seen) == 3                 # 배치 문장이 바뀌어도
     assert client.post(f"/api/items/{ITEM}/review", params={"object_id": "o1", "ref_file": "nope.jpg"}).status_code == 400
 
 

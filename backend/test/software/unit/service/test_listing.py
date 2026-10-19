@@ -280,14 +280,9 @@ def test_summary_product_and_proof_rows():
     item["photos"][1]["blurry"] = True
     shoe, card = listing.summary(item)
     assert shoe["photo_ids"] == ["f0", "f1"] and shoe["proof_type_label"] is None
-    # side 사진이 흐려 채운 것으로 치지 않는다 → side · back · bottom 빠짐
-    assert [m["view"] for m in shoe["missing"]] == ["side", "back", "bottom"]
     assert shoe["retake"] == [{"file_id": "f1", "reason": "흐려요"}]
-    assert shoe["complete"] is False
-    assert [c["key"] for c in shoe["compositions"]][:2] == ["shoes_front34", "shoes_side"]
     assert card["photo_ids"] == ["f2"] and card["proof_type_label"] == listing.PROOF_TYPES["document"]
-    assert card["missing"] == [] and card["retake"] == [] and card["compositions"] == []
-    assert card["complete"] is True
+    assert card["retake"] == []
 
 
 def _row(id_, kind="product", for_sale=True, n=1):
@@ -312,21 +307,16 @@ def _photos(*specs):
     return out
 
 
-def _bp_row(comps):
-    return {"id": "o1", "compositions": [{"photo_ids": c} for c in comps]}
-
-
-def test_best_photo_good_whole_before_problem_composition_photo():
-    """구도 사진이 모두 문제 있으면 → 문제 없는 전체 사진 (근접 제외)."""
+def test_best_photo_good_whole_first():
+    """문제 없는 전체 사진 (근접 제외) 먼저."""
     photos = _photos(("o1", "side", "blurry"), ("o1", "detail"), ("o1", "back"))
-    assert listing.best_photo(_bp_row([["p0"]]), photos) == "p2"
+    assert listing.best_photo({"id": "o1"}, photos) == "p2"
 
 
-def test_best_photo_problem_composition_before_first_photo():
-    """좋은 전체 사진도 없으면 → 구도에 맞는 아무 사진 → 그 물건 첫 사진."""
+def test_best_photo_falls_back_to_first_photo():
+    """좋은 전체 사진이 없으면 → 그 물건 첫 사진."""
     photos = _photos(("o1", "detail"), ("o1", "side", "blurry"))
-    assert listing.best_photo(_bp_row([["p1"]]), photos) == "p1"
-    assert listing.best_photo(_bp_row([[]]), photos) == "p0"
+    assert listing.best_photo({"id": "o1"}, photos) == "p0"
 
 
 

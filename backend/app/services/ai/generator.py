@@ -32,6 +32,10 @@ def _model_args(model: str) -> tuple[int, dict]:
         # 프롬프트 확장(LLM 이 다시 씀)은 기본 켜짐 → 끈다 (물건 보존 문장이 바뀌면 안 됨)
         return 3, {"enable_prompt_expansion": False, "negative_prompt": QWEN_NEGATIVE,
                    "num_images": 1, "output_format": "jpeg"}
+    if "seedream" in model:
+        # seedream v5 pro edit (10-12): 10장까지 · 기본 auto_2K 는 장당 $0.135 → 1K($0.0675 + 추가 입력 장당 $0.0045).
+        # seed 인자가 없다 (재생성은 그냥 다시 부른다)
+        return MAX_IMAGES, {"image_size": "auto_1K", "output_format": "jpeg", "num_images": 1}
     if "flash" in model:
         return MAX_IMAGES, {"num_inference_steps": GEN_STEPS}
     return MAX_IMAGES, {}
@@ -57,7 +61,7 @@ def _generate_ai(image_bytes: bytes, preset: dict, seed: int | None = None,
     }
     if preset.get("no_negative"):
         arguments.pop("negative_prompt", None)   # 최소 프롬프트 실험 (10-09)
-    if seed is not None:
+    if seed is not None and "seedream" not in settings.fal_model:
         arguments["seed"] = seed
 
     with observe("generate_image", as_type="generation", model=settings.fal_model,

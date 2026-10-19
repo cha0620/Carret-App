@@ -15,7 +15,7 @@ VLM(detector.group_objects)은 묶음 · 각도 · 설명을 제안만 한다. �
 import re
 
 from app.prompts.presets import prompt_safe
-from app.services import compositions, coverage
+from app.services import coverage
 
 KINDS = ("product", "proof")
 ROLES = ("main", "component", "accessory")   # 10-05: 본품 | 본구성품 | 부가품 (부가품은 썸네일에서 뺀다)
@@ -346,32 +346,24 @@ def ensure_objects(item: dict) -> None:
 
 
 def summary(item: dict) -> list[dict]:
-    """물건마다 사진 · 빠진 면 · 다시 찍을 사진 · 구도 후보 (근거 사진은 빠진 면 · 구도 없음)."""
+    """물건마다 사진 · 다시 찍을 사진 (근거 사진은 다시 찍기 없음)."""
     out = []
     for o in item.get("objects") or []:
         ph = [p for p in item["photos"] if p.get("object") == o["id"]]
         row = {**o, "photo_ids": [p["file_id"] for p in ph],
                "proof_type_label": PROOF_TYPES.get(o.get("proof_type")) if o["kind"] == "proof" else None}
-        if o["kind"] == "product":
-            sub = o.get("subtype")
-            cov = coverage.check(o["category"], ph, sub)
-            row.update(missing=cov["missing"],
-                       retake=[{"file_id": ph[r["index"]]["file_id"], "reason": r["reason"]} for r in cov["retake"]],
-                       complete=cov["complete"], compositions=compositions.options(o["category"], ph, sub))
-        else:
-            row.update(missing=[], retake=[], complete=True, compositions=[])
+        row["retake"] = ([{"file_id": p["file_id"], "reason": " · ".join(coverage.problems(p))}
+                          for p in ph if coverage.problems(p)] if o["kind"] == "product" else [])
         out.append(row)
     return out
 
 
 def best_photo(row: dict, photos: list[dict]) -> str | None:
-    """물건의 대표 사진 하나 — 다시 찍을 필요 없는 사진 중 정석 구도에 맞는 것(대표컷 구도가 앞) →
-    다시 찍을 필요 없는 전체 사진 → 구도에 맞는 아무 사진 → 그 물건 첫 사진. 흐린 사진이 구도 순서 때문에 먼저 뽑히지 않게."""
+    """물건의 대표 사진 하나 — 다시 찍을 필요 없는 전체 사진 → 그 물건 첫 사진."""
     mine = [p for p in photos if p.get("object") == row["id"]]
     ok = {p["file_id"] for p in mine if not coverage.problems(p)}
-    in_comp = [fid for c in row.get("compositions") or [] for fid in c["photo_ids"]]
     good_whole = [p["file_id"] for p in mine if p["file_id"] in ok and p.get("view") not in coverage.CLOSE_UPS]
-    for pool in ([f for f in in_comp if f in ok], good_whole, in_comp, [p["file_id"] for p in mine]):
+    for pool in (good_whole, [p["file_id"] for p in mine]):
         if pool:
             return pool[0]
     return None

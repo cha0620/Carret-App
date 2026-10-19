@@ -13,7 +13,7 @@ from botocore.exceptions import ClientError
 from app.core.config import reveal, settings
 from app.util import img_util
 
-IMAGE_KINDS = {"original", "result"}   # 정규화 대상 (quality json 등은 제외)
+IMAGE_KINDS = {"original", "result", "attempts"}   # 정규화 대상 (quality json 등은 제외). attempts: 생성 원본 그대로면 장당 1~5MB (10-19)
 
 logger = logging.getLogger("carret.storage")
 

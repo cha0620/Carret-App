@@ -35,3 +35,10 @@ def no_model_warmup(monkeypatch):
     """TestClient 가 startup 이벤트를 부르면 실제 모델 로딩 스레드가 뜬다 — 테스트에선 끈다."""
     from app.core.config import settings
     monkeypatch.setattr(settings, "warmup_models", False)
+
+
+@pytest.fixture(autouse=True)
+def no_ref_suggest(monkeypatch):
+    """정답 추천은 실제 CLIP 을 올린다 (10-11) — 테스트에선 끈다. 추천을 보는 테스트가 다시 켜고 suggest 를 바꾼다."""
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "ref_suggest", False)

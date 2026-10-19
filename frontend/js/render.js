@@ -14,21 +14,8 @@ function renderGate(res) {
     gateBadge.textContent = text;
     gateBadge.style.color = color;
   };
-  if (res.mode === 'original') {
-    if (res.composite_reason === 'document') {
-      return show('ℹ️ 인쇄된 글자·그림이 곧 상품이라 바뀌지 않게 원본 사진을 그대로 두었어요', '#5d6d7e');
-    }
-    if (res.composite_reason === 'wear_heavy') {
-      return show('ℹ️ 사용감이 많은 물건이라 상태를 그대로 보여드리려고 원본 사진을 그대로 두었어요', '#5d6d7e');
-    }
-    const RETAKE = {
-      overlap: 'ℹ️ 구성품이 겹쳐 있어 원본 사진을 그대로 두었어요 — 겹치지 않게 펼쳐 다시 찍으면 정리된 사진으로 만들어 드려요',
-      cut_off: 'ℹ️ 물건이 사진에 다 안 나와 원본 사진을 그대로 두었어요 — 전체가 나오게 다시 찍으면 정리해 드려요',
-    };
-    if (RETAKE[res.composite_reason]) return show(RETAKE[res.composite_reason], '#5d6d7e');
-    return res.composite_reason === 'inside_view'
-      ? show('ℹ️ 물건 일부·내부를 찍은 사진이라 배경을 바꾸지 않고 원본을 그대로 보여드려요', '#5d6d7e')
-      : show('ℹ️ 배경을 바꾸지 않고 원본 사진을 그대로 보여드려요', '#5d6d7e');
+  if (res.mode === 'original') {   // 배경 교체(오리기)마저 실패했을 때만 (10-11: 생성 전 판단은 지웠다)
+    return show('ℹ️ 배경을 바꾸지 못해 원본 사진을 그대로 보여드려요', '#5d6d7e');
   }
   // 검사 자체를 못 함(원본 분석 실패 / 결과 보존 검사 호출 실패) — 통과도 실패도 아님
   const unchecked = res.detect_failed || res.verify_failed;
@@ -37,21 +24,13 @@ function renderGate(res) {
       ? show(res.detect_failed
           ? '⚠️ 원본 물건 사진에 배경만 바꿨어요 (사진 분석은 하지 못했어요)'
           : '⚠️ 원본 물건 사진에 배경만 바꿨어요 (결과 검사는 하지 못했어요)', '#b9770e')
-      : res.composite_reason === 'user_choice'
-        ? show('🛡️ 원본 물건 사진에 배경만 바꿨어요', '#2a7f2a')
-      : res.composite_reason === 'overlap'
-        ? show('🛡️ 구성품이 겹쳐 있어 원본 사진에 배경만 바꿨어요 — 겹치지 않게 펼쳐 다시 찍으면 정리된 사진으로 만들어 드려요', '#2a7f2a')
-      : show(res.composite_reason === 'document'
-          ? '🛡️ 인쇄된 글자·그림이 곧 상품이라 원본 물건 사진에 배경만 바꿨어요'
-          : '🛡️ 하자·글자를 지키려고 원본 물건 사진에 배경만 바꿨어요', '#2a7f2a');
+      : show('🛡️ 원본 물건 사진에 배경만 바꿨어요', '#2a7f2a');
   }
   if (unchecked) {
     return show('⚠️ 보존 검사를 하지 못했습니다 — 생성 이미지에서 로고·글자가 바뀌었을 수 있어요', '#c0392b');
   }
   // 생성본: 로고·주요 글자만 검사한다. 흠집·얼룩은 자동으로 검사하지 않는다 — 과장하지 않게 같이 알린다
-  // 위험하다고 본 사진인데 생성을 골랐다 (10-11) — 결과를 원본과 꼭 비교하게
-  const wearNote = ' · 흠집·얼룩은 자동 검사하지 않아요, 원본 사진으로 확인해 주세요'
-    + (res.risk_reason ? ' · 생성이 잘 안될 수 있는 사진이라 원본과 꼭 비교해 주세요' : '');
+  const wearNote = ' · 흠집·얼룩은 자동 검사하지 않아요, 원본 사진으로 확인해 주세요';
   const passed = res.gate_passed;
   if (passed === null || passed === undefined) {
     return show('ℹ️ AI가 다시 그린 사진이에요' + wearNote, '#5d6d7e');
@@ -84,8 +63,18 @@ function setStars(rating) {
   });
 }
 
+// 피드백 태그 (10-11) — "원본에 이 구도 사진이 없음"은 모델이 아니라 사진 탓으로 따로 모은다
+function setFeedbackTags(tags) {
+  for (const b of document.querySelectorAll('#feedback-tags [data-tag]')) b.classList.toggle('on', (tags || []).includes(b.dataset.tag));
+}
+function feedbackTags() {
+  return [...document.querySelectorAll('#feedback-tags .on')].map(b => b.dataset.tag);
+}
+document.querySelectorAll('#feedback-tags [data-tag]').forEach(b => b.onclick = () => b.classList.toggle('on'));
+
 function resetFeedbackBox() {
   feedbackBox.classList.remove('hidden');
+  setFeedbackTags([]);
   setStars(0);
   feedbackComment.value = '';
   feedbackStatus.textContent = '';
@@ -94,6 +83,7 @@ function resetFeedbackBox() {
 function renderFeedback(fb) {
   feedbackBox.classList.remove('hidden');
   setStars(fb.rating);
+  setFeedbackTags(fb.tags);
   feedbackComment.value = fb.comment || '';
   feedbackStatus.textContent = '이전에 남긴 피드백이에요. 수정 후 다시 보낼 수 있어요.';
 }
@@ -127,32 +117,6 @@ function renderMetaChips(res) {
 
 
 // ===== 여러 각도: 사진 목록 · 빠진 면 =====
-function renderComps(item, selectedKey, onPick) {
-  const wrap = document.getElementById('comp-wrap');
-  const box = document.getElementById('item-comps');
-  wrap.classList.toggle('hidden', !item.compositions.length);
-  box.innerHTML = '';
-  for (const c of item.compositions) {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'comp' + (c.key === selectedKey ? ' selected' : '') + (c.available ? '' : ' missing');
-    b.setAttribute('role', 'radio');
-    b.setAttribute('aria-checked', c.key === selectedKey ? 'true' : 'false');
-    const img = document.createElement('img');
-    img.src = c.image;
-    img.alt = '';
-    const name = document.createElement('span');
-    name.className = 'comp-label';
-    name.textContent = c.label;
-    const desc = document.createElement('span');
-    desc.className = 'comp-desc';
-    desc.textContent = c.available ? c.desc : c.hint;
-    b.append(img, name, desc);
-    b.onclick = () => onPick(c);
-    box.append(b);
-  }
-}
-
 // withIds: 대표와 같이 생성에 넣는 사진 · canWith(p): 같이 넣을 수 있는 사진인가 · onWith(p): 같이 넣기 켜고 끄기 (10-09)
 function renderItem(item, selectedId, onSelect, withIds = [], canWith = () => false, onWith = null) {
   const box = document.getElementById('item-box');
@@ -219,14 +183,20 @@ function renderItem(item, selectedId, onSelect, withIds = [], canWith = () => fa
   if (item.missing.length) {
     const t = document.createElement('p');
     t.className = 'item-missing-title';
-    t.textContent = '더 올리면 좋은 사진 — 구매자가 믿고 사요';
+    t.textContent = item.missing_title || '더 올리면 좋은 사진 — 구매자가 믿고 사요';
     const ul = document.createElement('ul');
     for (const m of item.missing) {
       const li = document.createElement('li');
       li.textContent = `${m.label}: ${m.hint}`;
       ul.append(li);
     }
-    miss.append(t, ul);
+    // 요청을 보고 바로 올리게 — 아래 "사진 · 동영상 더 올리기" 와 같은 동작 (묶음을 고쳤으면 저장 먼저 안내)
+    const up = document.createElement('button');
+    up.type = 'button';
+    up.className = 'btn btn-ghost item-missing-upload';
+    up.textContent = '사진 더 올리기';
+    up.onclick = () => document.getElementById('item-add').click();
+    miss.append(t, ul, up);
   }
 }
 

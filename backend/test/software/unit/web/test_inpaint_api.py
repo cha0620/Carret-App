@@ -102,3 +102,16 @@ def test_pick_twice_and_failed_side_rejected_key_does_not_grow(client, photos, f
     assert client.post("/api/inpaint/pick", json={"file_id": FID, "round_id": rid, "pick": "b"}).status_code == 409
     from app.api.routes.inpaint import ROUND_SUFFIX
     assert ROUND_SUFFIX.sub("", f"studio_white-ip{rid}a-ip0123abcdb") == "studio_white"
+
+
+def test_final_confirm_overwrites_and_needs_existing_result(client, photos):
+    """10-11: 최종본 확정 — 사진마다 하나, 다시 확정하면 덮는다. 없는 결과는 404."""
+    assert client.post("/api/final", json={"file_id": FID, "preset_key": "nope"}).status_code == 404
+    r = client.post("/api/final", json={"file_id": FID, "preset_key": "studio_white"})
+    assert r.status_code == 200 and r.json()["source"] == "app"
+    buf = io.BytesIO()
+    Image.new("RGB", (4, 4)).save(buf, "JPEG")
+    storage.save("result", f"{FID}_studio_white-ip0123abcda.jpg", buf.getvalue())
+    client.post("/api/final", json={"file_id": FID, "preset_key": "studio_white-ip0123abcda", "source": "inpaint"})
+    got = client.get(f"/api/final/{FID}").json()
+    assert got["preset_key"] == "studio_white-ip0123abcda" and got["source"] == "inpaint"

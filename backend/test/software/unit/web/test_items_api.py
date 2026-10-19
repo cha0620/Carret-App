@@ -98,7 +98,7 @@ def test_create_item_saves_photos_and_item(client, views, isolated_storage):
     fids = [p["file_id"] for p in body["photos"]]
     assert len(set(fids)) == 2
     assert [p["url"] for p in body["photos"]] == [f"/storage/original/{f}.jpg" for f in fids]
-    assert body["missing"] == [] and body["retake"] == []
+    assert body["retake"] == []
     assert body["complete"] is True and body["views_failed"] is False
     # 저장 확인 — 원본 2장 · 묶음 JSON 1개
     assert _originals(isolated_storage) == sorted(f"{f}.jpg" for f in fids)
@@ -109,13 +109,13 @@ def test_create_item_saves_photos_and_item(client, views, isolated_storage):
 
 
 def test_create_item_classify_failure(client, views, isolated_storage):
-    """분류 실패 — 저장은 하되 빠진 면을 모르니 missing 은 비우고 완료로 치지 않는다."""
+    """분류 실패 — 저장은 하되 완료로 치지 않는다."""
     views["fail"] = True
     r = client.post("/api/items", files=_files(("a.png", _png()), ("b.png", _png())))
     assert r.status_code == 200
     body = r.json()
     assert body["views_failed"] is True
-    assert body["missing"] == [] and body["retake"] == [] and body["complete"] is False
+    assert body["retake"] == [] and body["complete"] is False
     assert all(p["view"] is None and p["item_visible"] is True for p in body["photos"])
     assert len(_originals(isolated_storage)) == 2
     saved = json.loads((isolated_storage / "items" / f"{body['item_id']}.json").read_text())
@@ -295,17 +295,6 @@ def test_add_files_concurrent_requests_keep_all_photos(client, views, monkeypatc
     assert len(real) == 3
 
 
-# ── 10-01: 정석 구도 (신발) ──────────────────
-def test_shoes_item_lists_compositions_with_matching_photos(client, views):
-    views["category"] = "shoes"
-    views["photos"] = [_v("front_34"), _v("side", occluded=True), _v("side"), _v("bottom")]
-    r = client.post("/api/items", files=_files(*[(f"{i}.png", _png((i * 30, 0, 0))) for i in range(4)]))
-    body = r.json()
-    fids = [p["file_id"] for p in body["photos"]]
-    comps = {c["key"]: c for c in body["compositions"]}
-    assert comps == {}   # 각도로 고르던 예시 구도는 정답 구도 고르기로 대신 (10-09 사용자)
-
-
 # ── 10-04: 물건별 묶음 (objects · main_object · PUT /objects) ──
 def _o(id_, kind="product", **kw):
     base = {"id": id_, "kind": kind, "name": f"thing {id_}", "label": f"물건 {id_}", "desc": "",
@@ -360,16 +349,13 @@ def test_create_item_groups_objects(client, views, isolated_storage):
     assert shoe["photo_ids"] == [fids[0], fids[2]] and card["photo_ids"] == [fids[1]]
     assert shoe["count"] == 1
     assert card["kind"] == "proof" and card["proof_for"] == "o1" and card["proof_type_label"]
-    assert card["missing"] == [] and card["compositions"] == []
+    assert card["retake"] == []
     assert [p["object"] for p in body["photos"]] == ["o1", "o2", "o1"]
     assert body["photos"][1]["view"] is None                 # 근거 사진엔 각도 없음
     assert body["main_object"] == "o1"
     assert body["user_edited"] is False and body["needs_review"] is False
     # top-level 은 대표 물건(운동화) 기준
     assert body["item"] == "sneakers" and body["category"] == "shoes"
-    assert body["missing"] == []   # 규칙 필수 면 대신 AI 사진 검토 (10-09) — 물건별 행에는 남아 있다
-    assert [m["view"] for m in shoe["missing"]] == ["back", "bottom"]
-    assert body["compositions"] == []
     saved = _saved(isolated_storage, body["item_id"])
     assert len(saved["objects"]) == 2 and all("unclassified" not in p for p in saved["photos"])
 
@@ -379,7 +365,7 @@ def test_top_level_retake_includes_non_main_for_sale_product(client, views):
     raw = {"objects": [_o("A"), _o("B")],
            "photos": [_p(0, "A", "front"), _p(1, "A", "back"), _p(2, "B", "front", blurry=True)]}
     body = _create_raw(client, views, raw, 3)
-    assert body["main_object"] == "o1" and body["missing"] == []
+    assert body["main_object"] == "o1"
     assert body["retake"] == [{"file_id": body["photos"][2]["file_id"], "reason": "흐려요"}]
     assert body["complete"] is False
 
@@ -483,7 +469,6 @@ def test_get_old_format_item_becomes_one_object(client, views, isolated_storage)
     assert got["item"] == "tote" and got["category"] == "bag"
     assert [p["object"] for p in got["photos"]] == ["o1", "o1"]
     assert [p["view"] for p in got["photos"]] == ["front", "back"]
-    assert got["missing"] == []   # 규칙 필수 면 대신 AI 사진 검토 (10-09)
     assert got["retake"] == [{"file_id": got["photos"][1]["file_id"], "reason": "흐려요"}]
     assert (isolated_storage / "items" / f"{body['item_id']}.json").read_bytes() == before   # GET 은 저장 안 함
 
@@ -538,8 +523,8 @@ def test_arrange_success_saves_result(client, views, arrange_rec, isolated_stora
     r = _arrange(client, body, {"objects": ["o2", "o1"], "layout": "grid"})
     assert r.status_code == 200, r.text
     out = r.json()
-    # 물건 순서대로 — 가방은 구도 후보가 없어 문제 없는 첫 사진, 운동화는 대표컷(front_34) 구도 사진
-    assert out["photo_ids"] == [fids[2], fids[1]]
+    # 물건 순서대로 — 각 물건의 문제 없는 첫 사진 (예시 구도 우선은 지웠다)
+    assert out["photo_ids"] == [fids[2], fids[0]]
     name = out["result_url"].rsplit("/", 1)[1]
     assert out["result_url"] == f"/storage/result/{name}"
     assert name.startswith(f"{body['item_id']}_arrange_grid_") and name.endswith(".jpg")
@@ -645,3 +630,15 @@ def test_add_files_proof_only_ok(client, views, isolated_storage):
     r = client.post(f"/api/items/{first['item_id']}/files", files=_proof(("w.png", _png())))
     assert r.status_code == 200
     assert [p["slot"] for p in r.json()["photos"]] == ["product", "proof"]
+
+
+def test_ref_suggest_only_on_products_from_best_photo(client, views, monkeypatch):
+    """정답 추천 (10-11) — 파는 물건마다 대표 사진 한 장으로, 근거 사진엔 없음."""
+    from app.services.ai import ref_matcher
+    got = []
+    monkeypatch.setattr(ref_matcher, "suggest",
+                        lambda fid, data: got.append(fid) or [{"file": "shoes_front34_1.jpg", "score": 0.8}])
+    body = _create_raw(client, views, SHOES_AND_CARD, 3)
+    shoe, card = body["objects"]
+    assert shoe["ref_suggest"] == [{"file": "shoes_front34_1.jpg", "score": 0.8}] and card["ref_suggest"] == []
+    assert got == [body["photos"][0]["file_id"]]

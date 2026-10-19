@@ -27,42 +27,5 @@ jobs:
       - name: pytest (free)
         run: pytest backend/test/software/unit -q
 
-  eval:
-    name: paid eval (main only)
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    env:
-      PYTHONPATH: backend
-      VLM_KEY: ${{ secrets.VLM_KEY }}
-      FAL_KEY: ${{ secrets.FAL_KEY }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install
-        run: |
-          python -m pip install --upgrade pip
-          pip install pytest fastapi httpx google-genai pydantic-settings pillow numpy python-multipart fal-client langgraph boto3 langfuse opencv-python-headless
-      - name: pytest (paid eval)
-        run: pytest backend/test/eval -m eval -q
-
-  pr_eval:
-    name: eval on run-eval label
-    if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'run-eval')
-    runs-on: ubuntu-latest
-    env:
-      PYTHONPATH: backend
-      VLM_KEY: ${{ secrets.VLM_KEY }}
-      FAL_KEY: ${{ secrets.FAL_KEY }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install
-        run: |
-          python -m pip install --upgrade pip
-          pip install pytest fastapi httpx google-genai pydantic-settings pillow numpy python-multipart fal-client langgraph boto3 langfuse opencv-python-headless
-      - name: pytest (eval)
-        run: pytest backend/test/eval -m eval -q
+# 유료 eval 잡은 뺐다 (10-11): 옛 하자 eval 스위트(backend/test/eval)를 10-05 에 지운 뒤 main push 마다
+# "폴더 없음"으로 실패했다 (#31 부터). 유료 실행은 사용자 허락을 받고 backend/eval/ 스크립트로 돌린다 (CLAUDE.md 규칙 1).

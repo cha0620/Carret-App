@@ -4,6 +4,7 @@ ControlNet 처럼 선만 남겨 준다 (§16 ④). 글자 · 로고(EasyOCR 상�
 
     cd backend
     python eval/style_sketch.py          # style_refs.json 전부 → data/refs/sketch/<이름>.png
+    python eval/style_sketch.py style_pack.jpg style_games.jpg   # 이 정답만 (10-11)
 """
 import io
 import json
@@ -46,7 +47,10 @@ def main():
     reader = local_ocr._load()
     data = HERE / "data"
     (data / "refs" / "sketch").mkdir(exist_ok=True)
+    only = set(sys.argv[1:])
     for e in json.loads((data / "style_refs.json").read_text(encoding="utf-8")):
+        if only and e["file"] not in only:
+            continue
         src = data / "refs" / e["file"]
         img = cv2.imread(str(src))
         if img is None:

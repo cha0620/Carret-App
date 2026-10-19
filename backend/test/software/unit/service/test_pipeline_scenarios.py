@@ -18,6 +18,13 @@ from PIL import Image
 import app.core.tracing as tracing
 import app.services.pipeline as pipeline_mod
 from app.core.config import settings
+
+
+@pytest.fixture(autouse=True)
+def _text_gate_on(monkeypatch):
+    """이 파일의 글자 검사 시나리오는 글자를 판단에 쓰던 때(text_gate=true) 기준 — 10-11 기본값은 false (test_text_gate_off_*)."""
+    from app.core.config import settings as _s
+    monkeypatch.setattr(_s, "text_gate", True)
 from app.services.persistence import storage, store
 
 ORIG, COMP = (120, 90, 60), (9, 9, 9)
@@ -28,8 +35,6 @@ FID, PRESET = "fid", "studio_white"
 MARK = {"category": "print", "what": "logo: ACME", "where": "front"}
 BOX_A = {"x1": 100, "y1": 100, "x2": 900, "y2": 900}
 BOX_B = {"x1": 200, "y1": 200, "x2": 800, "y2": 800}
-# 10-03 알려진 버그: pipeline.State 에 item_cut_off 키가 없어 LangGraph 가 analyze 결과에서 떨어뜨린다
-#   → 그래프에선 cut_off 가 절대 안 나온다 (_composite_first_reason 단위로는 맞음). State 에 키를 넣으면 이 표시를 뗀다.
 
 
 def _png(color):
@@ -200,7 +205,6 @@ def _env(monkeypatch):
     monkeypatch.setattr(tracing, "_disabled", True, raising=False)
     monkeypatch.setattr(settings, "pipeline_mode", "real", raising=False)
     monkeypatch.setattr(settings, "text_lock", True)
-    monkeypatch.setattr(settings, "composite_first_min_texts", 12, raising=False)
     monkeypatch.setattr(settings, "max_generate_attempts", 2)
     monkeypatch.setattr(settings, "local_ocr_guard", False)
     import time as _time
@@ -300,98 +304,61 @@ def test_gate_fail_once_regenerates_with_lost_marks_then_passes(w):
     assert w.inspect()["gate_retried"] is True
 
 
-def test_gate_fail_twice_switches_to_composite_and_keeps_what_was_lost(w):
+def test_gate_fail_twice_keeps_last_generation_without_composite(w):
+    """10-11: 재생성 뒤에도 실패하면 배경 교체로 가지 않고 마지막 생성본 + 탈락 기록."""
     w.verifies = ["lost", "lost"]
-    w.similarity = 0.4       # 생성본 가드 기록이 합성본으로 넘어가지 않는지 보려고
     out = w.run()
-
     assert w.calls == ["analyze", "generate", "check_photo", "verify",
-                       "generate", "check_photo", "verify", "compose"]
-    assert out["mode"] == "composite" and out["composite_reason"] == "gate_failed"
-    assert out["gate_passed"] is None and out["checks"] == [] and "bubbles" not in out
-    assert out["item_similarity"] is None and out["guard_report"] == []
-    assert w.result() == "comp"
-    assert w.seen["compose"] == ["orig"]
-    ins = w.inspect()
-    assert [c["preserved"] for c in ins["gate_checks"]] == [False]
-    assert ins["visual_similarity"] == 0.77 and ins["guard_report"] == []   # 합성본으로 다시 잰다
-    assert w.route()["mode"] == "composite"
+                       "generate", "check_photo", "verify"]
+    assert out["mode"] == "generate" and out["gate_passed"] is False and out["composite_reason"] is None
+    assert w.result() == "gen2"
+    assert [c["preserved"] for c in out["checks"]] == [False]   # 무엇이 사라졌나는 그대로 남는다
 
 
 def test_verify_answering_fewer_items_than_asked_fails_gate(w):
     """VLM 이 항목을 빠뜨리면(빈 응답 포함) 빠진 건 확인 못 한 것 — 통과가 아니다."""
     w.verifies = ["short", "short"]
     out = w.run()
-    assert w.count("generate") == 2 and out["composite_reason"] == "gate_failed"
+    assert w.count("generate") == 2 and out["gate_passed"] is False
 
 
-# ══ 생성 전 배경 교체 (plan · read_text) ═════════════════════════════
-@pytest.mark.parametrize("analysis,reason,composer", [
-    ({"text_level": "dense"}, "text_dense", "compose"),
-    ({"wear_level": "heavy"}, "wear_heavy", "compose"),
-    ({"photo_type": "document", "text_level": "simple"}, "document", "compose_flat"),])
-def test_composite_first_skips_generate_and_verify(w, analysis, reason, composer):
-    w.analysis.update(analysis)
-    out = w.run()
-
-    assert w.calls == ["analyze", composer]
-    assert w.seen["compose"] == ["orig"]
-    assert out["mode"] == "composite" and out["composite_reason"] == reason
-    assert out["gate_passed"] is None and out["prompt_used"].startswith("COMPOSITE")
-    assert w.result() == "comp"
-    assert w.inspect()["composite_reason"] == reason
-    assert w.route()["composite_reason"] == reason
-
-
-_SET_OBJS = [{"what": "photocard", "for_sale": True, "role": "main"},   # 10-10: 조각 합 2 초과일 때만 overlap
+# ══ 생성 전 갈림길 (plan) — 10-11: 배경 교체는 판매자가 고를 때만 ═════════════
+_SET_OBJS = [{"what": "photocard", "for_sale": True, "role": "main"},
              {"what": "calendar", "for_sale": True, "role": "component"},
              {"what": "sticker", "for_sale": True, "role": "component"}]
+_RISKY = [{"text_level": "dense"}, {"wear_level": "heavy"}, {"photo_type": "document", "text_level": "simple"},
+          {"photo_type": "inside_view"}, {"item_cut_off": True}, {"item_count": 2},
+          {"pieces_overlap": True, "item_count": 2, "objects": _SET_OBJS}]
 
 
-@pytest.mark.parametrize("analysis,reason", [
-    ({"item_cut_off": True}, "cut_off"),
-    ({"item_cut_off": True, "text_level": "simple", "item_count": 3}, "cut_off"),   # 잘림이 먼저,
-    ({"item_count": 2}, "multi_item"),
-    # 10-10: 세트 구성품이 겹치면 overlap (cut_off 다음, multi_item 앞)
-    ({"pieces_overlap": True, "item_count": 2, "objects": _SET_OBJS}, "overlap"),])
-def test_cut_off_or_multi_item_goes_composite_without_generating(w, analysis, reason):
-    """10-03: 물건이 잘렸거나(cut_off) 여러 개(multi_item)면 생성하지 않고 배경만 바꾼다."""
+@pytest.mark.parametrize("analysis", _RISKY)
+@pytest.mark.parametrize("user_mode", [None, "generate"])
+def test_risky_photo_still_generates_unless_composite_chosen(w, analysis, user_mode):
+    """잘림·여러 개·겹침·사용감·문서·내부·잔글씨여도 배경 교체 · 원본 그대로로 가지 않고 생성한다."""
     w.analysis.update(analysis)
-    out = w.run(composition="shoes_side")
-    assert w.calls == ["analyze", "compose"]
-    assert w.seen["compose"] == ["orig"]
-    assert out["mode"] == "composite" and out["composite_reason"] == reason
+    out = w.run(user_mode=user_mode)
+    assert "compose" not in w.calls and "compose_flat" not in w.calls
+    assert w.count("generate") >= 1
+    assert out["mode"] == "generate" and out["composite_reason"] is None
+    assert w.result() == "gen1"
+
+
+@pytest.mark.parametrize("analysis", [{}, {"item_cut_off": True}])
+def test_composite_choice_skips_generate_with_user_choice(w, analysis):
+    w.analysis.update(analysis)
+    out = w.run(user_mode="composite")
+    assert w.calls == ["analyze", "compose"] and w.seen["compose"] == ["orig"]
+    assert out["mode"] == "composite" and out["composite_reason"] == "user_choice"
     assert out["gate_passed"] is None and out["prompt_used"].startswith("COMPOSITE")
-    assert w.result() == "comp" and w.inspect()["composite_reason"] == reason
-    assert w.route()["composite_reason"] == reason
+    assert w.result() == "comp" and w.route()["composite_reason"] == "user_choice"
 
 
-def test_pieces_overlap_ignored_for_single_item():
-    """10-10: 조각이 1개(세트 아님)면 pieces_overlap 이어도 overlap 으로 가지 않는다."""
-    single = [{"what": "photocard", "for_sale": True, "role": "main"}]
-    assert pipeline_mod._composite_first_reason({"pieces_overlap": True, "objects": single}) is None
-
-
-def test_cut_off_from_cached_analysis(w):
-    """미리 분석(/api/analyze)해 둔 결과의 item_cut_off 도 그대로 쓴다 — 한 개를 골라도 잘림이면 배경 교체."""
-    _cached(w, CD_L, KEYB, count=1, item_cut_off=True)
-    out = w.run(sell=[0])
-    assert "analyze" not in w.calls and "generate" not in w.calls
-    assert out["composite_reason"] == "cut_off"
-    assert w.compose_drop_keep == [([KEYB["box"]], [CD_L["box"]])]
-
-
-def test_inside_view_keeps_original_without_any_check(w):
-    w.analysis.update(photo_type="inside_view", text_level="dense", wear_level="heavy")
-    out = w.run(score_quality=True)         # 채점을 켜도 원본이면 안 한다
-
-    assert w.calls == ["analyze"]          # 생성·오리기·검사·채점 없음
-    assert out["mode"] == "original" and out["composite_reason"] == "inside_view"
-    assert out["gate_passed"] is None
-    assert out["prompt_used"].startswith("ORIGINAL")
-    assert w.result() == "orig" and w.quality() is None
-    assert w.route() == {"mode": "original", "composite_reason": "inside_view",
-                         "photo_type": "inside_view", "wear_level": "heavy"}
+def test_composite_choice_cutout_failure_keeps_original(w):
+    """배경 교체만 골랐는데 오리기가 실패하면 생성으로 넘어가지 않고 원본 그대로."""
+    w.compose_error = ValueError("no item")
+    out = w.run(user_mode="composite")
+    assert "generate" not in w.calls and "read_text" not in w.calls and "judge" not in w.calls
+    assert out["mode"] == "original" and w.result() == "orig"
 
 
 # ══ analyze 실패 = "지킬 것 없음"이 아니다 ═════════════════════════════
@@ -399,65 +366,29 @@ def test_inside_view_keeps_original_without_any_check(w):
     ([ValueError("bad json"), ValueError("bad json")], 2),
     ([TypeError("bug")], 1),
 ])
-def test_analyze_failure_goes_composite_detect_failed(w, errors, analyze_calls):
+def test_analyze_failure_still_generates_with_detect_failed(w, errors, analyze_calls):
+    """10-11: 분석 실패여도 배경 교체로 보내지 않고 생성 — 확인할 기준이 없어 재생성은 하지 않는다."""
     w.analyze_errors = errors
+    w.verifies = ["lost"] * 4
     out = w.run()
-    assert w.count("analyze") == analyze_calls and "generate" not in w.calls
-    assert out["mode"] == "composite" and out["composite_reason"] == "detect_failed"
+    assert w.count("analyze") == analyze_calls and w.count("generate") == 1
+    assert "compose" not in w.calls
+    assert out["mode"] == "generate" and out["composite_reason"] is None
     assert out["detect_failed"] is True and out["photo_type"] is None
     assert w.inspect()["photo_type"] is None
 
 
-# ══ 생성 전 오리기 실패 ══════════════════════════════════════════════
-def test_dense_cutout_failure_reads_text_once_then_generates_with_lock(w):
-    """dense 로 곧장 왔으면 글자를 아직 안 읽었다 — 읽지 않고 생성하면 글자 보호가 통째로 빠진다."""
-    w.analysis["text_level"] = "dense"
-    w.compose_error = ValueError("no item")
-    w.texts = [{"text": "SONATA"}]
-    out = w.run()
-
-    assert w.calls[:4] == ["analyze", "compose", "read_text", "generate"]
-    assert w.count("read_text") == 1 and '"SONATA"' in w.prompts[0]
-    assert out["mode"] == "generate" and out["composite_reason"] is None
-    assert w.inspect()["composite_error"] == "no item"
-
-
-def test_dense_cutout_failure_with_many_lines_does_not_loop_back(w):
-    """오리기가 이미 실패했으면 12줄 이상이어도 다시 배경 교체로 보내지 않는다 (무한 왕복 방지)."""
-    w.analysis["text_level"] = "dense"
-    w.compose_error = ValueError("no item")
-    w.texts = _lines(20)
-    out = w.run()
-    assert w.count("compose") == 1 and w.count("generate") == 1
-    assert out["mode"] == "generate"
-
-
-@pytest.mark.parametrize("analysis", [
-    {"wear_level": "heavy"},
-    {"wear_level": "heavy", "text_level": "simple"},
-    {"photo_type": "document"},
-])
-def test_wear_heavy_or_document_cutout_failure_keeps_original(w, analysis):
-    """생성하면 하자를 지우거나 글자를 바꾼다고 본 사진 — 오리기가 안 되면 생성 대신 원본."""
-    w.analysis.update(analysis)
-    w.compose_error = ValueError("no item")
-    out = w.run()
-    assert "generate" not in w.calls and "read_text" not in w.calls and "judge" not in w.calls
-    assert out["mode"] == "original" and out["composite_reason"] in ("wear_heavy", "document")
-    assert w.result() == "orig"
-
-
 def test_worst_path_fits_recursion_limit(w, monkeypatch):
-    """생성 전 오리기 실패 → 글자 읽기 → 구도 반려 × 한도 → 게이트 재생성 → 오리기 실패.
+    """글자 읽기 → 구도 반려 × 한도 → 게이트 재생성 → 그래도 실패면 끝.
     시도 횟수는 게이트 재생성 뒤에도 이어서 센다 — 재생성은 한 번뿐이다 (5 + 1)."""
     monkeypatch.setattr(settings, "max_generate_attempts", 5)
     w.analysis["text_level"] = "dense"
     w.texts = [{"text": "SONATA"}]
-    w.compose_error = ValueError("no item")
     w.photo_checks = [{"valid": False, "reason": "x"}] * 10
     w.verifies = ["lost", "lost"]
     out = w.run()
-    assert w.count("generate") == 6 and out["mode"] == "composite_failed"
+    assert w.count("generate") == 6 and "compose" not in w.calls
+    assert out["mode"] == "generate" and out["gate_passed"] is False
 
 
 def test_defer_leaves_item_signals_for_after_response(w):
@@ -497,20 +428,6 @@ def test_dev_never_composites_or_keeps_original(w, analysis):
     assert out["mode"] == "generate" and w.inspect()["composite_reason"] is None
 
 
-@pytest.mark.parametrize("count,attached", [(None, True), (1, True), (2, False),])
-def test_composition_skipped_when_several_items(w, count, attached):
-    """10-03: 구도 문장은 한 개 기준 — 여러 개(CD 2장)면 하나로 합쳐 버려서 붙이지 않는다."""
-    from app.services.compositions import BY_KEY
-    w.analysis.update(item_count=count)
-    out = w.run(composition="shoes_side")
-    side = BY_KEY["shoes_side"]["prompt"]
-    assert all((side in p) == attached for p in w.prompts)
-    assert (side in out["prompt_used"]) == attached
-    # 10-03: 여러 개면 아예 생성하지 않는다 (multi_item 배경 교체)
-    assert bool(w.prompts) == attached
-    assert out["composite_reason"] == (None if attached else "multi_item")
-
-
 # ══ 10-01: analyze 가 글자를 주면 글자 읽기 VLM 을 부르지 않는다 ═══════
 def test_texts_from_analyze_skip_read_text_call(w):
     w.analysis.update(text_level="simple", item_texts=[{"text": "BRAUN"}])
@@ -534,13 +451,10 @@ def _cached(w, *objs, count=None, **extra):
                  json.dumps({**w.analysis, "detect_failed": False}).encode())
 
 
-def _multi_item_composite(w, out, drop_keep):
-    """여러 개 → 생성하지 않고 원본 픽셀로 배경만 (10-03, 개수 문장은 효과가 없어 뺐다)."""
-    assert out["mode"] == "composite" and out["composite_reason"] == "multi_item"
-    assert "generate" not in w.calls and "verify" not in w.calls and w.prompts == []
-    assert out["prompt_used"].startswith("COMPOSITE")
-    assert w.compose_drop_keep == [drop_keep]
-    assert w.result() == "comp" and w.route()["composite_reason"] == "multi_item"
+def _multi_item_generates(w, out):
+    """여러 개여도 배경 교체로 가지 않고 생성 (10-11) — 개수 문장은 효과가 없어 뺐다 (10-03)."""
+    assert out["mode"] == "generate" and out["composite_reason"] is None
+    assert "compose" not in w.calls and w.prompts and "This photo shows" not in w.prompts[0]
 
 
 def test_sell_ignored_when_analysis_is_fresh(w):
@@ -548,18 +462,17 @@ def test_sell_ignored_when_analysis_is_fresh(w):
     w.analysis.update(item="CD", objects=[CD_L, CD_R, KEYB], item_count=2)
     out = w.run(sell=[2])
     assert w.calls[0] == "analyze"
-    _multi_item_composite(w, out, (None, None))             # 분석 판단(2개) 그대로, 뺄 것 없음
+    _multi_item_generates(w, out)                            # 분석 판단(2개) 그대로
+    assert LEAVE not in w.prompts[0]                         # 고른 게 버려져 뺄 물건 없음
 
 
-def test_sell_order_composition_then_leave_out_then_text_lock(w):
-    """한 개 고르면 구도가 붙고, 순서는 구도 → (개수) → 뺄 물건 → 글자 잠금."""
-    from app.services.compositions import BY_KEY
+def test_sell_order_leave_out_then_text_lock(w):
+    """한 개 고르면 개수 문장 없이 뺄 물건 → 글자 잠금 순서."""
     _cached(w, CD_L, KEYB, count=2, text_level="simple", item_texts=[{"text": "BRAUN"}])
-    w.run(sell=[0], composition="shoes_side")
+    w.run(sell=[0])
     p = w.prompts[0]
-    side = BY_KEY["shoes_side"]["prompt"]
-    assert side in p and "This photo shows" not in p          # 고른 게 하나 → 개수 문장 없음
-    assert p.index(side) < p.index(LEAVE) < p.index('"BRAUN"')
+    assert "This photo shows" not in p                        # 고른 게 하나 → 개수 문장 없음
+    assert p.index(LEAVE) < p.index('"BRAUN"')
 
 
 def test_text_only_on_unchosen_object_is_not_locked(w):
@@ -589,26 +502,24 @@ def test_selection_is_not_saved_into_cached_analysis(w):
     w.calls.clear()
     out = w.run()                                        # 선택 없음 → 분석 판단(2개) 그대로
     assert "analyze" not in w.calls
-    _multi_item_composite(w, out, (None, None))
+    _multi_item_generates(w, out)
+    assert LEAVE not in w.prompts[0]
 
 
 def test_sell_union_box_and_drop_keep_reach_composite(w):
     """배경 교체로 가도 고른 물건들의 합집합 박스로 오리고, 안 고른 물건 박스는 지운다."""
-    _cached(w, CD_L, CD_R, KEYB, wear_level="heavy")
-    out = w.run(sell=[0, 1])
+    _cached(w, CD_L, CD_R, KEYB)
+    out = w.run(sell=[0, 1], user_mode="composite")
     assert out["mode"] == "composite" and "generate" not in w.calls
     assert w.compose_boxes == [{"x1": 50, "y1": 100, "x2": 950, "y2": 900}]
     assert w.compose_drop_keep == [([KEYB["box"]], [CD_L["box"], CD_R["box"]])]
 
 
 @pytest.mark.parametrize("answer", [None, 1, 0])
-def test_answer_count_one_or_ignored_generates_with_composition(w, answer):
-    """eval: 고르는 화면 없이 정답 개수만 — 1개(또는 무시되는 값)면 생성 + 구도, 개수 문장 없음."""
-    from app.services.compositions import BY_KEY
-    out = w.run(composition="shoes_side", answer_count=answer)
-    p = w.prompts[0]
-    assert out["mode"] == "generate" and BY_KEY["shoes_side"]["prompt"] in p
-    assert "This photo shows" not in p
+def test_answer_count_one_or_ignored_generates(w, answer):
+    """eval: 고르는 화면 없이 정답 개수만 — 1개(또는 무시되는 값)면 생성, 개수 문장 없음."""
+    out = w.run(answer_count=answer)
+    assert out["mode"] == "generate" and "This photo shows" not in w.prompts[0]
 
 
 # ══ 10-03: 생성본에 없던 글자 · 로고가 생기면 게이트 실패 ═══════
@@ -633,12 +544,12 @@ def test_added_text_call_failure_does_not_block(w):
 
 
 
-def test_verify_call_failure_goes_composite_without_waiting_added_text(w):
+def test_verify_call_failure_keeps_generation_without_waiting_added_text(w):
     """verify 호출이 실패하면 이미 실패 — 병렬 added_text 결과는 기다리지도 쓰지도 않는다 (10-04)."""
     w.verifies = [TypeError("bug")] * 4
     w.added = [ADDED] * 4
     out = w.run()
-    assert out["mode"] == "composite" and out["composite_reason"] == "verify_failed"
+    assert out["mode"] == "generate" and out["composite_reason"] is None and "compose" not in w.calls
     assert w.count("generate") == 1 and not out.get("added_text")
 
 
@@ -679,7 +590,7 @@ def test_combined_added_ignored_when_gate_off(combined, monkeypatch):
     assert out["gate_passed"] is True and combined.count("generate") == 1 and not out.get("added_text")
 
 
-def test_combined_call_failure_goes_verify_failed(combined):
+def test_combined_call_failure_keeps_generation_without_regen(combined):
     combined.verifies = [RuntimeError("down")] * 8
     out = combined.run()
-    assert out["mode"] == "composite" and out["composite_reason"] == "verify_failed"
+    assert out["mode"] == "generate" and combined.count("generate") == 1 and "compose" not in combined.calls

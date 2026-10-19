@@ -55,7 +55,7 @@ let rsShownItems = [];
 const FB_TAGS = {
   defect_lost: '하자 사라짐', text_broken: '글자·로고 깨짐', shape_changed: '물건 모양 변형',
   color_changed: '색감 변함', framing: '구도·잘림', background: '배경 어색',
-  good: '좋음',
+  view_missing: '원본에 그 구도 사진 없음', added: '없던 것 생김', good: '좋음',
 };
 const fbOf = it => it.feedback || { user: null, agent: null };
 const ratingOf = it => fbOf(it).user?.rating ?? fbOf(it).agent?.rating;

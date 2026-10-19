@@ -16,8 +16,10 @@ logger = logging.getLogger("carret.warmup")
 
 def warm_models() -> list[str]:
     """올린 모델 이름 목록을 돌려준다."""
-    from app.services.ai import compositor, embedder
+    from app.services.ai import compositor, embedder, ref_matcher
     targets = [("dino", embedder._load)]
+    if settings.ref_suggest:
+        targets.append(("clip", ref_matcher._ref_vectors))   # 모델 + 정답 사진 벡터
     if settings.cutout_backend != "fal":
         targets.append(("rembg", compositor._load))
     done = []

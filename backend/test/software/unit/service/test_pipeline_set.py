@@ -231,8 +231,8 @@ def test_plan_layout_uses_answer_photo_caches_and_falls_back(monkeypatch):
 
 def test_photo_review_prompt_lists_needs_only_when_given():
     from app import prompts as P
-    assert "- 게임판 앞면" in P.photo_review_prompt(2, True, ["게임판 앞면"])
-    assert "must show these parts" not in P.photo_review_prompt(2, False, None)
+    assert "- 게임판 앞면" in P.photo_review_prompt(2, True, {"needs": ["게임판 앞면"]})
+    assert "must come from the seller photos" not in P.photo_review_prompt(2, False, None)
 
 
 def test_set_pieces_mains_marks_main_rest_component():
@@ -287,3 +287,17 @@ def test_set_prompt_named_main_piece_not_in_front_row():
     d = json.loads(p)
     front = d["layout"].split("main piece large at front center")[1]
     assert "desk calendar" not in front and "sticker" in front
+
+
+def test_apply_selection_keeps_every_picked_piece():
+    """10-11 사용자: 판매자가 고르면 고른 것 전부를 생성 — 본체 하나로 줄이지 않는다 (기본값만 본체 하나)."""
+    box = lambda x: {"x1": x, "y1": 0, "x2": x + 10, "y2": 10}
+    a = {"item": "lego", "objects": [
+        {"what": "built model", "box": box(0), "for_sale": True, "role": "main", "photo": 0},
+        {"what": "minifigure", "box": box(20), "for_sale": True, "role": "component", "photo": 0},
+        {"what": "lego box", "box": box(40), "for_sale": True, "role": "accessory", "photo": 0}]}
+    out = pipeline_mod.apply_selection(a, [0, 1])
+    assert out["leave_out"] == ["lego box"] and out["item_box"] == {"x1": 0, "y1": 0, "x2": 30, "y2": 10}
+    assert "detail_pieces" not in out
+    default = pipeline_mod.apply_selection(a, None)
+    assert {d["what"] for d in default["detail_pieces"]} == {"minifigure", "lego box"}
