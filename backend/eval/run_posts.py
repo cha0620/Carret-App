@@ -204,10 +204,18 @@ def main():
                        "gate_passed": res.get("gate_passed"), "added_text": res.get("added_text"),
                        "checks": res.get("checks"), "gen_attempts": res.get("gen_attempts"),
                        "elapsed_s": round(time.time() - t0, 1), "fixed_inputs": fx or None}
-                # 생성 시도(KEEP_ATTEMPTS)도 옮겨 둔다
-                for i, att in enumerate(sorted((storage.BASE / "attempts").glob(f"{main_id}_*")), 1):
-                    shutil.copy(att, run_dir / "files" / f"{tag}_try{i}{att.suffix}")
-                    row.setdefault("tries", []).append(f"{tag}_try{i}{att.suffix}")
+                # 생성 시도(KEEP_ATTEMPTS)도 옮겨 둔다 — 복사 말고 이동, 두 벌 남기지 않게 (10-19)
+                # storage API 로 — S3 백엔드에서도 잡히게. preset 까지 맞추고 try 번호 순 (try10 이 try2 앞에 오지 않게)
+                pre = f"{main_id}_{a.preset}_try"
+                atts = sorted((n for n in storage.list_files("attempts") if n.startswith(pre) and n.endswith(".jpg")
+                               and n[len(pre):-4].isdigit()), key=lambda n: int(n[len(pre):-4]))
+                for i, att in enumerate(atts, 1):
+                    img = storage.load("attempts", att)
+                    if img is None:
+                        continue
+                    (run_dir / "files" / f"{tag}_try{i}.jpg").write_bytes(img)
+                    storage.delete("attempts", att)
+                    row.setdefault("tries", []).append(f"{tag}_try{i}.jpg")
                 out.append(row)
                 # 게시글마다 바로 저장 — 중간에 죽어도(10-12 seedream 콘텐츠 검사 422) 앞 결과가 남게
                 (run_dir / "posts.json").write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")

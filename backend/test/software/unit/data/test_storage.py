@@ -189,3 +189,12 @@ def test_list_files_merges_local_and_backend_wins_on_same_name(tmp_storage, monk
     out = storage.list_files("original")
     assert set(out) == {"both.jpg", "s3only.jpg", "localonly.jpg"}
     assert out["both.jpg"] == 200.0
+
+
+def test_save_attempts_normalizes_to_jpeg(tmp_storage, make_png, monkeypatch):
+    """10-19: 시도 이미지(attempts)도 original/result 처럼 JPEG 로 정규화된다."""
+    _force_local(monkeypatch)
+    storage.save("attempts", "a_try1.jpg", make_png(3000, 2000))
+    with Image.open(tmp_storage / "attempts" / "a_try1.jpg") as im:
+        assert im.format == "JPEG"
+        assert max(im.size) <= 1600

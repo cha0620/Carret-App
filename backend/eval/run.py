@@ -130,6 +130,7 @@ def _full_row(e: dict, data: bytes, rep: int, preset: str, files_dir: Path) -> d
         if img is None:
             break
         (files_dir / f"{stem}_try{n}.jpg").write_bytes(img)
+        storage.delete("attempts", f"{name}_try{n}.jpg")   # files/ 로 옮긴다 — 두 벌 남기지 않게 (10-19)
         tries.append(f"files/{stem}_try{n}.jpg")
     return {
         "tries": tries,

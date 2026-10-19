@@ -50,4 +50,5 @@ backend/eval/data/real_defects/
 phone_img/
 backend/eval/results/runs/
 backend/eval/results/archive/
+backend/eval/eval.db
 backend/eval/data/dataset.json.lock
