@@ -43,6 +43,14 @@ CREATE TABLE IF NOT EXISTS feedbacks (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(file_id, preset_key, source)
 );
+-- 공개 데모 비용 상한 (11-15) — 하루(KST)·IP 별 예상 비용 누적. QUOTA_ENABLED=true 일 때만 쓴다 (app/core/quota.py)
+CREATE TABLE IF NOT EXISTS usage (
+    day TEXT NOT NULL,
+    ip TEXT NOT NULL,
+    usd REAL NOT NULL DEFAULT 0,
+    calls INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, ip)
+);
 -- 칠한 곳 고치기 A/B (10-11) — 판매자가 칠한 곳 · 설명 · 고른 쪽도 피드백이다. 마스크 그림은 storage(quality)에
 CREATE TABLE IF NOT EXISTS inpaint_rounds (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

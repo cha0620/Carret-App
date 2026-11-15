@@ -1,10 +1,20 @@
 venv1/
 .venv/
 .git/
-__pycache__/
-*.pyc
-.env
-.env.*
+**/__pycache__/
+**/*.pyc
+**/.env
+**/.env.*
 Dockerfile
 .dockerignore
 backend/test/
+# 사진 · DB · 실행 결과는 이미지에 넣지 않는다 (남의 사진 · 용량) — 11-15
+backend/storage/
+backend/data/
+data/
+backend/eval/data/images/
+backend/eval/data/refs/
+backend/eval/data/real_defects/
+backend/eval/results/
+study/
+blog/
