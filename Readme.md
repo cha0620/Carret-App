@@ -23,7 +23,7 @@ a photo buyers can trust matters more than a pretty one.
 | **Problem** | Generative edit models "fix" scratches even when you only ask them to swap the background. In secondhand listings, that turns the photo into a misleading one |
 | **Solution** | The model never redraws the composition: the seller picks it from their own shots, and missing sides are flagged at upload. Before generation, the photo is analyzed: heavily worn items, or items whose main text can't be kept, get only a background swap on the original pixels. Generated results are checked with a VLM checklist that logos and text are unchanged |
 | **Stack** | FastAPI · LangGraph · fal.ai (FLUX edit) · Gemini (VLM) · DINOv2 · OpenCV · SQLite · S3 · Langfuse · Vanilla JS |
-| **Quality** | 765 unit tests that make no external API calls and run on every PR, plus an eval suite that calls the real APIs (runs on main or a PR label) |
+| **Quality** | 790 unit tests that make no external API calls and run on every PR, plus an eval suite that calls the real APIs (runs on main or a PR label) |
 
 ---
 
@@ -134,10 +134,9 @@ Finer branches (reading text, cutout failures, retry limits) are in the step lis
 8. **verify**: the VLM gets a checklist ("confirm these marks are unchanged") instead of an
    open question ("find problems"): the logos and marks from analyze plus the key text on the
    item (largest lines, up to 8; text the original itself couldn't read, with "?", is skipped).
-   It returns whether each one survived and where it is in the result. **Defects are not checked
-   here**; wear is only judged by analyze → plan.
-   Coordinates are requested in Gemini's native `box_2d [ymin, xmin, ymax, xmax]`
-   format, and if the VLM answers for fewer items than it was asked about
+   It returns whether each one survived (since the bubble overlay was removed on 2026-10-05, it
+   no longer asks for coordinates). **Defects are not checked here**; wear is only judged by
+   analyze → plan. If the VLM answers for fewer items than it was asked about
    (including an empty answer), the gate fails. If the verify **call itself** fails twice,
    the run is marked `verify_failed` (not passed) and goes straight to background-swap mode
 9. **Gate-failure fallback**: if the verify gate fails, the pipeline regenerates once
@@ -263,8 +262,8 @@ doesn't generate when it can't keep the item honest.
 
 **2. LLM judgment is separated from deterministic metrics.**
 A VLM judge's scores shift with prompt and model versions. So the project
-adds deterministic signals: DINOv2 similarity (whole image and cut-out item) and OCR text matching
-(`quality/guards.py`). When a guard computation fails,
+adds deterministic signals: DINOv2 similarity (whole image, cut-out item, and per patch)
+(`quality/guards.py`). The OCR text guard was dropped as a hard gate on 09-27 because its reads wobbled. When a guard computation fails,
 the exception is raised instead of letting the result pass. When a check stage
 (analyze, verify) call fails, the run is marked `detect_failed` / `verify_failed`
 instead of passing, and goes to background-swap mode. The observational stage
@@ -286,7 +285,7 @@ that still boot when `.env` contains unknown keys.
 
 **5. Built to be testable.**
 External calls live only in `services/ai/`, which makes them easy to mock.
-That's why 765 unit tests finish in about 25 seconds with no network
+That's why 790 unit tests finish in about 25 seconds with no network
 (and `unit/conftest.py` blocks any accidental real VLM call). The
 dev replay (`run_transform_with_result`) skips only the generation step and
 **calls the production node functions directly**. The logic is never
