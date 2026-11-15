@@ -1,5 +1,14 @@
 /* 통신 계층 — 서버랑만 대화. 화면 모름. */
 
+// 공개 데모 사용량 상한(429)이면 서버가 준 안내 문구를, 아니면 기본 문구를 (11-15)
+async function failMsg(resp, fallback) {
+  if (resp.status === 429) {
+    const e = await resp.json().catch(() => ({}));
+    if (typeof e.detail === 'string') return e.detail;
+  }
+  return fallback;
+}
+
 async function uploadFile(file) {
   const fd = new FormData();
   fd.append('file', file);
@@ -68,7 +77,7 @@ async function fetchReview(itemId, objectId, refFile) {
   const q = new URLSearchParams({ object_id: objectId });
   if (refFile) q.set('ref_file', refFile);
   const resp = await fetch(`/api/items/${itemId}/review?` + q.toString(), { method: 'POST' });
-  if (!resp.ok) throw new Error('사진 검토 실패');
+  if (!resp.ok) throw new Error(await failMsg(resp, '사진 검토 실패'));
   return resp.json();
 }
 
@@ -78,7 +87,7 @@ async function fetchComponents(fileId, extraViewIds = null, itemId = null) {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({ file_id: fileId, extra_view_ids: extraViewIds, item_id: extraViewIds ? itemId : null }),
   });
-  if (!resp.ok) throw new Error('구성품 빠른 분석 실패');
+  if (!resp.ok) throw new Error(await failMsg(resp, '구성품 빠른 분석 실패'));
   return resp.json();
 }
 
@@ -88,7 +97,7 @@ async function analyzePhoto(fileId) {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({ file_id: fileId }),
   });
-  if (!resp.ok) throw new Error('분석 실패');
+  if (!resp.ok) throw new Error(await failMsg(resp, '분석 실패'));
   return resp.json();
 }
 

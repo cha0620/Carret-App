@@ -42,6 +42,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 공개 데모 비용 상한 — QUOTA_ENABLED=true 일 때만 유료 요청을 센다 (app/core/quota.py)
+from app.core import quota  # noqa: E402
+app.middleware("http")(quota.quota_middleware)
+
+
+@app.get("/healthz")
+def healthz():
+    """배포 확인용 — 외부 호출 · DB 없이 살아 있는지만. 사용량은 공개하지 않는다 (남은 예산을 보며 소진 공격을
+    조절할 수 있어서, 11-15 리뷰). 사용량은 Pod 터미널에서 quota.usage_today() 나 fal · Google 콘솔로 본다."""
+    return {"status": "ok"}
+
+
 # 1) API 라우터
 app.include_router(images.router, prefix="/api/images", tags=["images"])
 app.include_router(transform.router, prefix="/api", tags=["transform"])

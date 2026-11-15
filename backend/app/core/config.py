@@ -97,6 +97,16 @@ class Settings(BaseSettings):              # ⭐ 대문자 클래스
     # 기타
     max_bytes: int = 10 * 1024 * 1024
     dev_tools: bool = True
+
+    # 공개 데모 비용 상한 (11-15, app/core/quota.py) — 유료 API(VLM · fal)를 부르는 요청을 받기 전에
+    # 예상 비용을 더해 보고 넘으면 429. 로컬 개발 · 테스트는 기본 꺼짐, 배포(deploy/runpod.env.example)에서 켠다
+    quota_enabled: bool = False
+    quota_daily_usd: float = Field(default=3.0, ge=0)          # 서버 전체 하루(KST) 상한
+    # IP 하나 하루 상한 — 업로드 · 검토 · 분석 · 변환 한 흐름이 약 $0.06 이라 약 8번. 학교 · 회사 · 모바일 망은 IP 를 같이 써서 넉넉히
+    quota_per_ip_daily_usd: float = Field(default=0.5, ge=0)
+    # RunPod HTTP 프록시(Cloudflare → 로드밸런서) 뒤에서는 접속 주소가 프록시라 Cloudflare 의 cf-connecting-ip 를 읽는다.
+    # Cloudflare 를 안 거치는 경로(TCP 포트 직접 노출 등)에서 켜면 헤더 위조로 IP 상한을 피할 수 있다 (전체 상한은 그대로)
+    trust_proxy_headers: bool = False
     warmup_models: bool = True   # 서버 시작 뒤 DINO(·local 이면 rembg)를 미리 올린다 (app/core/warmup.py)
 
     inspect_img: str | None = None
